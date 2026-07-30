@@ -10,6 +10,21 @@
 export const NUMERIC_FIELDS = ["quantity", "unitPrice", "subtotal", "discount", "tip", "total"] as const;
 export type NumericField = (typeof NUMERIC_FIELDS)[number];
 
+/**
+ * `discount`/`tip`/`total` son del TICKET, no del ítem — se escriben
+ * repetidos en cada fila de `writeAnalyticsRows.ts` (una fila por ítem, no
+ * por ticket). Sumarlos/promediarlos directo cuenta esa repetición: un
+ * ticket de 3 ítems infla su total 3 veces. `queryBuilder.ts` los agrega a
+ * través de una sub-consulta que colapsa por ticket primero — ver ahí.
+ * `quantity`/`unitPrice`/`subtotal` sí son genuinamente por ítem, no
+ * tienen este problema.
+ */
+export const TICKET_LEVEL_FIELDS: NumericField[] = ["discount", "tip", "total"];
+
+export function isTicketLevelField(field: string): boolean {
+  return (TICKET_LEVEL_FIELDS as readonly string[]).includes(field);
+}
+
 /** Pseudo-campo: cuenta tickets (eventos), no filas de ítem — ver queryBuilder.ts. */
 export const EVENT_COUNT_FIELD = "event_count";
 

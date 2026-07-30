@@ -6,7 +6,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
 import { resolveTenantByApiKeyId } from "../shared/tenant.js";
 import type { WidgetAggregation, WidgetFilters, WidgetRecord, WidgetVisualization } from "../shared/types.js";
-import { AGGREGATIONS, CATEGORICAL_FIELDS, isValidAggregation, isValidGroupByField, isValidMetricField } from "./fields.js";
+import { AGGREGATIONS, CATEGORICAL_FIELDS, isTicketLevelField, isValidAggregation, isValidGroupByField, isValidMetricField } from "./fields.js";
 
 const VISUALIZATIONS: WidgetVisualization[] = ["kpi", "bar", "donut"];
 // Coincide con TicketStatus — no se reexporta desde acá para no acoplar
@@ -56,6 +56,14 @@ function validateBody(body: unknown): Validation {
   } else {
     if (typeof b.groupBy !== "string" || !isValidGroupByField(b.groupBy)) {
       return { ok: false, error: `groupBy inválido, se esperaba uno de: ${CATEGORICAL_FIELDS.join(", ")}` };
+    }
+    // total/discount/tip son del ticket, no del ítem — no hay forma
+    // correcta de repartirlos entre las descripciones de un mismo ticket.
+    if (b.groupBy === "description" && isTicketLevelField(metric.field)) {
+      return {
+        ok: false,
+        error: `no se puede agrupar "${metric.field}" (un valor por ticket) por "description" (un valor por ítem) — usá "subtotal" para desglosar por producto`,
+      };
     }
     groupBy = b.groupBy;
   }

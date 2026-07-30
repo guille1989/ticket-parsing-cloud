@@ -75,6 +75,29 @@ test("rechaza bar/donut sin groupBy", async () => {
   expect(result.statusCode).toBe(400);
 });
 
+// Un ticket real de 3 ítems y $3600 devolvía $10800 en el widget antes de
+// este fix — total/discount/tip vienen repetidos por ítem, agruparlos por
+// description no tiene una respuesta correcta posible.
+test("rechaza agrupar un campo de TICKET (total/discount/tip) por description", async () => {
+  const result = await handler(
+    eventWith({
+      name: "X",
+      visualization: "bar",
+      metric: { field: "total", aggregation: "sum" },
+      groupBy: "description",
+    }),
+  );
+  expect(result.statusCode).toBe(400);
+  expect(mockDdbSend).not.toHaveBeenCalled();
+});
+
+test("permite agrupar un campo de TICKET (total) por un campo que no es description", async () => {
+  const result = await handler(
+    eventWith({ name: "X", visualization: "bar", metric: { field: "total", aggregation: "sum" }, groupBy: "port" }),
+  );
+  expect(result.statusCode).toBe(201);
+});
+
 test("rechaza un metric.field fuera de la lista blanca", async () => {
   const result = await handler(
     eventWith({ name: "X", visualization: "kpi", metric: { field: "password", aggregation: "sum" } }),

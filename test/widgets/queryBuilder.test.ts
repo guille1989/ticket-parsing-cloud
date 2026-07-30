@@ -14,14 +14,56 @@ function widget(overrides: Partial<WidgetRecord> = {}): WidgetRecord {
   };
 }
 
-test("KPI sin groupBy: una sola fila, sin GROUP BY", () => {
+test("KPI sin groupBy, campo por ítem: una sola fila, agregación directa sin sub-consulta", () => {
+  const { sql, params } = buildWidgetQuery(
+    widget({ visualization: "kpi", groupBy: undefined, metric: { field: "subtotal", aggregation: "sum" } }),
+  );
+
+  expect(sql).toBe("SELECT SUM(subtotal) AS value FROM ticket_analytics.ticket_items WHERE tenant = ?");
+  expect(params).toEqual(["t1"]);
+});
+
+// total/discount/tip vienen repetidos una vez por ítem del ticket al que
+// pertenecen (ver fields.ts) — sumarlos/promediarlos directo los cuenta de
+// más. Se ve exactamente en este caso: un ticket real de $3600 con 3 ítems
+// devolvía $10800 antes de este fix (probado contra Athena real).
+test("KPI sin groupBy, campo de TICKET (total/discount/tip): colapsa por ticketid antes de sumar", () => {
   const { sql, params } = buildWidgetQuery(
     widget({ visualization: "kpi", groupBy: undefined, metric: { field: "total", aggregation: "sum" } }),
   );
 
-  expect(sql).toBe("SELECT SUM(total) AS value FROM ticket_analytics.ticket_items WHERE tenant = ?");
-  expect(sql).not.toMatch(/GROUP BY/);
+  expect(sql).toBe(
+    "SELECT SUM(total) AS value FROM (SELECT ticketid, MAX(total) AS total FROM ticket_analytics.ticket_items WHERE tenant = ? GROUP BY ticketid)",
+  );
   expect(params).toEqual(["t1"]);
+});
+
+test("bar/donut con groupBy y campo de TICKET: colapsa por (ticketid, groupBy) antes de agrupar afuera", () => {
+  const { sql } = buildWidgetQuery(
+    widget({ metric: { field: "total", aggregation: "sum" }, groupBy: "port" }),
+  );
+
+  expect(sql).toBe(
+    "SELECT port AS label, SUM(total) AS value FROM (SELECT ticketid, port, MAX(total) AS total " +
+      "FROM ticket_analytics.ticket_items WHERE tenant = ? GROUP BY ticketid, port) " +
+      "GROUP BY port ORDER BY value DESC LIMIT 50",
+  );
+});
+
+test("rechaza agrupar un campo de ticket (total/discount/tip) por description — no hay forma correcta de repartirlo por ítem", () => {
+  expect(() => buildWidgetQuery(widget({ metric: { field: "total", aggregation: "sum" }, groupBy: "description" }))).toThrow(
+    /no se puede agrupar/,
+  );
+  expect(() => buildWidgetQuery(widget({ metric: { field: "discount", aggregation: "sum" }, groupBy: "description" }))).toThrow(
+    /no se puede agrupar/,
+  );
+  expect(() => buildWidgetQuery(widget({ metric: { field: "tip", aggregation: "sum" }, groupBy: "description" }))).toThrow(
+    /no se puede agrupar/,
+  );
+});
+
+test("agrupar un campo de ticket por un campo NO-description (port/status/parsedBy) sí es válido", () => {
+  expect(() => buildWidgetQuery(widget({ metric: { field: "total", aggregation: "sum" }, groupBy: "status" }))).not.toThrow();
 });
 
 test("bar/donut con groupBy: agrupa, ordena por value y limita a 50", () => {
