@@ -4,6 +4,7 @@ import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import type { DynamoDBBatchResponse, DynamoDBRecord, DynamoDBStreamEvent } from "aws-lambda";
 
+import { writeAnalyticsRows } from "../analytics/writeAnalyticsRows.js";
 import { tryBedrockFallback } from "../parsing/bedrockFallback.js";
 import { checkEconomicCoherence } from "../parsing/economicCoherence.js";
 import { getParser } from "../parsing/registry.js";
@@ -114,6 +115,34 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
   // rechazar) queda pendiente, no existe todavía.
   const status: "parsed" | "needs_review" = parsedBy === "deterministic" ? "parsed" : "needs_review";
   await markParsed(message, parsed, parsedBy, status);
+  await writeAnalyticsRowsSafely(message, parsed, parsedBy, status);
+}
+
+/**
+ * Best-effort: un fallo escribiendo la fila de analítica no debe reintentar
+ * todo el registro — eso volvería a llamar a Bedrock si hizo falta (costo
+ * de más) para arreglar lo que en realidad es un problema de S3, no del
+ * parseo. El ticket ya quedó bien guardado en DynamoDB (la fuente de
+ * verdad); acá solo se pierde esa fila puntual del reporte.
+ */
+async function writeAnalyticsRowsSafely(
+  message: ParseJobMessage,
+  parsed: ParsedTicket,
+  parsedBy: NonNullable<TicketRecord["parsedBy"]>,
+  status: "parsed" | "needs_review",
+): Promise<void> {
+  const analyticsBucket = process.env.ANALYTICS_BUCKET;
+  if (!analyticsBucket) return;
+
+  try {
+    await writeAnalyticsRows(
+      analyticsBucket,
+      { tenantId: message.tenantId, ticketId: message.ticketId, capturedAt: message.capturedAt, port: message.port, parsedBy, status },
+      parsed,
+    );
+  } catch (err) {
+    console.error(`[parser] no se pudo escribir la fila de analítica para ${message.ticketId}:`, err);
+  }
 }
 
 function coherentOrNull(candidate: ParsedTicket | null): { ticket: ParsedTicket | null; incoherenceReason?: string } {

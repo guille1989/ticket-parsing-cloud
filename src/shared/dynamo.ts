@@ -5,7 +5,10 @@ export const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 export const TICKETS_TABLE = process.env.TICKETS_TABLE ?? "";
 export const TENANTS_TABLE = process.env.TENANTS_TABLE ?? "";
+export const WIDGETS_TABLE = process.env.WIDGETS_TABLE ?? "";
 export const RAW_BUCKET = process.env.RAW_BUCKET ?? "";
+export const ANALYTICS_BUCKET = process.env.ANALYTICS_BUCKET ?? "";
+export const ATHENA_WORKGROUP = process.env.ATHENA_WORKGROUP ?? "";
 
 /**
  * Claves de la tabla Tickets (single-table design):
@@ -31,4 +34,12 @@ export function ticketStatusGsiKey(tenantId: string, status: string, capturedAt:
 /** Clave de la tabla Tenants: PK = TENANT#<tenantId>. */
 export function tenantKey(tenantId: string) {
   return { pk: `TENANT#${tenantId}` };
+}
+
+/** Clave de la tabla Widgets: PK = TENANT#<tenantId>, SK = WIDGET#<widgetId>. */
+export function widgetKey(tenantId: string, widgetId: string) {
+  return {
+    pk: `TENANT#${tenantId}`,
+    sk: `WIDGET#${widgetId}`,
+  };
 }

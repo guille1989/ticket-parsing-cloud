@@ -62,3 +62,38 @@ export interface ParseJobMessage {
   /** Puerto/periférico de origen — determina qué parser usar (ver TenantRecord.portParsers). */
   port: string;
 }
+
+export type WidgetVisualization = "kpi" | "bar" | "donut";
+export type WidgetAggregation = "sum" | "avg" | "max" | "min" | "count";
+
+export interface WidgetMetric {
+  /** Un campo numérico de `widgets/fields.ts`, o el pseudo-campo "event_count". */
+  field: string;
+  aggregation: WidgetAggregation;
+}
+
+export interface WidgetFilters {
+  dateFrom?: string;
+  dateTo?: string;
+  port?: string;
+  status?: string;
+}
+
+/**
+ * Widget configurado por el usuario para su dashboard — es config, no
+ * datos, por eso vive en DynamoDB junto a Tenants en vez de en la capa
+ * analítica (S3/Athena). `metric.field`/`groupBy` se validan contra la
+ * lista blanca de `widgets/fields.ts` antes de guardarse, y de nuevo antes
+ * de generar SQL — nunca se confía en un campo guardado sin revalidar.
+ */
+export interface WidgetRecord {
+  tenantId: string;
+  widgetId: string;
+  name: string;
+  visualization: WidgetVisualization;
+  metric: WidgetMetric;
+  /** Campo categórico para agrupar (bar/donut) — ausente para un KPI simple. */
+  groupBy?: string;
+  filters?: WidgetFilters;
+  createdAt: string;
+}

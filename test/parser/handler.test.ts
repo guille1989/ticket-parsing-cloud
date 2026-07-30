@@ -87,6 +87,7 @@ beforeEach(() => {
   mockGetTenant.mockReset();
   mockBedrockSend.mockReset();
   delete process.env.BEDROCK_MODEL_ID;
+  delete process.env.ANALYTICS_BUCKET;
 });
 
 test("INSERT + pending + texto válido: parsea y actualiza a parsed", async () => {
@@ -320,4 +321,49 @@ test("un error transitorio (ej. DynamoDB caído) se reporta como batch item fail
   });
 
   expect(result.batchItemFailures).toEqual([{ itemIdentifier: "seq-1" }]);
+});
+
+test("con ANALYTICS_BUCKET seteada, escribe la fila de analítica a S3 después de marcar parsed", async () => {
+  process.env.ANALYTICS_BUCKET = "test-analytics-bucket";
+  mockGetTenant.mockResolvedValue(validTenant);
+  mockS3Send.mockResolvedValue({ Body: { transformToString: async () => VALID_TICKET_TEXT } });
+  mockDdbSend.mockResolvedValue({});
+
+  await handler({ Records: [streamRecord("INSERT", pendingTicket())] });
+
+  const putCall = mockS3Send.mock.calls.find((call) => call[0].input?.Body !== undefined);
+  expect(putCall).toBeDefined();
+  expect(putCall![0].input.Bucket).toBe("test-analytics-bucket");
+  expect(putCall![0].input.Key).toMatch(/^tenant=t1\/year=\d{4}\/month=\d{2}\/day=\d{2}\/tk1\.jsonl$/);
+});
+
+test("sin ANALYTICS_BUCKET, no intenta escribir analítica", async () => {
+  mockGetTenant.mockResolvedValue(validTenant);
+  mockS3Send.mockResolvedValue({ Body: { transformToString: async () => VALID_TICKET_TEXT } });
+  mockDdbSend.mockResolvedValue({});
+
+  await handler({ Records: [streamRecord("INSERT", pendingTicket())] });
+
+  // La única llamada a S3 debería ser la lectura del crudo (GetObjectCommand), no un Put.
+  expect(mockS3Send).toHaveBeenCalledTimes(1);
+});
+
+test("un fallo escribiendo la fila de analítica no reintenta el registro (el ticket ya quedó guardado en DynamoDB)", async () => {
+  process.env.ANALYTICS_BUCKET = "test-analytics-bucket";
+  mockGetTenant.mockResolvedValue(validTenant);
+  mockDdbSend.mockResolvedValue({});
+  mockS3Send.mockImplementation((command) => {
+    // GetObjectCommand (lectura del crudo) funciona bien; el PutObjectCommand
+    // (escritura de analítica) es el que falla.
+    if (command.input?.Body !== undefined) {
+      return Promise.reject(new Error("S3 no responde"));
+    }
+    return Promise.resolve({ Body: { transformToString: async () => VALID_TICKET_TEXT } });
+  });
+
+  const result = await handler({ Records: [streamRecord("INSERT", pendingTicket())] });
+
+  expect(result.batchItemFailures).toEqual([]);
+  const update = mockDdbSend.mock.calls[0][0].input;
+  expect(update.ExpressionAttributeValues[":status"]).toBe("parsed");
 });
