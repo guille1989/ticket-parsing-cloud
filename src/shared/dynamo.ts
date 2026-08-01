@@ -6,6 +6,8 @@ export const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 export const TICKETS_TABLE = process.env.TICKETS_TABLE ?? "";
 export const TENANTS_TABLE = process.env.TENANTS_TABLE ?? "";
 export const WIDGETS_TABLE = process.env.WIDGETS_TABLE ?? "";
+export const AGENTS_TABLE = process.env.AGENTS_TABLE ?? "";
+export const ACTIVATION_CODES_TABLE = process.env.ACTIVATION_CODES_TABLE ?? "";
 export const RAW_BUCKET = process.env.RAW_BUCKET ?? "";
 export const ANALYTICS_BUCKET = process.env.ANALYTICS_BUCKET ?? "";
 export const ATHENA_WORKGROUP = process.env.ATHENA_WORKGROUP ?? "";
@@ -42,4 +44,21 @@ export function widgetKey(tenantId: string, widgetId: string) {
     pk: `TENANT#${tenantId}`,
     sk: `WIDGET#${widgetId}`,
   };
+}
+
+/** Clave de la tabla Agents: PK = TENANT#<tenantId>, SK = AGENT#<agentId>. */
+export function agentKey(tenantId: string, agentId: string) {
+  return {
+    pk: `TENANT#${tenantId}`,
+    sk: `AGENT#${agentId}`,
+  };
+}
+
+/**
+ * Clave de la tabla ActivationCodes: PK = CODE#<code>. Global (no anidada
+ * bajo el tenant) porque quien canjea un código no sabe todavía a qué
+ * tenant pertenece — eso lo resuelve el canje, no lo aporta el cliente.
+ */
+export function activationCodeKey(code: string) {
+  return { pk: `CODE#${code}` };
 }

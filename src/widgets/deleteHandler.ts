@@ -1,18 +1,13 @@
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
-import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
+import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
+import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
-import { resolveTenantByApiKeyId } from "../shared/tenant.js";
 
-export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
-  const apiKeyId = event.requestContext.identity?.apiKeyId;
-  if (!apiKeyId) {
-    return { statusCode: 403, body: JSON.stringify({ error: "falta API key" }) };
-  }
-
-  const tenant = await resolveTenantByApiKeyId(apiKeyId);
-  if (!tenant) {
-    return { statusCode: 403, body: JSON.stringify({ error: "API key no asociada a ningún tenant" }) };
+export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
+  const tenantId = resolveTenantIdFromEvent(event);
+  if (!tenantId) {
+    return { statusCode: 403, body: JSON.stringify({ error: "no autenticado" }) };
   }
 
   const widgetId = event.pathParameters?.widgetId;
@@ -25,7 +20,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   await ddb.send(
     new DeleteCommand({
       TableName: WIDGETS_TABLE,
-      Key: widgetKey(tenant.tenantId, widgetId),
+      Key: widgetKey(tenantId, widgetId),
     }),
   );
 

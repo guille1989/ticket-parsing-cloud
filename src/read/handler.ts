@@ -1,8 +1,8 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
+import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
+import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, TICKETS_TABLE } from "../shared/dynamo.js";
-import { resolveTenantByApiKeyId } from "../shared/tenant.js";
 import { TicketRecord, TicketStatus } from "../shared/types.js";
 
 const MAX_LIMIT = 100;
@@ -49,15 +49,10 @@ function toPublicTicket(item: TicketRecord) {
   };
 }
 
-export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
-  const apiKeyId = event.requestContext.identity?.apiKeyId;
-  if (!apiKeyId) {
-    return { statusCode: 403, body: JSON.stringify({ error: "falta API key" }) };
-  }
-
-  const tenant = await resolveTenantByApiKeyId(apiKeyId);
-  if (!tenant) {
-    return { statusCode: 403, body: JSON.stringify({ error: "API key no asociada a ningún tenant" }) };
+export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
+  const tenantId = resolveTenantIdFromEvent(event);
+  if (!tenantId) {
+    return { statusCode: 403, body: JSON.stringify({ error: "no autenticado" }) };
   }
 
   const params = event.queryStringParameters ?? {};
@@ -78,7 +73,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
           TableName: TICKETS_TABLE,
           IndexName: "status-index",
           KeyConditionExpression: "gsi1pk = :gsi1pk",
-          ExpressionAttributeValues: { ":gsi1pk": `TENANT#${tenant.tenantId}#STATUS#${status}` },
+          ExpressionAttributeValues: { ":gsi1pk": `TENANT#${tenantId}#STATUS#${status}` },
           ScanIndexForward: false,
           Limit: limit,
           ExclusiveStartKey: exclusiveStartKey,
@@ -88,7 +83,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
         new QueryCommand({
           TableName: TICKETS_TABLE,
           KeyConditionExpression: "pk = :pk",
-          ExpressionAttributeValues: { ":pk": `TENANT#${tenant.tenantId}` },
+          ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}` },
           ScanIndexForward: false,
           Limit: limit,
           ExclusiveStartKey: exclusiveStartKey,

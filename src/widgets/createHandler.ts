@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
+import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
+import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
-import { resolveTenantByApiKeyId } from "../shared/tenant.js";
 import type { WidgetAggregation, WidgetFilters, WidgetRecord, WidgetVisualization } from "../shared/types.js";
 import { AGGREGATIONS, CATEGORICAL_FIELDS, isTicketLevelField, isValidAggregation, isValidGroupByField, isValidMetricField } from "./fields.js";
 
@@ -104,15 +104,10 @@ function validateBody(body: unknown): Validation {
   return { ok: true, value: { name: b.name.trim(), visualization, metric, groupBy, filters } };
 }
 
-export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
-  const apiKeyId = event.requestContext.identity?.apiKeyId;
-  if (!apiKeyId) {
-    return { statusCode: 403, body: JSON.stringify({ error: "falta API key" }) };
-  }
-
-  const tenant = await resolveTenantByApiKeyId(apiKeyId);
-  if (!tenant) {
-    return { statusCode: 403, body: JSON.stringify({ error: "API key no asociada a ningún tenant" }) };
+export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
+  const tenantId = resolveTenantIdFromEvent(event);
+  if (!tenantId) {
+    return { statusCode: 403, body: JSON.stringify({ error: "no autenticado" }) };
   }
 
   let body: unknown;
@@ -128,7 +123,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   }
 
   const widget: WidgetRecord = {
-    tenantId: tenant.tenantId,
+    tenantId,
     widgetId: randomUUID(),
     createdAt: new Date().toISOString(),
     ...validation.value,
@@ -137,7 +132,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   await ddb.send(
     new PutCommand({
       TableName: WIDGETS_TABLE,
-      Item: { ...widget, ...widgetKey(tenant.tenantId, widget.widgetId) },
+      Item: { ...widget, ...widgetKey(tenantId, widget.widgetId) },
     }),
   );
 

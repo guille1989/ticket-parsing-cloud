@@ -1,52 +1,45 @@
-import type { APIGatewayProxyEvent } from "aws-lambda";
+import type { APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 const mockDdbSend = jest.fn();
-const mockResolveTenantByApiKeyId = jest.fn();
 
 jest.mock("../../src/shared/dynamo", () => {
   const actual = jest.requireActual("../../src/shared/dynamo");
   return { ...actual, ddb: { send: (...args: unknown[]) => mockDdbSend(...args) }, TICKETS_TABLE: "TestTickets" };
 });
 
-jest.mock("../../src/shared/tenant", () => ({
-  resolveTenantByApiKeyId: (...args: unknown[]) => mockResolveTenantByApiKeyId(...args),
-}));
-
 import { handler } from "../../src/read/handler";
 
-const validTenant = { tenantId: "t1", businessName: "Negocio", parserId: "example-38col", apiKeyId: "key1", createdAt: "2026-01-01T00:00:00.000Z" };
-
-function eventWith(apiKeyId: string | undefined, query: Record<string, string> = {}): APIGatewayProxyEvent {
+function eventWith(
+  tenantId: string | undefined,
+  query: Record<string, string> = {},
+): APIGatewayProxyWithCognitoAuthorizerEvent {
   return {
-    requestContext: { identity: { apiKeyId } },
+    requestContext: { authorizer: { claims: tenantId ? { "custom:tenantId": tenantId } : {} } },
     queryStringParameters: query,
-  } as unknown as APIGatewayProxyEvent;
+  } as unknown as APIGatewayProxyWithCognitoAuthorizerEvent;
 }
 
 beforeEach(() => {
   mockDdbSend.mockReset();
-  mockResolveTenantByApiKeyId.mockReset();
 });
 
-test("sin API key: 403", async () => {
+test("sin sesión de Cognito (sin claim de tenantId): 403", async () => {
   const result = await handler(eventWith(undefined));
   expect(result.statusCode).toBe(403);
   expect(mockDdbSend).not.toHaveBeenCalled();
 });
 
 test("status inválido en query: 400, no consulta DynamoDB", async () => {
-  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
-  const result = await handler(eventWith("key1", { status: "no-existe" }));
+  const result = await handler(eventWith("t1", { status: "no-existe" }));
   expect(result.statusCode).toBe(400);
   expect(mockDdbSend).not.toHaveBeenCalled();
 });
 
 test("sin filtro: consulta por pk del tenant autenticado, nunca por uno del query", async () => {
-  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
   mockDdbSend.mockResolvedValue({ Items: [] });
 
   // el query trae un tenantId ajeno a propósito — no debe usarse para nada
-  await handler(eventWith("key1", { tenantId: "otro-tenant" } as unknown as Record<string, string>));
+  await handler(eventWith("t1", { tenantId: "otro-tenant" } as unknown as Record<string, string>));
 
   const query = mockDdbSend.mock.calls[0][0].input;
   expect(query.ExpressionAttributeValues[":pk"]).toBe("TENANT#t1");
@@ -54,10 +47,9 @@ test("sin filtro: consulta por pk del tenant autenticado, nunca por uno del quer
 });
 
 test("con filtro status: consulta el GSI status-index", async () => {
-  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
   mockDdbSend.mockResolvedValue({ Items: [] });
 
-  await handler(eventWith("key1", { status: "parsed" }));
+  await handler(eventWith("t1", { status: "parsed" }));
 
   const query = mockDdbSend.mock.calls[0][0].input;
   expect(query.IndexName).toBe("status-index");
@@ -65,10 +57,9 @@ test("con filtro status: consulta el GSI status-index", async () => {
 });
 
 test("needs_review es un filtro de status válido", async () => {
-  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
   mockDdbSend.mockResolvedValue({ Items: [] });
 
-  const result = await handler(eventWith("key1", { status: "needs_review" }));
+  const result = await handler(eventWith("t1", { status: "needs_review" }));
 
   expect(result.statusCode).toBe(200);
   const query = mockDdbSend.mock.calls[0][0].input;
@@ -76,7 +67,6 @@ test("needs_review es un filtro de status válido", async () => {
 });
 
 test("un ticket needs_review expone parsedBy para que el negocio sepa que viene de Bedrock", async () => {
-  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
   mockDdbSend.mockResolvedValue({
     Items: [
       {
@@ -96,7 +86,7 @@ test("un ticket needs_review expone parsedBy para que el negocio sepa que viene 
     ],
   });
 
-  const result = await handler(eventWith("key1", { status: "needs_review" }));
+  const result = await handler(eventWith("t1", { status: "needs_review" }));
   const body = JSON.parse(result.body);
 
   expect(body.tickets[0].status).toBe("needs_review");
@@ -104,7 +94,6 @@ test("un ticket needs_review expone parsedBy para que el negocio sepa que viene 
 });
 
 test("la respuesta no expone claves internas de DynamoDB (pk/sk/rawS3Key)", async () => {
-  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
   mockDdbSend.mockResolvedValue({
     Items: [
       {
@@ -123,7 +112,7 @@ test("la respuesta no expone claves internas de DynamoDB (pk/sk/rawS3Key)", asyn
     ],
   });
 
-  const result = await handler(eventWith("key1"));
+  const result = await handler(eventWith("t1"));
   const body = JSON.parse(result.body);
 
   expect(body.tickets).toHaveLength(1);
@@ -139,10 +128,9 @@ test("la respuesta no expone claves internas de DynamoDB (pk/sk/rawS3Key)", asyn
 });
 
 test("paginación: nextCursor viaja codificado y limit se acota al máximo", async () => {
-  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
   mockDdbSend.mockResolvedValue({ Items: [], LastEvaluatedKey: { pk: "TENANT#t1", sk: "TICKET#x" } });
 
-  const result = await handler(eventWith("key1", { limit: "9999" }));
+  const result = await handler(eventWith("t1", { limit: "9999" }));
 
   const query = mockDdbSend.mock.calls[0][0].input;
   expect(query.Limit).toBe(100); // MAX_LIMIT, no lo que pidió el query

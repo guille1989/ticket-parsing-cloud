@@ -63,6 +63,39 @@ export interface ParseJobMessage {
   port: string;
 }
 
+/**
+ * Un robot (instancia de `print-capture-agent` corriendo en la PC de un
+ * negocio) activado vía un código de `ActivationCodeRecord`. A diferencia
+ * de la api-key compartida del tenant (pensada para el onboarding manual
+ * original), cada agente tiene su propia api-key — así se puede identificar,
+ * nombrar y revocar un robot puntual sin afectar al resto del negocio.
+ */
+export interface AgentRecord {
+  tenantId: string;
+  agentId: string;
+  name: string;
+  apiKeyId: string;
+  createdAt: string;
+  lastSeenAt?: string;
+}
+
+/**
+ * Código de un solo uso para vincular un robot nuevo a un tenant. Se
+ * generan de a 5 por tenant al darlo de alta (ver `onboard-tenant.ts`) —
+ * el tope de 5 robots es estructural: no hay endpoint para generar más
+ * códigos, así que no hay un sexto que canjear. Sin expiración a propósito
+ * (decisión explícita): el vencimiento no aporta nada acá porque el código
+ * ya queda inutilizable apenas se usa una vez.
+ */
+export interface ActivationCodeRecord {
+  tenantId: string;
+  code: string;
+  status: "unused" | "used";
+  createdAt: string;
+  usedAt?: string;
+  agentId?: string;
+}
+
 export type WidgetVisualization = "kpi" | "bar" | "donut";
 export type WidgetAggregation = "sum" | "avg" | "max" | "min" | "count";
 

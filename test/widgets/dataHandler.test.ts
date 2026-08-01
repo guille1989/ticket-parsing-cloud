@@ -1,7 +1,6 @@
-import type { APIGatewayProxyEvent } from "aws-lambda";
+import type { APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 const mockDdbSend = jest.fn();
-const mockResolveTenantByApiKeyId = jest.fn();
 const mockRunWidgetQuery = jest.fn();
 
 jest.mock("../../src/shared/dynamo", () => {
@@ -14,17 +13,11 @@ jest.mock("../../src/shared/dynamo", () => {
   };
 });
 
-jest.mock("../../src/shared/tenant", () => ({
-  resolveTenantByApiKeyId: (...args: unknown[]) => mockResolveTenantByApiKeyId(...args),
-}));
-
 jest.mock("../../src/widgets/athenaQuery", () => ({
   runWidgetQuery: (...args: unknown[]) => mockRunWidgetQuery(...args),
 }));
 
 import { handler } from "../../src/widgets/dataHandler";
-
-const validTenant = { tenantId: "t1", businessName: "Negocio", parserId: "example-38col", apiKeyId: "key1", createdAt: "2026-01-01T00:00:00.000Z" };
 
 const validWidget = {
   tenantId: "t1",
@@ -36,18 +29,16 @@ const validWidget = {
   createdAt: "2026-07-29T20:00:00.000Z",
 };
 
-function eventWith(widgetId: string | undefined): APIGatewayProxyEvent {
+function eventWith(widgetId: string | undefined): APIGatewayProxyWithCognitoAuthorizerEvent {
   return {
-    requestContext: { identity: { apiKeyId: "key1" } },
+    requestContext: { authorizer: { claims: { "custom:tenantId": "t1" } } },
     pathParameters: widgetId ? { widgetId } : null,
-  } as unknown as APIGatewayProxyEvent;
+  } as unknown as APIGatewayProxyWithCognitoAuthorizerEvent;
 }
 
 beforeEach(() => {
   mockDdbSend.mockReset();
-  mockResolveTenantByApiKeyId.mockReset();
   mockRunWidgetQuery.mockReset();
-  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
 });
 
 test("corre la consulta de Athena para el widget guardado y devuelve los datos", async () => {
@@ -90,5 +81,14 @@ test("un widget con config corrupta (campo fuera de la lista blanca) da 500 en v
 test("sin widgetId en el path: 400", async () => {
   const result = await handler(eventWith(undefined));
   expect(result.statusCode).toBe(400);
+  expect(mockDdbSend).not.toHaveBeenCalled();
+});
+
+test("sin sesión de Cognito (sin claim de tenantId): 403, no toca DynamoDB", async () => {
+  const result = await handler({
+    requestContext: { authorizer: { claims: {} } },
+    pathParameters: { widgetId: "w1" },
+  } as unknown as APIGatewayProxyWithCognitoAuthorizerEvent);
+  expect(result.statusCode).toBe(403);
   expect(mockDdbSend).not.toHaveBeenCalled();
 });

@@ -1,21 +1,16 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
+import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
+import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { ATHENA_WORKGROUP, ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
-import { resolveTenantByApiKeyId } from "../shared/tenant.js";
 import type { WidgetRecord } from "../shared/types.js";
 import { runWidgetQuery } from "./athenaQuery.js";
 import { buildWidgetQuery } from "./queryBuilder.js";
 
-export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
-  const apiKeyId = event.requestContext.identity?.apiKeyId;
-  if (!apiKeyId) {
-    return { statusCode: 403, body: JSON.stringify({ error: "falta API key" }) };
-  }
-
-  const tenant = await resolveTenantByApiKeyId(apiKeyId);
-  if (!tenant) {
-    return { statusCode: 403, body: JSON.stringify({ error: "API key no asociada a ningún tenant" }) };
+export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
+  const tenantId = resolveTenantIdFromEvent(event);
+  if (!tenantId) {
+    return { statusCode: 403, body: JSON.stringify({ error: "no autenticado" }) };
   }
 
   const widgetId = event.pathParameters?.widgetId;
@@ -23,7 +18,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return { statusCode: 400, body: JSON.stringify({ error: "falta widgetId en el path" }) };
   }
 
-  const result = await ddb.send(new GetCommand({ TableName: WIDGETS_TABLE, Key: widgetKey(tenant.tenantId, widgetId) }));
+  const result = await ddb.send(new GetCommand({ TableName: WIDGETS_TABLE, Key: widgetKey(tenantId, widgetId) }));
   const widget = result.Item as WidgetRecord | undefined;
   if (!widget) {
     return { statusCode: 404, body: JSON.stringify({ error: "widget no encontrado" }) };

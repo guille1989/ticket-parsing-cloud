@@ -1,6 +1,6 @@
-import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
+import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
-import { resolveTenantByApiKeyId } from "../shared/tenant.js";
+import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { AGGREGATIONS, CATEGORICAL_FIELDS, EVENT_COUNT_FIELD, NUMERIC_FIELDS } from "./fields.js";
 
 /**
@@ -8,15 +8,10 @@ import { AGGREGATIONS, CATEGORICAL_FIELDS, EVENT_COUNT_FIELD, NUMERIC_FIELDS } f
  * ofrecer, para que no tenga la lista blanca hardcodeada por su cuenta (que
  * además tendría que mantenerse a mano en sincro con `fields.ts`).
  */
-export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
-  const apiKeyId = event.requestContext.identity?.apiKeyId;
-  if (!apiKeyId) {
-    return { statusCode: 403, body: JSON.stringify({ error: "falta API key" }) };
-  }
-
-  const tenant = await resolveTenantByApiKeyId(apiKeyId);
-  if (!tenant) {
-    return { statusCode: 403, body: JSON.stringify({ error: "API key no asociada a ningún tenant" }) };
+export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
+  const tenantId = resolveTenantIdFromEvent(event);
+  if (!tenantId) {
+    return { statusCode: 403, body: JSON.stringify({ error: "no autenticado" }) };
   }
 
   return {

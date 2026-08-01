@@ -3,9 +3,23 @@ import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 
+import { resolveAgentByApiKeyId } from "../shared/agent.js";
 import { ddb, RAW_BUCKET, ticketKey, ticketStatusGsiKey, TICKETS_TABLE } from "../shared/dynamo.js";
 import { resolveTenantByApiKeyId } from "../shared/tenant.js";
 import { TicketRecord } from "../shared/types.js";
+
+/**
+ * Un agente activado por código (ver `agents/activateHandler.ts`) sube con
+ * su propia api-key, no la del tenant — se prueba esa resolución primero.
+ * La api-key compartida del tenant (onboarding original, `onboard-tenant.ts`)
+ * sigue funcionando como fallback para no romper instalaciones existentes.
+ */
+async function resolveTenantId(apiKeyId: string): Promise<string | undefined> {
+  const agent = await resolveAgentByApiKeyId(apiKeyId);
+  if (agent) return agent.tenantId;
+  const tenant = await resolveTenantByApiKeyId(apiKeyId);
+  return tenant?.tenantId;
+}
 
 const s3 = new S3Client({});
 
@@ -78,8 +92,8 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return { statusCode: 403, body: JSON.stringify({ error: "falta API key" }) };
   }
 
-  const tenant = await resolveTenantByApiKeyId(apiKeyId);
-  if (!tenant) {
+  const tenantId = await resolveTenantId(apiKeyId);
+  if (!tenantId) {
     return { statusCode: 403, body: JSON.stringify({ error: "API key no asociada a ningún tenant" }) };
   }
 
@@ -101,7 +115,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   // procesara el pedido) manda el mismo id, y la escritura condicional de
   // abajo lo detecta como duplicado en vez de crear un ticket nuevo.
   const { ticketId } = validBody;
-  const rawS3Key = `tenants/${tenant.tenantId}/${ticketId}.txt`;
+  const rawS3Key = `tenants/${tenantId}/${ticketId}.txt`;
 
   // Re-subir el mismo contenido a la misma key en un reintento es
   // inofensivo (sobreescribe con bytes idénticos), así que esto no
@@ -116,14 +130,14 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   );
 
   const record: TicketRecord & Record<string, unknown> = {
-    tenantId: tenant.tenantId,
+    tenantId,
     ticketId,
     port: validBody.port,
     capturedAt: validBody.capturedAt,
     status: "pending",
     rawS3Key,
-    ...ticketKey(tenant.tenantId, validBody.capturedAt, ticketId),
-    ...ticketStatusGsiKey(tenant.tenantId, "pending", validBody.capturedAt),
+    ...ticketKey(tenantId, validBody.capturedAt, ticketId),
+    ...ticketStatusGsiKey(tenantId, "pending", validBody.capturedAt),
   };
 
   try {

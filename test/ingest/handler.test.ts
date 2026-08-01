@@ -4,6 +4,7 @@ import type { APIGatewayProxyEvent } from "aws-lambda";
 const mockDdbSend = jest.fn();
 const mockS3Send = jest.fn();
 const mockResolveTenantByApiKeyId = jest.fn();
+const mockResolveAgentByApiKeyId = jest.fn();
 
 jest.mock("../../src/shared/dynamo", () => {
   const actual = jest.requireActual("../../src/shared/dynamo");
@@ -17,6 +18,15 @@ jest.mock("../../src/shared/dynamo", () => {
 
 jest.mock("../../src/shared/tenant", () => ({
   resolveTenantByApiKeyId: (...args: unknown[]) => mockResolveTenantByApiKeyId(...args),
+}));
+
+// Mockeado aparte (no solo vía `ddb`) para no meter una llamada extra a
+// mockDdbSend en cada test existente — la mayoría de los tests de este
+// archivo simulan la api-key COMPARTIDA del tenant, no la de un agente, así
+// que por defecto esto resuelve "no es un agente" y cae al camino de
+// siempre. Los tests específicos del camino de agente lo pisan.
+jest.mock("../../src/shared/agent", () => ({
+  resolveAgentByApiKeyId: (...args: unknown[]) => mockResolveAgentByApiKeyId(...args),
 }));
 
 jest.mock("@aws-sdk/client-s3", () => {
@@ -49,6 +59,8 @@ beforeEach(() => {
   mockDdbSend.mockReset();
   mockS3Send.mockReset();
   mockResolveTenantByApiKeyId.mockReset();
+  mockResolveAgentByApiKeyId.mockReset();
+  mockResolveAgentByApiKeyId.mockResolvedValue(undefined);
 });
 
 test("sin API key: 403, no toca S3 ni DynamoDB", async () => {
@@ -121,4 +133,31 @@ test("un error de DynamoDB que NO es de condición se propaga (no se traga silen
   mockDdbSend.mockRejectedValue(new Error("DynamoDB no disponible"));
 
   await expect(handler(eventWith("key1", VALID_BODY))).rejects.toThrow("DynamoDB no disponible");
+});
+
+// Un robot activado por código (ver agents/activateHandler.ts) sube con su
+// propia api-key, no la del tenant.
+test("api-key de un agente: resuelve el tenantId del agente, ni siquiera consulta la tabla Tenants", async () => {
+  mockResolveAgentByApiKeyId.mockResolvedValue({ tenantId: "t-agente", agentId: "a1", name: "Robot 1", apiKeyId: "agent-key-1", createdAt: "2026-01-01T00:00:00.000Z" });
+  mockS3Send.mockResolvedValue({});
+  mockDdbSend.mockResolvedValue({});
+
+  const result = await handler(eventWith("agent-key-1", VALID_BODY));
+
+  expect(result.statusCode).toBe(202);
+  expect(mockResolveTenantByApiKeyId).not.toHaveBeenCalled();
+  const s3Call = mockS3Send.mock.calls[0][0].input;
+  expect(s3Call.Key).toBe(`tenants/t-agente/${VALID_BODY.ticketId}.txt`);
+  const ddbCall = mockDdbSend.mock.calls[0][0].input;
+  expect(ddbCall.Item.tenantId).toBe("t-agente");
+});
+
+test("api-key que no es de ningún agente NI de ningún tenant: 403", async () => {
+  mockResolveAgentByApiKeyId.mockResolvedValue(undefined);
+  mockResolveTenantByApiKeyId.mockResolvedValue(undefined);
+
+  const result = await handler(eventWith("key-huerfana", VALID_BODY));
+
+  expect(result.statusCode).toBe(403);
+  expect(mockS3Send).not.toHaveBeenCalled();
 });

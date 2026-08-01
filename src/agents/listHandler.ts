@@ -2,18 +2,18 @@ import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 import { resolveTenantIdFromEvent } from "../shared/auth.js";
-import { ddb, WIDGETS_TABLE } from "../shared/dynamo.js";
-import type { WidgetRecord } from "../shared/types.js";
+import { AGENTS_TABLE, ddb } from "../shared/dynamo.js";
+import type { AgentRecord } from "../shared/types.js";
 
-function toPublicWidget(item: WidgetRecord) {
+function toPublicAgent(item: AgentRecord) {
   return {
-    widgetId: item.widgetId,
+    agentId: item.agentId,
     name: item.name,
-    visualization: item.visualization,
-    metric: item.metric,
-    groupBy: item.groupBy,
-    filters: item.filters,
     createdAt: item.createdAt,
+    // Sin heartbeat implementado todavía (ver PROYECTO.md) esto queda
+    // siempre ausente — se deja pasar tal cual en vez de inventar un
+    // estado online/offline que todavía no significa nada.
+    lastSeenAt: item.lastSeenAt,
   };
 }
 
@@ -25,12 +25,12 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
 
   const result = await ddb.send(
     new QueryCommand({
-      TableName: WIDGETS_TABLE,
+      TableName: AGENTS_TABLE,
       KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
-      ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":prefix": "WIDGET#" },
+      ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":prefix": "AGENT#" },
     }),
   );
 
-  const widgets = (result.Items as WidgetRecord[] | undefined)?.map(toPublicWidget) ?? [];
-  return { statusCode: 200, body: JSON.stringify({ widgets }) };
+  const agents = (result.Items as AgentRecord[] | undefined)?.map(toPublicAgent) ?? [];
+  return { statusCode: 200, body: JSON.stringify({ agents }) };
 }

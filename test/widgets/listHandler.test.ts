@@ -1,32 +1,25 @@
-import type { APIGatewayProxyEvent } from "aws-lambda";
+import type { APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 const mockDdbSend = jest.fn();
-const mockResolveTenantByApiKeyId = jest.fn();
 
 jest.mock("../../src/shared/dynamo", () => {
   const actual = jest.requireActual("../../src/shared/dynamo");
   return { ...actual, ddb: { send: (...args: unknown[]) => mockDdbSend(...args) }, WIDGETS_TABLE: "TestWidgets" };
 });
 
-jest.mock("../../src/shared/tenant", () => ({
-  resolveTenantByApiKeyId: (...args: unknown[]) => mockResolveTenantByApiKeyId(...args),
-}));
-
 import { handler } from "../../src/widgets/listHandler";
 
-const validTenant = { tenantId: "t1", businessName: "Negocio", parserId: "example-38col", apiKeyId: "key1", createdAt: "2026-01-01T00:00:00.000Z" };
-
-function eventWith(apiKeyId: string | undefined): APIGatewayProxyEvent {
-  return { requestContext: { identity: { apiKeyId } } } as unknown as APIGatewayProxyEvent;
+function eventWith(tenantId: string | undefined): APIGatewayProxyWithCognitoAuthorizerEvent {
+  return {
+    requestContext: { authorizer: { claims: tenantId ? { "custom:tenantId": tenantId } : {} } },
+  } as unknown as APIGatewayProxyWithCognitoAuthorizerEvent;
 }
 
 beforeEach(() => {
   mockDdbSend.mockReset();
-  mockResolveTenantByApiKeyId.mockReset();
 });
 
 test("lista los widgets del tenant autenticado, consultando por pk+prefijo WIDGET#", async () => {
-  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
   mockDdbSend.mockResolvedValue({
     Items: [
       {
@@ -42,7 +35,7 @@ test("lista los widgets del tenant autenticado, consultando por pk+prefijo WIDGE
     ],
   });
 
-  const result = await handler(eventWith("key1"));
+  const result = await handler(eventWith("t1"));
 
   const query = mockDdbSend.mock.calls[0][0].input;
   expect(query.ExpressionAttributeValues[":pk"]).toBe("TENANT#t1");
@@ -54,7 +47,7 @@ test("lista los widgets del tenant autenticado, consultando por pk+prefijo WIDGE
   expect(body.widgets[0].pk).toBeUndefined();
 });
 
-test("sin API key: 403", async () => {
+test("sin sesión de Cognito (sin claim de tenantId): 403", async () => {
   const result = await handler(eventWith(undefined));
   expect(result.statusCode).toBe(403);
   expect(mockDdbSend).not.toHaveBeenCalled();
