@@ -1,6 +1,7 @@
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 import { resolveTenantIdFromEvent } from "../shared/auth.js";
+import { jsonResponse } from "../shared/http.js";
 import { AGGREGATIONS, CATEGORICAL_FIELDS, EVENT_COUNT_FIELD, NUMERIC_FIELDS } from "./fields.js";
 
 /**
@@ -11,15 +12,12 @@ import { AGGREGATIONS, CATEGORICAL_FIELDS, EVENT_COUNT_FIELD, NUMERIC_FIELDS } f
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
   const tenantId = resolveTenantIdFromEvent(event);
   if (!tenantId) {
-    return { statusCode: 403, body: JSON.stringify({ error: "no autenticado" }) };
+    return jsonResponse(403, { error: "no autenticado" });
   }
 
-  return {
-    statusCode: 200,
-    body: JSON.stringify({
-      numericFields: [...NUMERIC_FIELDS, EVENT_COUNT_FIELD],
-      categoricalFields: CATEGORICAL_FIELDS,
-      aggregations: AGGREGATIONS,
-    }),
-  };
+  return jsonResponse(200, {
+    numericFields: [...NUMERIC_FIELDS, EVENT_COUNT_FIELD],
+    categoricalFields: CATEGORICAL_FIELDS,
+    aggregations: AGGREGATIONS,
+  });
 }

@@ -276,6 +276,30 @@ export class TicketParsingCloudStack extends cdk.Stack {
       },
     });
 
+    // `defaultCorsPreflightOptions` de arriba solo cubre el preflight
+    // (OPTIONS) y las respuestas que arma cada Lambda a mano (ver
+    // `shared/http.ts`). Cualquier respuesta que NO pase por ese código —
+    // un token vencido/inválido rechazado por el authorizer de Cognito
+    // (401/403), o un Lambda que explota antes de llegar a un `return`
+    // (502/500, justo lo que pasó con `WidgetsDataFunction` la primera vez
+    // que Athena tardó de más) — sale directo de API Gateway sin el header
+    // CORS, y el navegador la bloquea igual mostrando "Failed to fetch" en
+    // vez del error real.
+    for (const responseType of [
+      apigateway.ResponseType.UNAUTHORIZED,
+      apigateway.ResponseType.ACCESS_DENIED,
+      apigateway.ResponseType.DEFAULT_4XX,
+      apigateway.ResponseType.DEFAULT_5XX,
+    ]) {
+      api.addGatewayResponse(`GatewayResponse${responseType.responseType}`, {
+        type: responseType,
+        responseHeaders: {
+          "Access-Control-Allow-Origin": "'*'",
+          "Access-Control-Allow-Headers": "'Authorization,Content-Type'",
+        },
+      });
+    }
+
     // Nombre fijo, no el id autogenerado del recurso — `AgentsActivateFunction`
     // necesita identificar este usage plan, pero es UN método de la MISMA
     // api (`/agents/activate`), así que pasarle `usagePlan.usagePlanId`
@@ -542,6 +566,22 @@ export class TicketParsingCloudStack extends cdk.Stack {
       environment: { ACTIVATION_CODES_TABLE: activationCodesTable.tableName },
     });
 
+    const agentsHeartbeatFn = new nodejs.NodejsFunction(this, "AgentsHeartbeatFunction", {
+      entry: "src/agents/heartbeatHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: { AGENTS_TABLE: agentsTable.tableName },
+    });
+
+    const agentsUpdateLocationFn = new nodejs.NodejsFunction(this, "AgentsUpdateLocationFunction", {
+      entry: "src/agents/updateLocationHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: { AGENTS_TABLE: agentsTable.tableName },
+    });
+
     // Acciones de plano de control de API Gateway (no son sobre un recurso
     // de negocio como una tabla, son sobre la API misma) — el formato de
     // recurso de IAM de API Gateway es "método HTTP + path", no un ARN de
@@ -570,6 +610,8 @@ export class TicketParsingCloudStack extends cdk.Stack {
     activationCodesTable.grantReadWriteData(activateFn);
     agentsTable.grantReadData(agentsListFn);
     activationCodesTable.grantReadData(agentsCodesFn);
+    agentsTable.grantReadWriteData(agentsHeartbeatFn);
+    agentsTable.grantReadWriteData(agentsUpdateLocationFn);
 
     // ---- API Gateway: rutas ---------------------------------------------
 
@@ -607,6 +649,13 @@ export class TicketParsingCloudStack extends cdk.Stack {
     // público. Ver agents/activateHandler.ts.
     const agentsActivate = agents.addResource("activate");
     agentsActivate.addMethod("POST", new apigateway.LambdaIntegration(activateFn), { apiKeyRequired: false });
+
+    const agentsHeartbeat = agents.addResource("heartbeat");
+    agentsHeartbeat.addMethod("POST", new apigateway.LambdaIntegration(agentsHeartbeatFn), { apiKeyRequired: true });
+
+    const agentById = agents.addResource("{agentId}");
+    const agentLocation = agentById.addResource("location");
+    agentLocation.addMethod("PATCH", new apigateway.LambdaIntegration(agentsUpdateLocationFn), dashboardAuth);
 
     const activationCodes = api.root.addResource("activation-codes");
     activationCodes.addMethod("GET", new apigateway.LambdaIntegration(agentsCodesFn), dashboardAuth);

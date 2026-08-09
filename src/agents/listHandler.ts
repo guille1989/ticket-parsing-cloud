@@ -3,6 +3,7 @@ import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent }
 
 import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { AGENTS_TABLE, ddb } from "../shared/dynamo.js";
+import { jsonResponse } from "../shared/http.js";
 import type { AgentRecord } from "../shared/types.js";
 
 function toPublicAgent(item: AgentRecord) {
@@ -10,17 +11,16 @@ function toPublicAgent(item: AgentRecord) {
     agentId: item.agentId,
     name: item.name,
     createdAt: item.createdAt,
-    // Sin heartbeat implementado todavía (ver PROYECTO.md) esto queda
-    // siempre ausente — se deja pasar tal cual en vez de inventar un
-    // estado online/offline que todavía no significa nada.
     lastSeenAt: item.lastSeenAt,
+    version: item.version,
+    location: item.location,
   };
 }
 
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
   const tenantId = resolveTenantIdFromEvent(event);
   if (!tenantId) {
-    return { statusCode: 403, body: JSON.stringify({ error: "no autenticado" }) };
+    return jsonResponse(403, { error: "no autenticado" });
   }
 
   const result = await ddb.send(
@@ -32,5 +32,5 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   );
 
   const agents = (result.Items as AgentRecord[] | undefined)?.map(toPublicAgent) ?? [];
-  return { statusCode: 200, body: JSON.stringify({ agents }) };
+  return jsonResponse(200, { agents });
 }

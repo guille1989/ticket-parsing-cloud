@@ -78,9 +78,40 @@ export function buildWidgetQuery(widget: WidgetRecord): AthenaQuery {
   return buildDirectQuery(from, whereClause, params, `${aggSql}(${column})`, widget.groupBy);
 }
 
+// `capturedat` (usado en los filtros de fecha de abajo) es una columna
+// normal, no una de partición — filtrar solo por ella no le dice nada a
+// Athena sobre qué particiones puede saltear. Sin acotar `year` (columna
+// de partición de verdad), la proyección declarada en el stack
+// (2024-2035 × 12 meses × 31 días — ver `analyticsTable` en
+// ticket-parsing-cloud-stack.ts) obliga a Athena a barrer ~4500
+// particiones por tenant así no haya un tenant nuevo con un solo ticket
+// de hoy — eso fue justo lo que causó el timeout de 20s la primera vez
+// que se probó un widget de verdad.
+//
+// `CAST(year AS VARCHAR)`, no `year` a secas: la tabla de Glue declara la
+// columna `year` como `string` (`partitionKeys` en el stack), pero la
+// proyección de particiones la define con `"projection.year.type":
+// "integer"` — Athena arma el plan de la consulta según ESE tipo
+// proyectado. Y el CAST hace falta en LOS DOS lados: los `?` de
+// `ExecutionParameters` no viajan como varchar solo por estar declarados
+// como `string[]` acá — Athena infiere el tipo de cada parámetro por su
+// forma literal ("2025" se infiere como integer, con CAST o sin él del
+// otro lado), así que sin castear el parámetro también tira
+// `TYPE_MISMATCH: Cannot apply operator: varchar <= integer` igual.
+// Confirmado reproduciendo el mismo `EXECUTE ... USING` que usa el Lambda
+// (vía `--execution-parameters` sin comillas) contra Athena real.
+const DEFAULT_YEAR_LOOKBACK = 1;
+
 function buildWhere(widget: WidgetRecord): { whereClause: string; params: string[] } {
   const params: string[] = [widget.tenantId];
   const conditions = ["tenant = ?"];
+
+  const fromYear = widget.filters?.dateFrom
+    ? new Date(widget.filters.dateFrom).getUTCFullYear()
+    : new Date().getUTCFullYear() - DEFAULT_YEAR_LOOKBACK;
+  const toYear = widget.filters?.dateTo ? new Date(widget.filters.dateTo).getUTCFullYear() : new Date().getUTCFullYear();
+  conditions.push("CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR)");
+  params.push(String(fromYear), String(toYear));
 
   if (widget.filters?.dateFrom) {
     conditions.push("capturedat >= ?");

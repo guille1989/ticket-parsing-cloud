@@ -77,6 +77,13 @@ export interface AgentRecord {
   apiKeyId: string;
   createdAt: string;
   lastSeenAt?: string;
+  version?: string;
+  location?: {
+    label?: string;
+    city?: string;
+    lat?: number;
+    lng?: number;
+  };
 }
 
 /**

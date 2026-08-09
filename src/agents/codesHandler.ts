@@ -3,6 +3,7 @@ import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent }
 
 import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { ACTIVATION_CODES_TABLE, ddb } from "../shared/dynamo.js";
+import { jsonResponse } from "../shared/http.js";
 import type { ActivationCodeRecord } from "../shared/types.js";
 
 const TENANT_INDEX = "tenantId-index";
@@ -26,7 +27,7 @@ function toPublicCode(item: ActivationCodeRecord) {
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
   const tenantId = resolveTenantIdFromEvent(event);
   if (!tenantId) {
-    return { statusCode: 403, body: JSON.stringify({ error: "no autenticado" }) };
+    return jsonResponse(403, { error: "no autenticado" });
   }
 
   const result = await ddb.send(
@@ -39,5 +40,5 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   );
 
   const codes = (result.Items as ActivationCodeRecord[] | undefined)?.map(toPublicCode) ?? [];
-  return { statusCode: 200, body: JSON.stringify({ codes }) };
+  return jsonResponse(200, { codes });
 }

@@ -3,6 +3,7 @@ import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent }
 
 import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, TICKETS_TABLE } from "../shared/dynamo.js";
+import { jsonResponse } from "../shared/http.js";
 import { TicketRecord, TicketStatus } from "../shared/types.js";
 
 const MAX_LIMIT = 100;
@@ -52,16 +53,13 @@ function toPublicTicket(item: TicketRecord) {
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
   const tenantId = resolveTenantIdFromEvent(event);
   if (!tenantId) {
-    return { statusCode: 403, body: JSON.stringify({ error: "no autenticado" }) };
+    return jsonResponse(403, { error: "no autenticado" });
   }
 
   const params = event.queryStringParameters ?? {};
   const status = params.status;
   if (status && !VALID_STATUSES.includes(status as TicketStatus)) {
-    return {
-      statusCode: 400,
-      body: JSON.stringify({ error: `status inválido, se esperaba uno de: ${VALID_STATUSES.join(", ")}` }),
-    };
+    return jsonResponse(400, { error: `status inválido, se esperaba uno de: ${VALID_STATUSES.join(", ")}` });
   }
 
   const limit = parseLimit(params.limit);
@@ -92,8 +90,5 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
 
   const tickets = (result.Items as TicketRecord[] | undefined)?.map(toPublicTicket) ?? [];
 
-  return {
-    statusCode: 200,
-    body: JSON.stringify({ tickets, nextCursor: encodeCursor(result.LastEvaluatedKey) }),
-  };
+  return jsonResponse(200, { tickets, nextCursor: encodeCursor(result.LastEvaluatedKey) });
 }

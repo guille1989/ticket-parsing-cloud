@@ -5,6 +5,7 @@ import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent }
 
 import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
+import { jsonResponse } from "../shared/http.js";
 import type { WidgetAggregation, WidgetFilters, WidgetRecord, WidgetVisualization } from "../shared/types.js";
 import { AGGREGATIONS, CATEGORICAL_FIELDS, isTicketLevelField, isValidAggregation, isValidGroupByField, isValidMetricField } from "./fields.js";
 
@@ -107,19 +108,19 @@ function validateBody(body: unknown): Validation {
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
   const tenantId = resolveTenantIdFromEvent(event);
   if (!tenantId) {
-    return { statusCode: 403, body: JSON.stringify({ error: "no autenticado" }) };
+    return jsonResponse(403, { error: "no autenticado" });
   }
 
   let body: unknown;
   try {
     body = event.body ? JSON.parse(event.body) : null;
   } catch {
-    return { statusCode: 400, body: JSON.stringify({ error: "body inválido, se esperaba JSON" }) };
+    return jsonResponse(400, { error: "body inválido, se esperaba JSON" });
   }
 
   const validation = validateBody(body);
   if (!validation.ok) {
-    return { statusCode: 400, body: JSON.stringify({ error: validation.error }) };
+    return jsonResponse(400, { error: validation.error });
   }
 
   const widget: WidgetRecord = {
@@ -136,5 +137,5 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
     }),
   );
 
-  return { statusCode: 201, body: JSON.stringify(widget) };
+  return jsonResponse(201, widget);
 }

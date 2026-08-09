@@ -29,7 +29,7 @@ test("lista los agentes del tenant, recortados a campos públicos", async () => 
   mockDdbSend.mockResolvedValue({
     Items: [
       { tenantId: "t1", agentId: "a1", name: "Caja 1", apiKeyId: "internal-key-1", createdAt: "2026-01-01T00:00:00.000Z" },
-      { tenantId: "t1", agentId: "a2", name: "Caja 2", apiKeyId: "internal-key-2", createdAt: "2026-01-02T00:00:00.000Z", lastSeenAt: "2026-01-03T00:00:00.000Z" },
+      { tenantId: "t1", agentId: "a2", name: "Caja 2", apiKeyId: "internal-key-2", createdAt: "2026-01-02T00:00:00.000Z", lastSeenAt: "2026-01-03T00:00:00.000Z", version: "0.1.0", location: { city: "Madrid" } },
     ],
   });
 
@@ -38,8 +38,8 @@ test("lista los agentes del tenant, recortados a campos públicos", async () => 
   expect(result.statusCode).toBe(200);
   const body = JSON.parse(result.body);
   expect(body.agents).toEqual([
-    { agentId: "a1", name: "Caja 1", createdAt: "2026-01-01T00:00:00.000Z", lastSeenAt: undefined },
-    { agentId: "a2", name: "Caja 2", createdAt: "2026-01-02T00:00:00.000Z", lastSeenAt: "2026-01-03T00:00:00.000Z" },
+    { agentId: "a1", name: "Caja 1", createdAt: "2026-01-01T00:00:00.000Z", lastSeenAt: undefined, version: undefined, location: undefined },
+    { agentId: "a2", name: "Caja 2", createdAt: "2026-01-02T00:00:00.000Z", lastSeenAt: "2026-01-03T00:00:00.000Z", version: "0.1.0", location: { city: "Madrid" } },
   ]);
   // Nunca se expone el apiKeyId interno de cada agente.
   expect(JSON.stringify(body)).not.toContain("internal-key");

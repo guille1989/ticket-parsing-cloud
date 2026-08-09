@@ -3,6 +3,7 @@ import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent }
 
 import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, WIDGETS_TABLE } from "../shared/dynamo.js";
+import { jsonResponse } from "../shared/http.js";
 import type { WidgetRecord } from "../shared/types.js";
 
 function toPublicWidget(item: WidgetRecord) {
@@ -20,7 +21,7 @@ function toPublicWidget(item: WidgetRecord) {
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
   const tenantId = resolveTenantIdFromEvent(event);
   if (!tenantId) {
-    return { statusCode: 403, body: JSON.stringify({ error: "no autenticado" }) };
+    return jsonResponse(403, { error: "no autenticado" });
   }
 
   const result = await ddb.send(
@@ -32,5 +33,5 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   );
 
   const widgets = (result.Items as WidgetRecord[] | undefined)?.map(toPublicWidget) ?? [];
-  return { statusCode: 200, body: JSON.stringify({ widgets }) };
+  return jsonResponse(200, { widgets });
 }

@@ -1,6 +1,14 @@
 import { buildWidgetQuery } from "../../src/widgets/queryBuilder";
 import type { WidgetRecord } from "../../src/shared/types";
 
+// Sin `dateFrom`/`dateTo` explícitos, el año por default sale de "ahora"
+// (ver DEFAULT_YEAR_LOOKBACK en queryBuilder.ts) — se calcula acá igual
+// que en el código para no hardcodear un año que se rompería con el
+// tiempo.
+const CURRENT_YEAR = new Date().getUTCFullYear();
+const DEFAULT_FROM_YEAR = String(CURRENT_YEAR - 1);
+const DEFAULT_TO_YEAR = String(CURRENT_YEAR);
+
 function widget(overrides: Partial<WidgetRecord> = {}): WidgetRecord {
   return {
     tenantId: "t1",
@@ -19,8 +27,8 @@ test("KPI sin groupBy, campo por ítem: una sola fila, agregación directa sin s
     widget({ visualization: "kpi", groupBy: undefined, metric: { field: "subtotal", aggregation: "sum" } }),
   );
 
-  expect(sql).toBe("SELECT SUM(subtotal) AS value FROM ticket_analytics.ticket_items WHERE tenant = ?");
-  expect(params).toEqual(["t1"]);
+  expect(sql).toBe("SELECT SUM(subtotal) AS value FROM ticket_analytics.ticket_items WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR)");
+  expect(params).toEqual(["t1", DEFAULT_FROM_YEAR, DEFAULT_TO_YEAR]);
 });
 
 // total/discount/tip vienen repetidos una vez por ítem del ticket al que
@@ -33,9 +41,10 @@ test("KPI sin groupBy, campo de TICKET (total/discount/tip): colapsa por ticketi
   );
 
   expect(sql).toBe(
-    "SELECT SUM(total) AS value FROM (SELECT ticketid, MAX(total) AS total FROM ticket_analytics.ticket_items WHERE tenant = ? GROUP BY ticketid)",
+    "SELECT SUM(total) AS value FROM (SELECT ticketid, MAX(total) AS total FROM ticket_analytics.ticket_items " +
+      "WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) GROUP BY ticketid)",
   );
-  expect(params).toEqual(["t1"]);
+  expect(params).toEqual(["t1", DEFAULT_FROM_YEAR, DEFAULT_TO_YEAR]);
 });
 
 test("bar/donut con groupBy y campo de TICKET: colapsa por (ticketid, groupBy) antes de agrupar afuera", () => {
@@ -45,7 +54,7 @@ test("bar/donut con groupBy y campo de TICKET: colapsa por (ticketid, groupBy) a
 
   expect(sql).toBe(
     "SELECT port AS label, SUM(total) AS value FROM (SELECT ticketid, port, MAX(total) AS total " +
-      "FROM ticket_analytics.ticket_items WHERE tenant = ? GROUP BY ticketid, port) " +
+      "FROM ticket_analytics.ticket_items WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) GROUP BY ticketid, port) " +
       "GROUP BY port ORDER BY value DESC LIMIT 50",
   );
 });
@@ -81,22 +90,26 @@ test("event_count siempre es COUNT(DISTINCT ticketid), sin importar la agregaci�
   expect(sql).not.toContain("AVG");
 });
 
-test("cada filtro presente agrega su condición y su parámetro, en orden", () => {
+test("cada filtro presente agrega su condición y su parámetro, en orden — el año sale de dateFrom/dateTo", () => {
   const { sql, params } = buildWidgetQuery(
     widget({
       filters: { dateFrom: "2026-07-01", dateTo: "2026-07-31", port: "COM3", status: "parsed" },
     }),
   );
 
-  expect(sql).toContain("tenant = ? AND capturedat >= ? AND capturedat <= ? AND port = ? AND status = ?");
-  expect(params).toEqual(["t1", "2026-07-01", "2026-07-31", "COM3", "parsed"]);
+  expect(sql).toContain("tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND capturedat >= ? AND capturedat <= ? AND port = ? AND status = ?");
+  expect(params).toEqual(["t1", "2026", "2026", "2026-07-01", "2026-07-31", "COM3", "parsed"]);
 });
 
-test("sin filtros, solo el tenant va como condición", () => {
+// Acota la proyección de particiones de Athena a un rango chico (ver el
+// comentario sobre DEFAULT_YEAR_LOOKBACK) — sin esto, un tenant nuevo con
+// un solo ticket de hoy obligaba a Athena a barrer ~4500 particiones
+// proyectadas (2024-2035 × 12 × 31) y tardaba más de 20s.
+test("sin filtros explícitos, igual acota por año (para no barrer toda la proyección de Athena)", () => {
   const { sql, params } = buildWidgetQuery(widget({ filters: undefined }));
-  expect(sql).toContain("WHERE tenant = ?");
+  expect(sql).toContain("WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR)");
   expect(sql).not.toMatch(/capturedat|port =|status =/);
-  expect(params).toEqual(["t1"]);
+  expect(params).toEqual(["t1", DEFAULT_FROM_YEAR, DEFAULT_TO_YEAR]);
 });
 
 test("los VALORES de los filtros nunca se interpolan directo en el SQL — siempre van como parámetro", () => {
