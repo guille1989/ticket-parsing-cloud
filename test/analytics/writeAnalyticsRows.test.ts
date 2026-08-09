@@ -42,7 +42,7 @@ test("escribe la key particionada por tenant/año/mes/día", async () => {
   const call = mockS3Send.mock.calls[0][0] as PutObjectCommand;
   expect(call).toBeInstanceOf(PutObjectCommand);
   expect(call.input.Bucket).toBe("analytics-bucket");
-  expect(call.input.Key).toBe("tenant=t1/year=2026/month=07/day=29/tk1.jsonl");
+  expect(call.input.Key).toBe("tenant=t1/year=2026/month=07/tk1.jsonl");
 });
 
 test("una fila por ítem, con los datos del ticket denormalizados en cada una", async () => {

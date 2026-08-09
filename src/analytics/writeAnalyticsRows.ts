@@ -16,8 +16,10 @@ export interface AnalyticsTicketContext {
 
 /**
  * Escribe una fila por ítem del ticket a S3, en el layout particionado
- * (tenant=/year=/month=/day=/) que espera la tabla de Glue con partition
- * projection — ver `ticket-parsing-cloud-stack.ts`. Es una copia aplanada
+ * (tenant=/year=/month=/) que espera la tabla de Glue con partition
+ * projection — ver `ticket-parsing-cloud-stack.ts`. Sin partición por día
+ * a propósito (ver comentario ahí) — el dato de fecha exacta sigue en la
+ * columna `capturedat` de cada fila. Es una copia aplanada
  * de solo lectura para Athena, no reemplaza a DynamoDB: sigue siendo la
  * fuente de verdad operacional, esto es solo para agregaciones/reportes.
  *
@@ -33,7 +35,6 @@ export async function writeAnalyticsRows(
   const capturedAt = new Date(ctx.capturedAt);
   const year = capturedAt.getUTCFullYear();
   const month = String(capturedAt.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(capturedAt.getUTCDate()).padStart(2, "0");
 
   const rows = parsed.items.map((item) =>
     JSON.stringify({
@@ -57,7 +58,7 @@ export async function writeAnalyticsRows(
     }),
   );
 
-  const key = `tenant=${ctx.tenantId}/year=${year}/month=${month}/day=${day}/${ctx.ticketId}.jsonl`;
+  const key = `tenant=${ctx.tenantId}/year=${year}/month=${month}/${ctx.ticketId}.jsonl`;
 
   await s3.send(
     new PutObjectCommand({

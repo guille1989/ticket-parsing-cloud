@@ -143,10 +143,24 @@ export class TicketParsingCloudStack extends cdk.Stack {
     });
 
     // Partition projection en vez de un Glue Crawler: Athena calcula las
-    // particiones (tenant/año/mes/día) a partir del patrón de abajo, sin
-    // nada corriendo programado que las descubra — coherente con el resto
-    // del sistema, serverless de verdad, sin infraestructura siempre
-    // prendida.
+    // particiones (tenant/año/mes) a partir del patrón de abajo, sin nada
+    // corriendo programado que las descubra — coherente con el resto del
+    // sistema, serverless de verdad, sin infraestructura siempre prendida.
+    //
+    // Sin partición por día a propósito (se sacó 2026-08-09): con
+    // proyección sintética, Athena no sabe qué particiones existen de
+    // verdad — ante una query sin filtro de partición que la acote, hace un
+    // LIST a S3 por CADA combinación posible del rango declarado para ver
+    // si hay algo ahí. Con año+mes+día eso eran 2 años × 12 meses × 31 días
+    // ≈ 744 LIST por query (la inmensa mayoría a carpetas vacías, dado el
+    // volumen real de tickets) — eso fue lo que disparó el costo de S3 a
+    // principios de agosto (~2.3M requests en 9 días, ver PROYECTO.md
+    // sección 10.1).
+    // Sacando `day`, el rango baja a 2 × 12 = 24 combinaciones por query.
+    // El dato del día no se pierde — sigue en la columna `capturedat` de
+    // cada fila, así que un filtro por fecha exacta sigue funcionando, solo
+    // que ya no poda carpetas por día, lee el contenido del mes entero
+    // (volumen bajo, no importa).
     const analyticsTable = new glue.CfnTable(this, "AnalyticsTable", {
       catalogId: this.account,
       databaseName: analyticsDatabaseName,
@@ -162,16 +176,12 @@ export class TicketParsingCloudStack extends cdk.Stack {
           "projection.month.type": "integer",
           "projection.month.range": "1,12",
           "projection.month.digits": "2",
-          "projection.day.type": "integer",
-          "projection.day.range": "1,31",
-          "projection.day.digits": "2",
-          "storage.location.template": `s3://${analyticsBucket.bucketName}/tenant=\${tenant}/year=\${year}/month=\${month}/day=\${day}/`,
+          "storage.location.template": `s3://${analyticsBucket.bucketName}/tenant=\${tenant}/year=\${year}/month=\${month}/`,
         },
         partitionKeys: [
           { name: "tenant", type: "string" },
           { name: "year", type: "string" },
           { name: "month", type: "string" },
-          { name: "day", type: "string" },
         ],
         storageDescriptor: {
           location: `s3://${analyticsBucket.bucketName}/`,

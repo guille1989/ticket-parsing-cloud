@@ -82,11 +82,13 @@ export function buildWidgetQuery(widget: WidgetRecord): AthenaQuery {
 // normal, no una de partición — filtrar solo por ella no le dice nada a
 // Athena sobre qué particiones puede saltear. Sin acotar `year` (columna
 // de partición de verdad), la proyección declarada en el stack
-// (2024-2035 × 12 meses × 31 días — ver `analyticsTable` en
-// ticket-parsing-cloud-stack.ts) obliga a Athena a barrer ~4500
+// (2024-2035 × 12 meses — ver `analyticsTable` en
+// ticket-parsing-cloud-stack.ts) obliga a Athena a barrer ~140
 // particiones por tenant así no haya un tenant nuevo con un solo ticket
 // de hoy — eso fue justo lo que causó el timeout de 20s la primera vez
-// que se probó un widget de verdad.
+// que se probó un widget de verdad. (Hasta 2026-08-09 también existía
+// partición por día, que multiplicaba esto x31 — ver PROYECTO.md sección
+// 10.1 sobre el costo de S3 que generó.)
 //
 // `CAST(year AS VARCHAR)`, no `year` a secas: la tabla de Glue declara la
 // columna `year` como `string` (`partitionKeys` en el stack), pero la

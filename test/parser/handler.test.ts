@@ -334,7 +334,7 @@ test("con ANALYTICS_BUCKET seteada, escribe la fila de analítica a S3 después 
   const putCall = mockS3Send.mock.calls.find((call) => call[0].input?.Body !== undefined);
   expect(putCall).toBeDefined();
   expect(putCall![0].input.Bucket).toBe("test-analytics-bucket");
-  expect(putCall![0].input.Key).toMatch(/^tenant=t1\/year=\d{4}\/month=\d{2}\/day=\d{2}\/tk1\.jsonl$/);
+  expect(putCall![0].input.Key).toMatch(/^tenant=t1\/year=\d{4}\/month=\d{2}\/tk1\.jsonl$/);
 });
 
 test("sin ANALYTICS_BUCKET, no intenta escribir analítica", async () => {
