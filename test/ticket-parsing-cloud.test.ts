@@ -8,9 +8,9 @@ test("el stack sintetiza con las piezas clave del pipeline multi-tenant", () => 
   const stack = new TicketParsingCloudStack(app, "TestStack");
   const template = Template.fromStack(stack);
 
-  template.resourceCountIs("AWS::DynamoDB::GlobalTable", 5); // Tickets + Tenants + Widgets + Agents + ActivationCodes
+  template.resourceCountIs("AWS::DynamoDB::GlobalTable", 6); // Tickets + Tenants + Widgets + Agents + ActivationCodes + AssistantUsage
   template.resourceCountIs("AWS::SQS::Queue", 1); // solo la DLQ del parseo — el trigger es el Stream, no una cola
-  template.resourceCountIs("AWS::Lambda::Function", 13); // ingest + parser + read + 5 widgets + 5 agents
+  template.resourceCountIs("AWS::Lambda::Function", 14); // ingest + parser + read + 5 widgets + 5 agents + assistant ask
   template.resourceCountIs("AWS::Lambda::EventSourceMapping", 1); // parser suscripto al Stream de Tickets
   template.resourceCountIs("AWS::Cognito::UserPool", 1);
   template.resourceCountIs("AWS::Cognito::UserPoolClient", 1);

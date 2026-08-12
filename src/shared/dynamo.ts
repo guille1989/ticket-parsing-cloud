@@ -8,6 +8,7 @@ export const TENANTS_TABLE = process.env.TENANTS_TABLE ?? "";
 export const WIDGETS_TABLE = process.env.WIDGETS_TABLE ?? "";
 export const AGENTS_TABLE = process.env.AGENTS_TABLE ?? "";
 export const ACTIVATION_CODES_TABLE = process.env.ACTIVATION_CODES_TABLE ?? "";
+export const ASSISTANT_USAGE_TABLE = process.env.ASSISTANT_USAGE_TABLE ?? "";
 export const RAW_BUCKET = process.env.RAW_BUCKET ?? "";
 export const ANALYTICS_BUCKET = process.env.ANALYTICS_BUCKET ?? "";
 export const ATHENA_WORKGROUP = process.env.ATHENA_WORKGROUP ?? "";

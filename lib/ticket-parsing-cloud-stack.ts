@@ -8,6 +8,7 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as destinations from "aws-cdk-lib/aws-lambda-destinations";
 import * as nodejs from "aws-cdk-lib/aws-lambda-nodejs";
+import * as logs from "aws-cdk-lib/aws-logs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
@@ -109,6 +110,15 @@ export class TicketParsingCloudStack extends cdk.Stack {
           partitionKey: { name: "tenantId", type: dynamodb.AttributeType.STRING },
         },
       ],
+    });
+
+    // AssistantUsage: contador de rate limit por tenant para /assistant/ask
+    // (sección 13 de PROYECTO.md) — PK = TENANT#<id>#WINDOW#MIN|DAY#<bucket>,
+    // sin SK, un item por ventana. TTL propio (no un job de limpieza): cada
+    // item expira solo apenas termina su ventana. Ver `assistant/rateLimit.ts`.
+    const assistantUsageTable = new dynamodb.TableV2(this, "AssistantUsageTable", {
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: "ttl",
     });
 
     // ---- Analítica: copia aplanada en S3 para consultar con Athena -----
@@ -347,6 +357,73 @@ export class TicketParsingCloudStack extends cdk.Stack {
     const bedrockBaseModelId = "anthropic.claude-haiku-4-5-20251001-v1:0";
     const bedrockModelId = `us.${bedrockBaseModelId}`;
 
+    // Usado por ParserFunction (fallback de parseo) y AssistantAskFunction
+    // (chat de datos, sección 13 de PROYECTO.md) — mismo modelo, mismos
+    // permisos, factorizado acá para no duplicar el ARN del inference
+    // profile ni el entitlement de Marketplace en dos lugares.
+    const grantBedrockInvoke = (fn: nodejs.NodejsFunction) => {
+      // Se necesita permiso sobre el inference profile (el recurso que de
+      // hecho se invoca, sí es de esta cuenta) Y sobre el foundation model
+      // base en cada región a la que el profile "us." puede despachar (esas
+      // sí son un recurso compartido de la cuenta de servicio de Bedrock,
+      // sin account ID en el ARN) — si falta cualquiera de los dos, Bedrock
+      // rechaza la invocación según a qué región termine ruteando.
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["bedrock:InvokeModel"],
+          resources: [
+            `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${bedrockModelId}`,
+            `arn:aws:bedrock:us-east-1::foundation-model/${bedrockBaseModelId}`,
+            `arn:aws:bedrock:us-east-2::foundation-model/${bedrockBaseModelId}`,
+            `arn:aws:bedrock:us-west-2::foundation-model/${bedrockBaseModelId}`,
+          ],
+        }),
+      );
+
+      // Los modelos de Anthropic en Bedrock se distribuyen vía una
+      // suscripción de AWS Marketplace por detrás — sin esto, InvokeModel
+      // rechaza con "AccessDeniedException: ... aws-marketplace:ViewSubscriptions,
+      // aws-marketplace:Subscribe ..." bajo ráfagas de llamadas seguidas. Son
+      // acciones de entitlement a nivel de cuenta, no de un recurso puntual
+      // — de ahí el "*".
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"],
+          resources: ["*"],
+        }),
+      );
+    };
+
+    // Usado por WidgetsDataFunction y AssistantAskFunction (herramienta
+    // `run_widget_query`, sección 13 de PROYECTO.md) — ambos corren la misma
+    // consulta de Athena contra `ticket_items`, factorizado para no duplicar
+    // el bloque de permisos en dos lugares.
+    const grantAnalyticsQueryAccess = (fn: nodejs.NodejsFunction) => {
+      // Athena ejecuta la consulta con las credenciales de quien la dispara
+      // (este Lambda), no con un rol propio — así que acá van los permisos
+      // que en RDS estarían implícitos en la conexión: leer el catálogo de
+      // Glue, leer los datos fuente en S3, y escribir/leer en el bucket de
+      // resultados de Athena (lo exige el servicio, no es opcional).
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:GetWorkGroup"],
+          resources: [`arn:aws:athena:${this.region}:${this.account}:workgroup/${athenaWorkGroupName}`],
+        }),
+      );
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["glue:GetTable", "glue:GetDatabase", "glue:GetPartitions"],
+          resources: [
+            `arn:aws:glue:${this.region}:${this.account}:catalog`,
+            `arn:aws:glue:${this.region}:${this.account}:database/${analyticsDatabaseName}`,
+            `arn:aws:glue:${this.region}:${this.account}:table/${analyticsDatabaseName}/${analyticsTableName}`,
+          ],
+        }),
+      );
+      analyticsBucket.grantRead(fn);
+      athenaResultsBucket.grantReadWrite(fn);
+    };
+
     const ingestFn = new nodejs.NodejsFunction(this, "IngestFunction", {
       entry: "src/ingest/handler.ts",
       runtime: nodeRuntime,
@@ -455,36 +532,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
       }),
     );
 
-    // Se necesita permiso sobre el inference profile (el recurso que de
-    // hecho se invoca, sí es de esta cuenta) Y sobre el foundation model
-    // base en cada región a la que el profile "us." puede despachar (esas
-    // sí son un recurso compartido de la cuenta de servicio de Bedrock, sin
-    // account ID en el ARN) — si falta cualquiera de los dos, Bedrock
-    // rechaza la invocación según a qué región termine ruteando.
-    parserFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["bedrock:InvokeModel"],
-        resources: [
-          `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${bedrockModelId}`,
-          `arn:aws:bedrock:us-east-1::foundation-model/${bedrockBaseModelId}`,
-          `arn:aws:bedrock:us-east-2::foundation-model/${bedrockBaseModelId}`,
-          `arn:aws:bedrock:us-west-2::foundation-model/${bedrockBaseModelId}`,
-        ],
-      }),
-    );
-
-    // Los modelos de Anthropic en Bedrock se distribuyen vía una
-    // suscripción de AWS Marketplace por detrás — sin esto, InvokeModel
-    // rechaza con "AccessDeniedException: ... aws-marketplace:ViewSubscriptions,
-    // aws-marketplace:Subscribe ..." bajo ráfagas de llamadas seguidas
-    // (se vio recién al mandar varios tickets juntos). Son acciones de
-    // entitlement a nivel de cuenta, no de un recurso puntual — de ahí el "*".
-    parserFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["aws-marketplace:ViewSubscriptions", "aws-marketplace:Subscribe"],
-        resources: ["*"],
-      }),
-    );
+    grantBedrockInvoke(parserFn);
 
     new lambda.EventSourceMapping(this, "ParserStreamSource", {
       target: parserFn,
@@ -514,30 +562,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
     widgetsTable.grantReadData(widgetsListFn);
     widgetsTable.grantWriteData(widgetsDeleteFn); // DeleteItem cae bajo permisos de escritura
     widgetsTable.grantReadData(widgetsDataFn);
-
-    // Athena ejecuta la consulta con las credenciales de quien la dispara
-    // (este Lambda), no con un rol propio — así que acá van los permisos
-    // que en RDS estarían implícitos en la conexión: leer el catálogo de
-    // Glue, leer los datos fuente en S3, y escribir/leer en el bucket de
-    // resultados de Athena (lo exige el servicio, no es opcional).
-    widgetsDataFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:GetWorkGroup"],
-        resources: [`arn:aws:athena:${this.region}:${this.account}:workgroup/${athenaWorkGroupName}`],
-      }),
-    );
-    widgetsDataFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["glue:GetTable", "glue:GetDatabase", "glue:GetPartitions"],
-        resources: [
-          `arn:aws:glue:${this.region}:${this.account}:catalog`,
-          `arn:aws:glue:${this.region}:${this.account}:database/${analyticsDatabaseName}`,
-          `arn:aws:glue:${this.region}:${this.account}:table/${analyticsDatabaseName}/${analyticsTableName}`,
-        ],
-      }),
-    );
-    analyticsBucket.grantRead(widgetsDataFn);
-    athenaResultsBucket.grantReadWrite(widgetsDataFn);
+    grantAnalyticsQueryAccess(widgetsDataFn);
 
     // ---- Agentes: activación por código de un solo uso -----------------
     //
@@ -615,6 +640,53 @@ export class TicketParsingCloudStack extends cdk.Stack {
       }),
     );
 
+    // ---- Asistente de datos (chat) --------------------------------------
+    //
+    // Fase 2 (PROYECTO.md sección 13): además del circuito Cognito → Lambda
+    // → Bedrock de la Fase 1, el modelo ahora tiene tool-use sobre dos
+    // herramientas acotadas — `run_widget_query` (misma consulta whitelisted
+    // que usan los widgets, nunca SQL libre del modelo) y `list_tickets`
+    // (mismo query que `read/handler.ts`, recortado). Mismo principio que
+    // el resto de la API: el tenant nunca sale del modelo, siempre del JWT.
+
+    // Este Lambda loguea pregunta+respuesta de cada consulta al asistente
+    // (`assistant/askHandler.ts:logQa`) — a diferencia del resto de la API,
+    // esos logs llevan contenido real de negocio (montos, productos), no
+    // solo metadata técnica. El resto de los Lambdas se queda con la
+    // retención default (indefinida) porque solo loguean errores; acá se
+    // acota a propósito. Se crea el LogGroup a mano (en vez de la prop
+    // `logRetention`, que arma un Lambda custom-resource propio por detrás
+    // solo para setear esto) para no sumar un recurso extra al stack.
+    const assistantAskLogGroup = new logs.LogGroup(this, "AssistantAskLogGroup", {
+      // Nombre explícito, no el autogenerado por CDK — sin esto queda un
+      // nombre ilegible en vez de seguir la convención `/aws/lambda/...`
+      // que usa el resto de los Lambdas de la API.
+      logGroupName: "/aws/lambda/ticket-parsing-cloud-assistant-ask",
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const assistantAskFn = new nodejs.NodejsFunction(this, "AssistantAskFunction", {
+      entry: "src/assistant/askHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      // Con tool-use, una pregunta típica dispara 2 llamadas a Bedrock más
+      // una consulta a Athena/DynamoDB en el medio — más margen que
+      // ParserFunction porque acá se suman ambas latencias.
+      timeout: cdk.Duration.seconds(60),
+      environment: {
+        BEDROCK_MODEL_ID: bedrockModelId,
+        TICKETS_TABLE: ticketsTable.tableName,
+        ATHENA_WORKGROUP: athenaWorkGroupName,
+        ASSISTANT_USAGE_TABLE: assistantUsageTable.tableName,
+      },
+      logGroup: assistantAskLogGroup,
+    });
+    grantBedrockInvoke(assistantAskFn);
+    grantAnalyticsQueryAccess(assistantAskFn);
+    ticketsTable.grantReadData(assistantAskFn);
+    assistantUsageTable.grantReadWriteData(assistantAskFn);
+
     agentsTable.grantReadData(ingestFn);
     agentsTable.grantReadWriteData(activateFn);
     activationCodesTable.grantReadWriteData(activateFn);
@@ -670,6 +742,11 @@ export class TicketParsingCloudStack extends cdk.Stack {
     const activationCodes = api.root.addResource("activation-codes");
     activationCodes.addMethod("GET", new apigateway.LambdaIntegration(agentsCodesFn), dashboardAuth);
 
+    // /assistant/ask — dashboard humano logueado, no máquina (igual que
+    // /tickets GET y /widgets). Ver "Asistente de datos (chat)" más arriba.
+    const assistant = api.root.addResource("assistant");
+    assistant.addResource("ask").addMethod("POST", new apigateway.LambdaIntegration(assistantAskFn), dashboardAuth);
+
     // ---- Outputs -------------------------------------------------------
 
     new cdk.CfnOutput(this, "ApiUrl", { value: api.url });
@@ -681,6 +758,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
     new cdk.CfnOutput(this, "WidgetsTableName", { value: widgetsTable.tableName });
     new cdk.CfnOutput(this, "AgentsTableName", { value: agentsTable.tableName });
     new cdk.CfnOutput(this, "ActivationCodesTableName", { value: activationCodesTable.tableName });
+    new cdk.CfnOutput(this, "AssistantUsageTableName", { value: assistantUsageTable.tableName });
     new cdk.CfnOutput(this, "RawTicketsBucketName", { value: rawTicketsBucket.bucketName });
     new cdk.CfnOutput(this, "AnalyticsBucketName", { value: analyticsBucket.bucketName });
     new cdk.CfnOutput(this, "AnalyticsDatabaseName", { value: analyticsDatabaseName });
