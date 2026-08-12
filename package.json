@@ -8,7 +8,10 @@
     "cdk": "cdk",
     "onboard-tenant": "tsx scripts/onboard-tenant.ts",
     "assign-port-parser": "tsx scripts/assign-port-parser.ts",
-    "test-parser": "tsx scripts/test-parser.ts"
+    "test-parser": "tsx scripts/test-parser.ts",
+    "list-tenants": "tsx scripts/list-tenants.ts",
+    "set-tenant-status": "tsx scripts/set-tenant-status.ts",
+    "delete-tenant": "tsx scripts/delete-tenant.ts"
   },
   "devDependencies": {
     "@swc/core": "^1.15.0",
