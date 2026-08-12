@@ -191,58 +191,143 @@ CDK primero sintetiza el stack a CloudFormation (lo mismo que hace
 `cdk synth`), te muestra un resumen de qué recursos va a crear o cambiar
 en tu cuenta real, y pide confirmación (`y`) antes de tocar nada — es tu
 última oportunidad de revisar antes de que se facture algo. Al terminar,
-imprime los **outputs** del stack — **guardalos**, los vas a necesitar
-en el paso siguiente:
+imprime los **outputs** del stack — **guardalos**, los vas a necesitar en
+los pasos siguientes:
 
 | Output | Para qué sirve |
 |---|---|
 | `ApiUrl` | la URL base de la API — va en `CLOUD_UPLOAD_URL` del agente, agregándole `/tickets` |
 | `UsagePlanId` | lo pide `onboard-tenant` para asociar la API key nueva al usage plan |
-| `TenantsTableName` | lo pide `onboard-tenant` para escribir el registro del tenant |
-| `TicketsTableName` / `RawTicketsBucketName` | útiles si después querés consultar datos a mano desde la consola |
+| `TenantsTableName` | env var `TENANTS_TABLE` — la piden `onboard-tenant`, `assign-port-parser`, y los tres scripts de administración de tenants (sección 4) |
+| `TicketsTableName` | env var `TICKETS_TABLE` — la pide `delete-tenant` |
+| `WidgetsTableName` | env var `WIDGETS_TABLE` — la pide `delete-tenant` |
+| `AgentsTableName` | env var `AGENTS_TABLE` — la pide `delete-tenant` |
+| `ActivationCodesTableName` | env var `ACTIVATION_CODES_TABLE` — la piden `onboard-tenant`, `list-tenants`, `delete-tenant` |
+| `UserPoolId` | env var `USER_POOL_ID` — la piden `onboard-tenant` y los tres scripts de administración de tenants |
+| `RawTicketsBucketName` | env var `RAW_BUCKET` — la pide `delete-tenant` |
+| `AnalyticsBucketName` | env var `ANALYTICS_BUCKET` — la pide `delete-tenant` |
+
+**¿No los guardaste?** Se pueden volver a pedir en cualquier momento:
+
+```bash
+aws cloudformation describe-stacks --stack-name TicketParsingCloudStack \
+  --query "Stacks[0].Outputs" --output table
+```
+
+O, más cómodo, exportarlos todos de una con los nombres exactos que
+esperan los scripts (copiá y pegá el bloque entero en tu terminal, una
+vez por sesión):
+
+```bash
+STACK=TicketParsingCloudStack
+export TENANTS_TABLE=$(aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='TenantsTableName'].OutputValue" --output text)
+export TICKETS_TABLE=$(aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='TicketsTableName'].OutputValue" --output text)
+export WIDGETS_TABLE=$(aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='WidgetsTableName'].OutputValue" --output text)
+export AGENTS_TABLE=$(aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='AgentsTableName'].OutputValue" --output text)
+export ACTIVATION_CODES_TABLE=$(aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='ActivationCodesTableName'].OutputValue" --output text)
+export USER_POOL_ID=$(aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text)
+export TICKET_STACK_USAGE_PLAN_ID=$(aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='UsagePlanId'].OutputValue" --output text)
+export RAW_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='RawTicketsBucketName'].OutputValue" --output text)
+export ANALYTICS_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='AnalyticsBucketName'].OutputValue" --output text)
+```
+
+**Nota:** el `export` es necesario — sin él, la variable queda local a tu
+shell y `npm run ...` (que arranca un proceso hijo) no la ve.
+
+**Si estás en PowerShell** (el bloque de arriba es para bash/Git Bash —
+en PowerShell `export VAR=valor` no hace nada, ni siquiera tira error, y
+después `npm run ...` no la encuentra):
+
+```powershell
+$STACK = "TicketParsingCloudStack"
+$env:TENANTS_TABLE = aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='TenantsTableName'].OutputValue" --output text
+$env:TICKETS_TABLE = aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='TicketsTableName'].OutputValue" --output text
+$env:WIDGETS_TABLE = aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='WidgetsTableName'].OutputValue" --output text
+$env:AGENTS_TABLE = aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='AgentsTableName'].OutputValue" --output text
+$env:ACTIVATION_CODES_TABLE = aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='ActivationCodesTableName'].OutputValue" --output text
+$env:USER_POOL_ID = aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text
+$env:TICKET_STACK_USAGE_PLAN_ID = aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='UsagePlanId'].OutputValue" --output text
+$env:RAW_BUCKET = aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='RawTicketsBucketName'].OutputValue" --output text
+$env:ANALYTICS_BUCKET = aws cloudformation describe-stacks --stack-name $STACK --query "Stacks[0].Outputs[?OutputKey=='AnalyticsBucketName'].OutputValue" --output text
+```
+
+En PowerShell las variables de entorno se setean con `$env:NOMBRE = valor`,
+no con `export NOMBRE=valor` (eso es bash). `$env:` sí queda visible para
+`npm run ...` en la misma sesión, igual que `export` en bash.
+
+Con cualquiera de los dos bloques (bash o PowerShell) ya exportado en la
+terminal, los comandos de abajo (secciones 3 y 4) no necesitan que les
+antepongas nada — las variables ya están en el entorno de esa sesión, sin
+importar qué shell estés usando.
 
 Cada vez que cambies algo en `lib/ticket-parsing-cloud-stack.ts` o en el
 código de los Lambdas, repetís `npx cdk deploy` — no hace falta volver a
 bootstrapear.
 
-### 3. Dar de alta un negocio (cada vez que sumás un cliente)
+### 3. Dar de alta un negocio a mano (alternativa a que se registre solo — ver sección 4 de PROYECTO.md)
+
+Con las variables ya exportadas (paso anterior, bash o PowerShell):
 
 ```bash
-TICKET_STACK_USAGE_PLAN_ID=<el output UsagePlanId> \
-TENANTS_TABLE=<el output TenantsTableName> \
-npm run onboard-tenant -- --business "La Esquina del Sabor" --parser example-38col
+npm run onboard-tenant -- --business "La Esquina del Sabor" --parser example-38col --email dueno@negocio.com
 ```
 
-Este script (`scripts/onboard-tenant.ts`) hace tres cosas en tu cuenta:
-crea una API key nueva en API Gateway, la asocia al usage plan (para que
-comparta el throttling configurado en el stack), y escribe el registro
-del tenant en la tabla `Tenants` con el `parserId` que le indicaste. Al
-terminar imprime la API key generada — **es la única vez que se muestra**
-(igual que el secret del usuario IAM), copiala ahí mismo.
+Además de `TENANTS_TABLE`, `ACTIVATION_CODES_TABLE` y `USER_POOL_ID`, este
+script puntual también necesita `TICKET_STACK_USAGE_PLAN_ID` (ya incluida
+en el bloque de exportación del paso 2) — es el único de los seis scripts
+que la usa.
 
-Esa API key va en la configuración del `print-capture-agent` que se
-instale en la PC de ese negocio:
-
-- `CLOUD_UPLOAD_URL` = `<ApiUrl>/tickets`
-- `CLOUD_API_KEY` = la API key que imprimió `onboard-tenant`
+Este script (`scripts/onboard-tenant.ts`) da de alta un negocio completo:
+crea una API key legacy en API Gateway (fallback, ver PROYECTO.md sección
+9.3), la asocia al usage plan, escribe el registro del tenant, genera sus
+5 códigos de activación de robots, y crea el usuario de Cognito con el que
+esa persona va a loguearse en el dashboard. Al terminar imprime la
+contraseña generada y los 5 códigos — **es la única vez que se muestran**,
+copialos ahí mismo.
 
 El `--parser` que le pasás tiene que ser el `id` de un parser que ya
 exista en `src/parsing/registry.ts` — hoy el único disponible es
 `example-38col` (la plantilla sintética, todavía sin validar contra un
 POS real).
 
-**Si ese negocio suma un segundo periférico** (ej. un datáfono además de
-la impresora), no hace falta crear otro tenant — se le asigna un parser
-a ese puerto puntual:
+**Hoy ya no hace falta este script para el caso normal** — desde
+2026-08-12 cualquiera puede registrarse solo desde
+`innoapp-web-user-client` (`POST /signup`, ver PROYECTO.md sección 14).
+Este script queda para altas manuales puntuales (ej. un tenant de prueba
+con datos ya armados).
+
+**Si un negocio suma un segundo periférico** (ej. un datáfono además de
+la impresora), no hace falta crear otro tenant — se le asigna un parser a
+ese puerto puntual:
 
 ```bash
-TENANTS_TABLE=<el output TenantsTableName> \
+TENANTS_TABLE=$TENANTS_TABLE \
 npm run assign-port-parser -- --tenant <tenantId> --port COM7 --parser ingenico-v1
 ```
 
 El Lambda de parseo va a usar ese parser solo para lo que llegue por
 `COM7` de ese tenant — el resto de sus puertos sigue con el `parserId`
 default.
+
+### 4. Administrar tenants (ver PROYECTO.md sección 14 para el detalle completo)
+
+```bash
+# Listar todos los tenants: negocio, email, fecha de alta, uso de códigos, estado
+npm run list-tenants
+
+# Bloquear (corta login y subida de tickets) — o --status active para desbloquear
+npm run set-tenant-status -- --tenant <tenantId> --status blocked
+
+# Borrar TODO lo del tenant — irreversible, por eso pide --confirm
+npm run delete-tenant -- --tenant <tenantId> --confirm
+```
+
+Asumen que ya exportaste las variables del paso 2. Si no, hay que
+anteponerlas a mano en cada comando:
+
+- `list-tenants` necesita `TENANTS_TABLE`, `ACTIVATION_CODES_TABLE`, `USER_POOL_ID`.
+- `set-tenant-status` necesita `TENANTS_TABLE`, `USER_POOL_ID`.
+- `delete-tenant` necesita las ocho: `TENANTS_TABLE`, `TICKETS_TABLE`, `WIDGETS_TABLE`, `AGENTS_TABLE`, `ACTIVATION_CODES_TABLE`, `USER_POOL_ID`, `RAW_BUCKET`, `ANALYTICS_BUCKET`.
 
 ## Lo que falta antes de que esto sirva con un POS real
 

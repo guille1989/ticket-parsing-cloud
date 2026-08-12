@@ -694,6 +694,33 @@ export class TicketParsingCloudStack extends cdk.Stack {
       }),
     );
 
+    // ---- Perfil y onboarding del negocio -----------------------------
+    // GET /me expone únicamente metadatos públicos del tenant. PATCH
+    // persiste el recorrido y puede crear el dashboard inicial de forma
+    // transaccional e idempotente.
+    const meGetFn = new nodejs.NodejsFunction(this, "MeGetFunction", {
+      entry: "src/me/getHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: { TENANTS_TABLE: tenantsTable.tableName },
+    });
+    const onboardingUpdateFn = new nodejs.NodejsFunction(this, "OnboardingUpdateFunction", {
+      entry: "src/me/updateOnboardingHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: {
+        TENANTS_TABLE: tenantsTable.tableName,
+        AGENTS_TABLE: agentsTable.tableName,
+        WIDGETS_TABLE: widgetsTable.tableName,
+      },
+    });
+    tenantsTable.grantReadData(meGetFn);
+    tenantsTable.grantReadWriteData(onboardingUpdateFn);
+    agentsTable.grantReadData(onboardingUpdateFn);
+    widgetsTable.grantWriteData(onboardingUpdateFn);
+
     // ---- Asistente de datos (chat) --------------------------------------
     //
     // Fase 2 (PROYECTO.md sección 13): además del circuito Cognito → Lambda
@@ -800,6 +827,10 @@ export class TicketParsingCloudStack extends cdk.Stack {
     // literalmente cómo consigue la primera. Ver "Registro de tenants" más arriba.
     const signup = api.root.addResource("signup");
     signup.addMethod("POST", new apigateway.LambdaIntegration(signupFn), { apiKeyRequired: false });
+
+    const me = api.root.addResource("me");
+    me.addMethod("GET", new apigateway.LambdaIntegration(meGetFn), dashboardAuth);
+    me.addResource("onboarding").addMethod("PATCH", new apigateway.LambdaIntegration(onboardingUpdateFn), dashboardAuth);
 
     // /assistant/ask — dashboard humano logueado, no máquina (igual que
     // /tickets GET y /widgets). Ver "Asistente de datos (chat)" más arriba.

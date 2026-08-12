@@ -11,6 +11,15 @@ import type { ParsedItem } from "../parsing/types.js";
  */
 export type TicketStatus = "pending" | "parsed" | "needs_review" | "failed";
 
+export interface OnboardingState {
+  version: 1;
+  startedAt?: string;
+  lastDeferredAt?: string;
+  completedAt?: string;
+  productTourCompletedAt?: string;
+  starterDashboardCreatedAt?: string;
+}
+
 export interface TenantRecord {
   tenantId: string;
   businessName: string;
@@ -41,6 +50,12 @@ export interface TenantRecord {
    * dashboard. Se cambia con `scripts/set-tenant-status.ts`.
    */
   status?: "active" | "blocked";
+  /**
+   * Solo existe en tenants creados desde que se incorporó el onboarding.
+   * Su ausencia identifica a tenants anteriores, que no deben ser enviados
+   * de forma retroactiva por el recorrido inicial.
+   */
+  onboarding?: OnboardingState;
 }
 
 export interface TicketRecord {

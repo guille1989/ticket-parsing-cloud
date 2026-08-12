@@ -133,6 +133,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     parserId: DEFAULT_PARSER_ID,
     portParsers: {},
     createdAt: new Date().toISOString(),
+    onboarding: { version: 1 },
   };
   await ddb.send(new PutCommand({ TableName: TENANTS_TABLE, Item: { ...tenant, pk: `TENANT#${tenantId}` } }));
 

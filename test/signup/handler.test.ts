@@ -101,7 +101,7 @@ test("éxito: crea el usuario, el tenant y los 5 códigos de activación", async
   expect(mockDdbSend).toHaveBeenCalledTimes(7);
   const tenantPut = mockDdbSend.mock.calls[1][0].input;
   expect(tenantPut.TableName).toBe("TestTenants");
-  expect(tenantPut.Item).toMatchObject({ tenantId: body.tenantId, businessName: "La Esquina del Sabor", parserId: "example-38col" });
+  expect(tenantPut.Item).toMatchObject({ tenantId: body.tenantId, businessName: "La Esquina del Sabor", parserId: "example-38col", onboarding: { version: 1 } });
   // Sin api-key compartida — un tenant nuevo nunca la necesita (ver el
   // comentario en shared/types.ts sobre apiKeyId).
   expect(tenantPut.Item.apiKeyId).toBeUndefined();

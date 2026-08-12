@@ -10,7 +10,7 @@ test("el stack sintetiza con las piezas clave del pipeline multi-tenant", () => 
 
   template.resourceCountIs("AWS::DynamoDB::GlobalTable", 7); // Tickets + Tenants + Widgets + Agents + ActivationCodes + AssistantUsage + SignupUsage
   template.resourceCountIs("AWS::SQS::Queue", 1); // solo la DLQ del parseo — el trigger es el Stream, no una cola
-  template.resourceCountIs("AWS::Lambda::Function", 16); // ingest + parser + read + 5 widgets + 5 agents + assistant ask + signup + pre-auth trigger
+  template.resourceCountIs("AWS::Lambda::Function", 18); // pipeline + dashboard + agentes + auth + perfil/onboarding
   template.resourceCountIs("AWS::Lambda::EventSourceMapping", 1); // parser suscripto al Stream de Tickets
   template.resourceCountIs("AWS::Cognito::UserPool", 1);
   template.resourceCountIs("AWS::Cognito::UserPoolClient", 1);
