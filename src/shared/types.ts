@@ -23,8 +23,24 @@ export interface TenantRecord {
    * acá, se usa `parserId` como default.
    */
   portParsers?: Record<string, string>;
-  apiKeyId: string;
+  /**
+   * Api-key compartida del tenant (`onboard-tenant.ts`) — legacy, solo la
+   * sigue aceptando `ingest` como fallback para agentes que todavía no se
+   * activaron por código (ver sección 9.3/9.4 de PROYECTO.md). Un tenant
+   * dado de alta por `POST /signup` no tiene una: todos sus agentes se
+   * activan por código desde el vamos, así que nunca hace falta.
+   */
+  apiKeyId?: string;
   createdAt: string;
+  /**
+   * Ausente o "active" = normal. "blocked" corta el acceso en los dos
+   * lugares que importan: el login del dashboard (Cognito Pre-Authentication
+   * trigger, `tenants/preAuthHandler.ts`) y la subida de tickets del agente
+   * (`ingest/handler.ts`) — bloquear en un solo lugar no alcanza, un tenant
+   * bloqueado no debería poder seguir mandando datos aunque no pueda ver el
+   * dashboard. Se cambia con `scripts/set-tenant-status.ts`.
+   */
+  status?: "active" | "blocked";
 }
 
 export interface TicketRecord {
@@ -103,7 +119,7 @@ export interface ActivationCodeRecord {
   agentId?: string;
 }
 
-export type WidgetVisualization = "kpi" | "bar" | "donut";
+export type WidgetVisualization = "kpi" | "bar" | "line" | "donut";
 export type WidgetAggregation = "sum" | "avg" | "max" | "min" | "count";
 
 export interface WidgetMetric {

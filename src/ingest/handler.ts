@@ -5,20 +5,33 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 
 import { resolveAgentByApiKeyId } from "../shared/agent.js";
 import { ddb, RAW_BUCKET, ticketKey, ticketStatusGsiKey, TICKETS_TABLE } from "../shared/dynamo.js";
-import { resolveTenantByApiKeyId } from "../shared/tenant.js";
+import { getTenant, resolveTenantByApiKeyId } from "../shared/tenant.js";
 import { TicketRecord } from "../shared/types.js";
+
+type ResolvedTenant = { tenantId: string; blocked: boolean };
 
 /**
  * Un agente activado por código (ver `agents/activateHandler.ts`) sube con
  * su propia api-key, no la del tenant — se prueba esa resolución primero.
  * La api-key compartida del tenant (onboarding original, `onboard-tenant.ts`)
  * sigue funcionando como fallback para no romper instalaciones existentes.
+ *
+ * Un tenant bloqueado (`scripts/set-tenant-status.ts`) no puede seguir
+ * subiendo tickets aunque su agente ya esté activado y su api-key siga
+ * siendo válida — bloquear solo el login del dashboard no alcanza. Cuando
+ * resuelve por api-key de AGENTE hace falta una lectura extra a Tenants
+ * (el registro del agente no trae el status), cuando resuelve por la
+ * api-key compartida del tenant ya viene en el mismo registro.
  */
-async function resolveTenantId(apiKeyId: string): Promise<string | undefined> {
+async function resolveTenantId(apiKeyId: string): Promise<ResolvedTenant | undefined> {
   const agent = await resolveAgentByApiKeyId(apiKeyId);
-  if (agent) return agent.tenantId;
+  if (agent) {
+    const tenant = await getTenant(agent.tenantId);
+    return { tenantId: agent.tenantId, blocked: tenant?.status === "blocked" };
+  }
   const tenant = await resolveTenantByApiKeyId(apiKeyId);
-  return tenant?.tenantId;
+  if (!tenant) return undefined;
+  return { tenantId: tenant.tenantId, blocked: tenant.status === "blocked" };
 }
 
 const s3 = new S3Client({});
@@ -92,10 +105,14 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return { statusCode: 403, body: JSON.stringify({ error: "falta API key" }) };
   }
 
-  const tenantId = await resolveTenantId(apiKeyId);
-  if (!tenantId) {
+  const resolved = await resolveTenantId(apiKeyId);
+  if (!resolved) {
     return { statusCode: 403, body: JSON.stringify({ error: "API key no asociada a ningún tenant" }) };
   }
+  if (resolved.blocked) {
+    return { statusCode: 403, body: JSON.stringify({ error: "tenant bloqueado" }) };
+  }
+  const { tenantId } = resolved;
 
   let body: unknown;
   try {

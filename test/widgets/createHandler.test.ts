@@ -51,6 +51,29 @@ test("crea un widget de barras con groupBy y filtros", async () => {
   expect(body.filters).toEqual({ dateFrom: "2026-07-01", port: "COM3" });
 });
 
+test("crea un widget de línea con agrupación temporal diaria", async () => {
+  const result = await handler(
+    eventWith({
+      name: "Ventas por puerto",
+      visualization: "line",
+      metric: { field: "total", aggregation: "sum" },
+      groupBy: "day",
+    }),
+  );
+
+  expect(result.statusCode).toBe(201);
+  const body = JSON.parse(result.body);
+  expect(body.visualization).toBe("line");
+  expect(body.groupBy).toBe("day");
+});
+
+test("rechaza una línea agrupada por una categoría", async () => {
+  const result = await handler(
+    eventWith({ name: "X", visualization: "line", metric: { field: "total", aggregation: "sum" }, groupBy: "port" }),
+  );
+  expect(result.statusCode).toBe(400);
+});
+
 test("rechaza un kpi con groupBy (no tiene sentido, no hay nada que agrupar)", async () => {
   const result = await handler(
     eventWith({ name: "X", visualization: "kpi", metric: { field: "total", aggregation: "sum" }, groupBy: "port" }),
@@ -59,7 +82,7 @@ test("rechaza un kpi con groupBy (no tiene sentido, no hay nada que agrupar)", a
   expect(mockDdbSend).not.toHaveBeenCalled();
 });
 
-test("rechaza bar/donut sin groupBy", async () => {
+test("rechaza bar/line/donut sin groupBy", async () => {
   const result = await handler(
     eventWith({ name: "X", visualization: "bar", metric: { field: "total", aggregation: "sum" } }),
   );

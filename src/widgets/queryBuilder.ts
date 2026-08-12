@@ -1,6 +1,7 @@
 import {
   EVENT_COUNT_FIELD,
-  categoricalColumn,
+  groupByExpression,
+  isTemporalGroupByField,
   isTicketLevelField,
   isValidAggregation,
   isValidGroupByField,
@@ -15,6 +16,7 @@ const ANALYTICS_DATABASE = "ticket_analytics";
 const ANALYTICS_TABLE = "ticket_items";
 
 const MAX_GROUPS = 50;
+const MAX_TIME_POINTS = 800;
 
 const AGG_SQL: Record<string, string> = { sum: "SUM", avg: "AVG", max: "MAX", min: "MIN", count: "COUNT" };
 
@@ -146,12 +148,15 @@ function buildDirectQuery(
   if (!groupBy) {
     return { sql: `SELECT ${selectExpr} AS value FROM ${from} WHERE ${whereClause}`, params };
   }
-  const groupColumn = categoricalColumn(groupBy as never);
+  const groupColumn = groupByExpression(groupBy as never);
+  const temporal = isTemporalGroupByField(groupBy);
+  const orderBy = temporal ? "label ASC" : "value DESC";
+  const limit = temporal ? MAX_TIME_POINTS : MAX_GROUPS;
   return {
     sql:
       `SELECT ${groupColumn} AS label, ${selectExpr} AS value ` +
       `FROM ${from} WHERE ${whereClause} ` +
-      `GROUP BY ${groupColumn} ORDER BY value DESC LIMIT ${MAX_GROUPS}`,
+      `GROUP BY ${groupColumn} ORDER BY ${orderBy} LIMIT ${limit}`,
     params,
   };
 }
@@ -170,14 +175,19 @@ function buildTicketLevelQuery(
     return { sql: `SELECT ${aggSql}(${column}) AS value FROM (${inner})`, params };
   }
 
-  const groupColumn = categoricalColumn(groupBy as never);
+  const groupColumn = groupByExpression(groupBy as never);
+  const temporal = isTemporalGroupByField(groupBy);
+  const orderBy = temporal ? "label ASC" : "value DESC";
+  const limit = temporal ? MAX_TIME_POINTS : MAX_GROUPS;
+  const innerGroupSelect = temporal ? `${groupColumn} AS group_label` : groupColumn;
+  const outerGroupColumn = temporal ? "group_label" : groupColumn;
   const inner =
-    `SELECT ticketid, ${groupColumn}, MAX(${column}) AS ${column} ` +
+    `SELECT ticketid, ${innerGroupSelect}, MAX(${column}) AS ${column} ` +
     `FROM ${from} WHERE ${whereClause} GROUP BY ticketid, ${groupColumn}`;
   return {
     sql:
-      `SELECT ${groupColumn} AS label, ${aggSql}(${column}) AS value FROM (${inner}) ` +
-      `GROUP BY ${groupColumn} ORDER BY value DESC LIMIT ${MAX_GROUPS}`,
+      `SELECT ${outerGroupColumn} AS label, ${aggSql}(${column}) AS value FROM (${inner}) ` +
+      `GROUP BY ${outerGroupColumn} ORDER BY ${orderBy} LIMIT ${limit}`,
     params,
   };
 }

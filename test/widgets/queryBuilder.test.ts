@@ -84,6 +84,18 @@ test("bar/donut con groupBy: agrupa, ordena por value y limita a 50", () => {
   expect(sql).toContain("LIMIT 50");
 });
 
+test("line temporal agrupa por día y ordena cronológicamente", () => {
+  const { sql } = buildWidgetQuery(
+    widget({ visualization: "line", metric: { field: "total", aggregation: "sum" }, groupBy: "day" }),
+  );
+
+  expect(sql).toContain("substr(capturedat, 1, 10) AS group_label");
+  expect(sql).toContain("SELECT group_label AS label, SUM(total) AS value");
+  expect(sql).toContain("GROUP BY group_label ORDER BY label ASC");
+  expect(sql).toContain("ORDER BY label ASC");
+  expect(sql.match(/capturedat/g)).toHaveLength(2);
+});
+
 test("event_count siempre es COUNT(DISTINCT ticketid), sin importar la agregación elegida", () => {
   const { sql } = buildWidgetQuery(widget({ metric: { field: "event_count", aggregation: "avg" } }));
   expect(sql).toContain("COUNT(DISTINCT ticketid) AS value");

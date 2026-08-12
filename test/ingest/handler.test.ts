@@ -5,6 +5,7 @@ const mockDdbSend = jest.fn();
 const mockS3Send = jest.fn();
 const mockResolveTenantByApiKeyId = jest.fn();
 const mockResolveAgentByApiKeyId = jest.fn();
+const mockGetTenant = jest.fn();
 
 jest.mock("../../src/shared/dynamo", () => {
   const actual = jest.requireActual("../../src/shared/dynamo");
@@ -18,6 +19,7 @@ jest.mock("../../src/shared/dynamo", () => {
 
 jest.mock("../../src/shared/tenant", () => ({
   resolveTenantByApiKeyId: (...args: unknown[]) => mockResolveTenantByApiKeyId(...args),
+  getTenant: (...args: unknown[]) => mockGetTenant(...args),
 }));
 
 // Mockeado aparte (no solo vía `ddb`) para no meter una llamada extra a
@@ -60,7 +62,11 @@ beforeEach(() => {
   mockS3Send.mockReset();
   mockResolveTenantByApiKeyId.mockReset();
   mockResolveAgentByApiKeyId.mockReset();
+  mockGetTenant.mockReset();
   mockResolveAgentByApiKeyId.mockResolvedValue(undefined);
+  // Por defecto, el tenant que resuelve un agente no está bloqueado — los
+  // tests de bloqueo lo pisan explícitamente.
+  mockGetTenant.mockResolvedValue({ status: "active" });
 });
 
 test("sin API key: 403, no toca S3 ni DynamoDB", async () => {
@@ -136,8 +142,10 @@ test("un error de DynamoDB que NO es de condición se propaga (no se traga silen
 });
 
 // Un robot activado por código (ver agents/activateHandler.ts) sube con su
-// propia api-key, no la del tenant.
-test("api-key de un agente: resuelve el tenantId del agente, ni siquiera consulta la tabla Tenants", async () => {
+// propia api-key, no la del tenant — pero igual hace falta consultar
+// Tenants para saber si está bloqueado (el registro del agente no trae ese
+// dato), ver el test de bloqueo más abajo.
+test("api-key de un agente: resuelve el tenantId del agente, sin usar la api-key compartida", async () => {
   mockResolveAgentByApiKeyId.mockResolvedValue({ tenantId: "t-agente", agentId: "a1", name: "Robot 1", apiKeyId: "agent-key-1", createdAt: "2026-01-01T00:00:00.000Z" });
   mockS3Send.mockResolvedValue({});
   mockDdbSend.mockResolvedValue({});
@@ -146,6 +154,7 @@ test("api-key de un agente: resuelve el tenantId del agente, ni siquiera consult
 
   expect(result.statusCode).toBe(202);
   expect(mockResolveTenantByApiKeyId).not.toHaveBeenCalled();
+  expect(mockGetTenant).toHaveBeenCalledWith("t-agente");
   const s3Call = mockS3Send.mock.calls[0][0].input;
   expect(s3Call.Key).toBe(`tenants/t-agente/${VALID_BODY.ticketId}.txt`);
   const ddbCall = mockDdbSend.mock.calls[0][0].input;
@@ -159,5 +168,27 @@ test("api-key que no es de ningún agente NI de ningún tenant: 403", async () =
   const result = await handler(eventWith("key-huerfana", VALID_BODY));
 
   expect(result.statusCode).toBe(403);
+  expect(mockS3Send).not.toHaveBeenCalled();
+});
+
+test("tenant bloqueado (resuelto por api-key de agente): 403, no llega a S3 ni DynamoDB", async () => {
+  mockResolveAgentByApiKeyId.mockResolvedValue({ tenantId: "t-agente", agentId: "a1", name: "Robot 1", apiKeyId: "agent-key-1", createdAt: "2026-01-01T00:00:00.000Z" });
+  mockGetTenant.mockResolvedValue({ status: "blocked" });
+
+  const result = await handler(eventWith("agent-key-1", VALID_BODY));
+
+  expect(result.statusCode).toBe(403);
+  expect(JSON.parse(result.body).error).toContain("bloqueado");
+  expect(mockS3Send).not.toHaveBeenCalled();
+  expect(mockDdbSend).not.toHaveBeenCalled();
+});
+
+test("tenant bloqueado (resuelto por api-key compartida del tenant): 403", async () => {
+  mockResolveTenantByApiKeyId.mockResolvedValue({ ...validTenant, status: "blocked" });
+
+  const result = await handler(eventWith("key1", VALID_BODY));
+
+  expect(result.statusCode).toBe(403);
+  expect(JSON.parse(result.body).error).toContain("bloqueado");
   expect(mockS3Send).not.toHaveBeenCalled();
 });

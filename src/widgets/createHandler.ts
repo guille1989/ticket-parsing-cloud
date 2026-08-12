@@ -7,9 +7,9 @@ import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import type { WidgetAggregation, WidgetFilters, WidgetRecord, WidgetVisualization } from "../shared/types.js";
-import { AGGREGATIONS, CATEGORICAL_FIELDS, isTicketLevelField, isValidAggregation, isValidGroupByField, isValidMetricField } from "./fields.js";
+import { AGGREGATIONS, CATEGORICAL_FIELDS, TEMPORAL_FIELDS, isTicketLevelField, isValidAggregation, isValidGroupByField, isValidMetricField } from "./fields.js";
 
-const VISUALIZATIONS: WidgetVisualization[] = ["kpi", "bar", "donut"];
+const VISUALIZATIONS: WidgetVisualization[] = ["kpi", "bar", "line", "donut"];
 // Coincide con TicketStatus — no se reexporta desde acá para no acoplar
 // este validador al tipo interno de otro módulo por algo tan chico.
 const STATUSES = ["pending", "parsed", "needs_review", "failed"];
@@ -56,7 +56,13 @@ function validateBody(body: unknown): Validation {
     }
   } else {
     if (typeof b.groupBy !== "string" || !isValidGroupByField(b.groupBy)) {
-      return { ok: false, error: `groupBy inválido, se esperaba uno de: ${CATEGORICAL_FIELDS.join(", ")}` };
+      return { ok: false, error: `groupBy inválido, se esperaba uno de: ${[...CATEGORICAL_FIELDS, ...TEMPORAL_FIELDS].join(", ")}` };
+    }
+    if (visualization === "line" && !TEMPORAL_FIELDS.includes(b.groupBy as never)) {
+      return { ok: false, error: `un widget line necesita groupBy temporal: ${TEMPORAL_FIELDS.join(", ")}` };
+    }
+    if (visualization !== "line" && TEMPORAL_FIELDS.includes(b.groupBy as never)) {
+      return { ok: false, error: "groupBy temporal solo está disponible para widgets line" };
     }
     // total/discount/tip son del ticket, no del ítem — no hay forma
     // correcta de repartirlos entre las descripciones de un mismo ticket.

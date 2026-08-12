@@ -30,6 +30,9 @@ export const EVENT_COUNT_FIELD = "event_count";
 
 export const CATEGORICAL_FIELDS = ["port", "status", "parsedBy", "description"] as const;
 export type CategoricalField = (typeof CATEGORICAL_FIELDS)[number];
+export const TEMPORAL_FIELDS = ["day"] as const;
+export type TemporalField = (typeof TEMPORAL_FIELDS)[number];
+export type GroupByField = CategoricalField | TemporalField;
 
 export const AGGREGATIONS = ["sum", "avg", "max", "min", "count"] as const;
 export type Aggregation = (typeof AGGREGATIONS)[number];
@@ -57,8 +60,12 @@ export function isValidMetricField(field: string): field is NumericField | typeo
   return field === EVENT_COUNT_FIELD || (NUMERIC_FIELDS as readonly string[]).includes(field);
 }
 
-export function isValidGroupByField(field: string): field is CategoricalField {
-  return (CATEGORICAL_FIELDS as readonly string[]).includes(field);
+export function isValidGroupByField(field: string): field is GroupByField {
+  return (CATEGORICAL_FIELDS as readonly string[]).includes(field) || (TEMPORAL_FIELDS as readonly string[]).includes(field);
+}
+
+export function isTemporalGroupByField(field: string): field is TemporalField {
+  return (TEMPORAL_FIELDS as readonly string[]).includes(field);
 }
 
 export function isValidAggregation(aggregation: string): aggregation is Aggregation {
@@ -71,4 +78,8 @@ export function numericColumn(field: NumericField): string {
 
 export function categoricalColumn(field: CategoricalField): string {
   return CATEGORICAL_COLUMN_BY_FIELD[field];
+}
+
+export function groupByExpression(field: GroupByField): string {
+  return field === "day" ? "substr(capturedat, 1, 10)" : categoricalColumn(field);
 }

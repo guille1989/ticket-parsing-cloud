@@ -121,6 +121,14 @@ export class TicketParsingCloudStack extends cdk.Stack {
       timeToLiveAttribute: "ttl",
     });
 
+    // SignupUsage: rate limit por IP para POST /signup (público, sin
+    // api-key ni Cognito) — mismo patrón que AssistantUsage, PK =
+    // IP#<ip>#WINDOW#HOUR#<bucket>. Ver `signup/rateLimit.ts`.
+    const signupUsageTable = new dynamodb.TableV2(this, "SignupUsageTable", {
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: "ttl",
+    });
+
     // ---- Analítica: copia aplanada en S3 para consultar con Athena -----
     //
     // DynamoDB sigue siendo la fuente de verdad operacional (escritura
@@ -340,6 +348,20 @@ export class TicketParsingCloudStack extends cdk.Stack {
 
     const sharedBundling = { externalModules: ["@aws-sdk/*"] };
     const nodeRuntime = lambda.Runtime.NODEJS_20_X;
+
+    // Pre-Authentication trigger — corta el login de un tenant bloqueado
+    // (`scripts/set-tenant-status.ts`) antes de que Cognito le entregue una
+    // sesión. Ver `tenants/preAuthHandler.ts` para el detalle y la
+    // limitación conocida (no corre en REFRESH_TOKEN_AUTH).
+    const preAuthFn = new nodejs.NodejsFunction(this, "PreAuthenticationFunction", {
+      entry: "src/tenants/preAuthHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: { TENANTS_TABLE: tenantsTable.tableName },
+    });
+    tenantsTable.grantReadData(preAuthFn);
+    userPool.addTrigger(cognito.UserPoolOperation.PRE_AUTHENTICATION, preAuthFn);
 
     /**
      * Segundo intento de parseo cuando el parser determinístico del tenant
@@ -640,6 +662,38 @@ export class TicketParsingCloudStack extends cdk.Stack {
       }),
     );
 
+    // ---- Registro de tenants (self-service) -----------------------------
+    //
+    // POST /signup (sección 12 de PROYECTO.md, punto 1) — reemplaza a correr
+    // `onboard-tenant.ts` a mano: crea el tenant, sus 5 códigos de
+    // activación y el usuario de Cognito, todo con la contraseña que la
+    // persona elige en el formulario. A diferencia del script, NO crea la
+    // api-key compartida del tenant — es legacy (fallback solo para agentes
+    // no activados por código), un tenant nuevo nunca la necesita porque
+    // todos sus agentes se activan por código desde el vamos.
+
+    const signupFn = new nodejs.NodejsFunction(this, "SignupFunction", {
+      entry: "src/signup/handler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(15),
+      environment: {
+        USER_POOL_ID: userPool.userPoolId,
+        TENANTS_TABLE: tenantsTable.tableName,
+        ACTIVATION_CODES_TABLE: activationCodesTable.tableName,
+        SIGNUP_USAGE_TABLE: signupUsageTable.tableName,
+      },
+    });
+    tenantsTable.grantWriteData(signupFn);
+    activationCodesTable.grantWriteData(signupFn);
+    signupUsageTable.grantReadWriteData(signupFn);
+    signupFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["cognito-idp:AdminCreateUser", "cognito-idp:AdminSetUserPassword", "cognito-idp:AdminDeleteUser"],
+        resources: [userPool.userPoolArn],
+      }),
+    );
+
     // ---- Asistente de datos (chat) --------------------------------------
     //
     // Fase 2 (PROYECTO.md sección 13): además del circuito Cognito → Lambda
@@ -741,6 +795,11 @@ export class TicketParsingCloudStack extends cdk.Stack {
 
     const activationCodes = api.root.addResource("activation-codes");
     activationCodes.addMethod("GET", new apigateway.LambdaIntegration(agentsCodesFn), dashboardAuth);
+
+    // Público — la persona todavía no tiene ninguna credencial, es
+    // literalmente cómo consigue la primera. Ver "Registro de tenants" más arriba.
+    const signup = api.root.addResource("signup");
+    signup.addMethod("POST", new apigateway.LambdaIntegration(signupFn), { apiKeyRequired: false });
 
     // /assistant/ask — dashboard humano logueado, no máquina (igual que
     // /tickets GET y /widgets). Ver "Asistente de datos (chat)" más arriba.
