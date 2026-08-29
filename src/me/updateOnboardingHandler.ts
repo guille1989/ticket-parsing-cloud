@@ -20,13 +20,13 @@ function starterWidgets(tenantId: string, createdAt: string): WidgetRecord[] {
   ];
 }
 
-async function hasConnectedAgent(tenantId: string): Promise<boolean> {
+async function hasActivatedAgent(tenantId: string): Promise<boolean> {
   const result = await ddb.send(new QueryCommand({
     TableName: AGENTS_TABLE,
     KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
     ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":prefix": "AGENT#" },
   }));
-  return ((result.Items as AgentRecord[] | undefined) ?? []).some((agent) => Boolean(agent.lastSeenAt));
+  return ((result.Items as AgentRecord[] | undefined) ?? []).length > 0;
 }
 
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
@@ -51,8 +51,8 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   const current: OnboardingState = tenant.onboarding ?? { version: 1 };
   let next: OnboardingState = { ...current };
 
-  if (action === "complete" && !(await hasConnectedAgent(tenantId))) {
-    return jsonResponse(409, { error: "conectá al menos un agente antes de finalizar la configuración" });
+  if (action === "complete" && !(await hasActivatedAgent(tenantId))) {
+    return jsonResponse(409, { error: "activá al menos un agente antes de finalizar la configuración" });
   }
 
   if (action === "start") next.startedAt ??= now;

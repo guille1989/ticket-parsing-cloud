@@ -31,15 +31,15 @@ test("inicia el onboarding y lo persiste", async () => {
   expect(mockDdbSend.mock.calls[0][0].constructor.name).toBe("UpdateCommand");
 });
 
-test("no permite finalizar sin un heartbeat real", async () => {
-  mockDdbSend.mockResolvedValueOnce({ Items: [{ agentId: "a1" }] });
+test("no permite finalizar sin un agente activado", async () => {
+  mockDdbSend.mockResolvedValueOnce({ Items: [] });
   const result = await handler(event("complete"));
   expect(result.statusCode).toBe(409);
   expect(mockDdbSend).toHaveBeenCalledTimes(1);
 });
 
-test("finaliza cuando hay un agente conectado", async () => {
-  mockDdbSend.mockResolvedValueOnce({ Items: [{ agentId: "a1", lastSeenAt: "2026-08-12T10:10:00.000Z" }] }).mockResolvedValueOnce({});
+test("finaliza cuando hay un agente activado aunque el primer heartbeat aún no haya llegado", async () => {
+  mockDdbSend.mockResolvedValueOnce({ Items: [{ agentId: "a1" }] }).mockResolvedValueOnce({});
   const result = await handler(event("complete"));
   expect(result.statusCode).toBe(200);
   expect(JSON.parse(result.body).onboarding.completedAt).toEqual(expect.any(String));
