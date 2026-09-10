@@ -6,7 +6,7 @@ import type { ParsedItem, ParsedTicket } from "./types.js";
  * parseo/validación del JSON que devuelve.
  */
 export const TICKET_JSON_SHAPE =
-  '{"items":[{"description":string,"quantity":number,"unitPrice":number,"subtotal":number,"voided":boolean}],"total":number,"discount":number|null,"tip":number|null,"timestamp":string|null}';
+  '{"items":[{"description":string,"quantity":number,"unitPrice":number,"subtotal":number,"voided":boolean}],"total":number,"tax":number|null,"discount":number|null,"tip":number|null,"timestamp":string|null}';
 
 const MAX_ATTEMPTS = 3;
 const BACKOFF_MS = [1000, 2000];
@@ -106,6 +106,7 @@ function validateShape(raw: Record<string, unknown>): ParsedTicket | null {
   return {
     items,
     total: raw.total,
+    tax: typeof raw.tax === "number" ? raw.tax : undefined,
     discount: typeof raw.discount === "number" ? raw.discount : undefined,
     tip: typeof raw.tip === "number" ? raw.tip : undefined,
     timestamp,

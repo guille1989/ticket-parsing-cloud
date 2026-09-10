@@ -204,13 +204,14 @@ async function markParsed(
       TableName: TICKETS_TABLE,
       Key: ticketKey(message.tenantId, message.capturedAt, message.ticketId),
       UpdateExpression:
-        "SET #status = :status, parsedAt = :parsedAt, #items = :items, #total = :total, discount = :discount, tip = :tip, parsedBy = :parsedBy, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
-      ExpressionAttributeNames: { "#status": "status", "#total": "total", "#items": "items" },
+        "SET #status = :status, parsedAt = :parsedAt, #items = :items, #total = :total, #tax = :tax, discount = :discount, tip = :tip, parsedBy = :parsedBy, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+      ExpressionAttributeNames: { "#status": "status", "#total": "total", "#items": "items", "#tax": "tax" },
       ExpressionAttributeValues: {
         ":status": status,
         ":parsedAt": new Date().toISOString(),
         ":items": parsed.items,
         ":total": parsed.total,
+        ":tax": parsed.tax ?? null,
         ":discount": parsed.discount ?? null,
         ":tip": parsed.tip ?? null,
         ":parsedBy": parsedBy,

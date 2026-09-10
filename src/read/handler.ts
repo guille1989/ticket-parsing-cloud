@@ -40,6 +40,7 @@ function toPublicTicket(item: TicketRecord) {
     parsedAt: item.parsedAt,
     items: item.items,
     total: item.total,
+    tax: item.tax,
     discount: item.discount,
     tip: item.tip,
     failReason: item.failReason,

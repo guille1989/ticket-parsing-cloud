@@ -7,11 +7,11 @@
  * string del usuario tal cual.
  */
 
-export const NUMERIC_FIELDS = ["quantity", "unitPrice", "subtotal", "discount", "tip", "total"] as const;
+export const NUMERIC_FIELDS = ["quantity", "unitPrice", "subtotal", "discount", "tip", "tax", "total"] as const;
 export type NumericField = (typeof NUMERIC_FIELDS)[number];
 
 /**
- * `discount`/`tip`/`total` son del TICKET, no del ítem — se escriben
+ * `discount`/`tip`/`tax`/`total` son del TICKET, no del ítem — se escriben
  * repetidos en cada fila de `writeAnalyticsRows.ts` (una fila por ítem, no
  * por ticket). Sumarlos/promediarlos directo cuenta esa repetición: un
  * ticket de 3 ítems infla su total 3 veces. `queryBuilder.ts` los agrega a
@@ -19,7 +19,7 @@ export type NumericField = (typeof NUMERIC_FIELDS)[number];
  * `quantity`/`unitPrice`/`subtotal` sí son genuinamente por ítem, no
  * tienen este problema.
  */
-export const TICKET_LEVEL_FIELDS: NumericField[] = ["discount", "tip", "total"];
+export const TICKET_LEVEL_FIELDS: NumericField[] = ["discount", "tip", "tax", "total"];
 
 export function isTicketLevelField(field: string): boolean {
   return (TICKET_LEVEL_FIELDS as readonly string[]).includes(field);
@@ -46,6 +46,7 @@ const NUMERIC_COLUMN_BY_FIELD: Record<NumericField, string> = {
   subtotal: "subtotal",
   discount: "discount",
   tip: "tip",
+  tax: "tax",
   total: "total",
 };
 

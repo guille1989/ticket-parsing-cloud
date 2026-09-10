@@ -10,7 +10,9 @@
  * Requiere: credenciales AWS de la cuenta 724064282801, y haber corrido
  * `npx cdk deploy` antes.
  *
- * Uso:  npm run etapa-a-ocr
+ * Uso:
+ *   npm run etapa-a-ocr                          # la fixture de Loggro
+ *   npm run etapa-a-ocr -- ruta/al/ticket.escpos # otro .escpos capturado
  */
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -27,7 +29,8 @@ const AGENT_API_KEY_ID = "m8v0h3tm1i"; // agente "Santiago_01_ca" de Empanadas T
 const TENANT_ID = "de728d42-eb0b-43e4-ba15-16c10962c719";
 const TICKETS_TABLE = "TicketParsingCloudStack-TicketsTableB76A19AF-1RLLAB8N38KF6";
 const PRINTER = "EPSON TM-T20II Receipt";
-const ESCPOS_FILE = join(process.cwd(), "fixtures", "escpos", "loggro-factura-raster.escpos");
+const ESCPOS_FILE =
+  process.argv[2] ?? join(process.cwd(), "fixtures", "escpos", "loggro-factura-raster.escpos");
 
 const apigw = new APIGatewayClient({ region: REGION });
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: REGION }));
@@ -72,6 +75,7 @@ async function main(): Promise<void> {
         rawKind: Item!.rawKind,
         parsedBy: Item!.parsedBy,
         total: Item!.total,
+        tax: Item!.tax,
         discount: Item!.discount,
         tip: Item!.tip,
         items: Item!.items,

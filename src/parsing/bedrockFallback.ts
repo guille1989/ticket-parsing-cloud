@@ -17,6 +17,8 @@ ${TICKET_JSON_SHAPE}
 
 Reglas estrictas:
 - Si no podés identificar con confianza al menos un ítem y un total, respondé exactamente {"unparseable":true} — no inventes valores que no estén claramente en el texto.
+- Montos como número entero sin símbolo ni separador de miles.
+- "tax": el impuesto/IVA total si el ticket lo desglosa, si no null. Debe cumplirse: suma de subtotales de ítems = total, O suma de subtotales + tax = total.
 - "timestamp" en ISO 8601 si hay fecha/hora en el texto, si no null.
 - Respondé SOLO el JSON.`;
 

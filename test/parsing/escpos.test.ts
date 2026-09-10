@@ -93,6 +93,25 @@ describe("readEscpos — captura real de Loggro (imagen raster)", () => {
   });
 });
 
+describe("readEscpos — segunda captura real de Loggro (factura con IVA desglosado, columnas de precio recortadas)", () => {
+  const RASTER = readFileSync(
+    join(process.cwd(), "fixtures", "escpos", "loggro-factura-iva-desglosado.escpos"),
+  );
+  const content = readEscpos(RASTER);
+
+  test("es una imagen raster dominante", () => {
+    expect(content.bands.length).toBeGreaterThan(5);
+    expect(looksRasterDominant(content)).toBe(true);
+  });
+
+  test("extractRasterPng reconstruye la factura completa", () => {
+    const image = extractRasterPng(RASTER);
+    expect(image).not.toBeNull();
+    expect(image!.width).toBeGreaterThanOrEqual(576);
+    expect(image!.height).toBeGreaterThan(2000);
+  });
+});
+
 describe("rasterToPng", () => {
   test("apila franjas de distinto ancho sin romperse (pad a la más ancha + margen)", () => {
     const bands: RasterBand[] = [

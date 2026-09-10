@@ -220,6 +220,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
             { name: "voided", type: "boolean" },
             { name: "discount", type: "double" },
             { name: "tip", type: "double" },
+            { name: "tax", type: "double" },
             { name: "total", type: "double" },
           ],
         },

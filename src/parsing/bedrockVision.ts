@@ -8,15 +8,16 @@ const bedrock = new BedrockRuntimeClient({});
 /** Un ticket que ni Bedrock puede leer no debería costar más de esto en imágenes. */
 const MAX_TILES = 12;
 
-const SYSTEM_PROMPT = `Sos un extractor de datos de tickets y facturas de venta. Se te dan una o más imágenes que juntas forman UN ticket impreso, en franjas verticales de arriba hacia abajo (puede ser una factura electrónica colombiana de un POS como Loggro). Devolvé SOLO JSON, sin markdown ni texto extra, con esta forma exacta:
+const SYSTEM_PROMPT = `Sos un extractor de datos de tickets y facturas de venta. Se te dan una o más imágenes que juntas forman UN ticket impreso, en franjas verticales de arriba hacia abajo (suele ser una factura electrónica colombiana de un POS como Loggro). Devolvé SOLO JSON, sin markdown ni texto extra, con esta forma exacta:
 
 ${TICKET_JSON_SHAPE}
 
 Reglas estrictas:
-- Números colombianos: el punto es separador de miles y la coma es decimal ("$ 6.100" = 6100). "unitPrice", "subtotal", "total", "discount" y "tip" van como número sin símbolo ni separadores (6100, no "6.100" ni "$6.100").
-- "items": una entrada por línea de producto de la factura. Tomá "quantity" y "unitPrice" de la fila; "subtotal" = quantity × unitPrice salvo que la fila muestre otro valor. "voided" true solo si la línea figura anulada.
-- "total": el valor final a pagar del ticket ("VALOR A PAGAR", "TOTAL").
-- "discount" / "tip": número si aparecen explícitos, si no null.
+- Números colombianos: el punto es separador de miles y la coma es decimal ("$ 6.100" = 6100). Todos los montos van como número entero sin símbolo ni separadores (6100, no "6.100" ni "$6.100").
+- "items": una entrada por cada línea de PRODUCTO de la factura (no de la sección de impuestos). Tomá "quantity" de la columna Cantidad y "unitPrice" de la columna Precio de esa fila. "subtotal" = el valor de la columna Total/Importe de la fila; si esa columna no está o no se lee, usá quantity × unitPrice. "voided" true solo si la línea figura anulada.
+- Si la factura tiene una sección de impuestos ("Impuestos", "IVA") con columnas Base e Impuesto: poné en "tax" el total de la columna Impuesto. Si NO podés leer los precios por línea (columna Precio/Total cortada o ilegible) pero sí ves esa Base, entonces la suma de los "subtotal" de los ítems debe dar la Base (precio sin IVA), y "total" = Base + Impuesto = "VALOR A PAGAR".
+- "total": el valor final a pagar ("VALOR A PAGAR", "TOTAL"). Debe cumplirse: suma de subtotales de ítems = total, O bien suma de subtotales + tax = total.
+- "tax" / "discount" / "tip": número si aparecen explícitos, si no null.
 - "timestamp": fecha y hora del ticket en ISO 8601, o null si no hay.
 - Si las imágenes no son un ticket de venta legible, respondé exactamente {"unparseable":true}. No inventes valores que no estén en la imagen.
 - Respondé SOLO el JSON.`;

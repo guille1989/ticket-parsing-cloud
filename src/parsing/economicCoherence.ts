@@ -14,12 +14,13 @@ const TOLERANCE_ABS = 1;
 
 /**
  * Techos elegidos junto al negocio, no un valor técnico — muy por encima de
- * los tickets reales vistos hasta ahora ($900-$12.300), pero suficientes
- * para cortar una alucinación tipo "$99.999.999" o un array de miles de
- * ítems sin rechazar un ticket grande legítimo.
+ * los tickets reales vistos hasta ahora, pero suficientes para cortar una
+ * alucinación tipo "$999.999.999" o un array de miles de ítems sin rechazar
+ * un ticket grande legítimo. En pesos colombianos (COP): una cuenta de
+ * restaurante para una mesa grande puede pasar los $500.000.
  */
 const MAX_ITEMS = 50;
-const MAX_AMOUNT_ARS = 500_000;
+const MAX_AMOUNT_ARS = 5_000_000;
 
 function withinTolerance(actual: number, expected: number): boolean {
   return Math.abs(actual - expected) <= TOLERANCE_ABS;
@@ -92,11 +93,25 @@ export function checkEconomicCoherence(ticket: ParsedTicket): CoherenceResult {
       return { ok: false, reason: `propina (${ticket.tip}) supera el techo razonable de ${MAX_AMOUNT_ARS}` };
     }
   }
-  const expectedTotal = itemsSum - (ticket.discount ?? 0) + (ticket.tip ?? 0);
-  if (!withinTolerance(ticket.total, expectedTotal)) {
+  if (ticket.tax !== undefined) {
+    if (!Number.isFinite(ticket.tax) || ticket.tax < 0) {
+      return { ok: false, reason: `impuesto inválido (${ticket.tax})` };
+    }
+    if (ticket.tax > MAX_AMOUNT_ARS || ticket.tax > itemsSum) {
+      return { ok: false, reason: `impuesto (${ticket.tax}) desproporcionado para esta venta` };
+    }
+  }
+
+  // El total tiene que cerrar con la suma de ítems (ajustada por
+  // descuento/propina) — o, en las facturas donde los ítems van a precio
+  // base y el "VALOR A PAGAR" ya incluye el IVA, con esa suma más `tax`.
+  const base = itemsSum - (ticket.discount ?? 0) + (ticket.tip ?? 0);
+  const taxInclusive = base + (ticket.tax ?? 0);
+  if (!withinTolerance(ticket.total, base) && !withinTolerance(ticket.total, taxInclusive)) {
+    const expected = ticket.tax !== undefined ? `${base} (o ${taxInclusive} con IVA)` : `${base}`;
     return {
       ok: false,
-      reason: `el total (${ticket.total}) no coincide con la suma de ítems ajustada por descuento/propina (${expectedTotal})`,
+      reason: `el total (${ticket.total}) no coincide con la suma de ítems ajustada por descuento/propina/impuesto (${expected})`,
     };
   }
 

@@ -95,8 +95,8 @@ test("acepta exactamente el máximo de 50 ítems", () => {
 test("total por encima del techo razonable: no coherente", () => {
   const result = checkEconomicCoherence(
     ticket({
-      items: [{ description: "Algo caro", quantity: 1, unitPrice: 600_000, subtotal: 600_000, voided: false }],
-      total: 600_000,
+      items: [{ description: "Algo caro", quantity: 1, unitPrice: 6_000_000, subtotal: 6_000_000, voided: false }],
+      total: 6_000_000,
     }),
   );
   expect(result.ok).toBe(false);
@@ -106,8 +106,8 @@ test("total por encima del techo razonable: no coherente", () => {
 test("precio unitario por encima del techo razonable: no coherente", () => {
   const result = checkEconomicCoherence(
     ticket({
-      items: [{ description: "Algo caro", quantity: 0.5, unitPrice: 500_001, subtotal: 250_000.5, voided: false }],
-      total: 250_000.5,
+      items: [{ description: "Algo caro", quantity: 0.5, unitPrice: 5_000_001, subtotal: 2_500_000.5, voided: false }],
+      total: 2_500_000.5,
     }),
   );
   expect(result.ok).toBe(false);
@@ -118,8 +118,8 @@ test("acepta un importe exactamente en el techo razonable", () => {
   expect(
     checkEconomicCoherence(
       ticket({
-        items: [{ description: "Producto", quantity: 1, unitPrice: 500_000, subtotal: 500_000, voided: false }],
-        total: 500_000,
+        items: [{ description: "Producto", quantity: 1, unitPrice: 5_000_000, subtotal: 5_000_000, voided: false }],
+        total: 5_000_000,
       }),
     ),
   ).toEqual({ ok: true });
@@ -160,12 +160,58 @@ test.each([-1, Infinity, -Infinity, NaN])("propina inválida (%s): no coherente"
 });
 
 test("propina por encima del techo razonable: no coherente", () => {
-  const result = checkEconomicCoherence(ticket({ tip: 500_001, total: 501_801 }));
+  const result = checkEconomicCoherence(ticket({ tip: 5_000_001, total: 5_001_801 }));
   expect(result.ok).toBe(false);
 });
 
 test("acepta propina cero", () => {
   expect(checkEconomicCoherence(ticket({ tip: 0 }))).toEqual({ ok: true });
+});
+
+// Facturas colombianas: los ítems van a precio base (sin IVA) y el
+// "VALOR A PAGAR" ya lo incluye — `tax` cierra esa diferencia.
+test("total = suma de ítems + impuesto: coherente (caso factura Loggro con IVA desglosado)", () => {
+  const result = checkEconomicCoherence(
+    ticket({
+      items: [{ description: "Coca Cola 400ml", quantity: 1, unitPrice: 4454, subtotal: 4454, voided: false }],
+      tax: 846,
+      total: 5300,
+    }),
+  );
+  expect(result).toEqual({ ok: true });
+});
+
+test("sigue siendo coherente si los ítems ya vienen con IVA incluido (total = suma, tax informativo)", () => {
+  const result = checkEconomicCoherence(
+    ticket({
+      items: [{ description: "H2O PET 600ML", quantity: 1, unitPrice: 6100, subtotal: 6100, voided: false }],
+      tax: 974,
+      total: 6100,
+    }),
+  );
+  expect(result).toEqual({ ok: true });
+});
+
+test("impuesto presente pero que NO cierra el total: no coherente", () => {
+  const result = checkEconomicCoherence(
+    ticket({
+      items: [{ description: "X", quantity: 1, unitPrice: 4454, subtotal: 4454, voided: false }],
+      tax: 300, // 4454 + 300 = 4754 != 5300
+      total: 5300,
+    }),
+  );
+  expect(result.ok).toBe(false);
+});
+
+test.each([-1, NaN, Infinity])("impuesto inválido (%s): no coherente", (tax) => {
+  const result = checkEconomicCoherence(ticket({ tax }));
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.reason).toMatch(/impuesto inválido/);
+});
+
+test("impuesto mayor que la suma de ítems: no coherente", () => {
+  const result = checkEconomicCoherence(ticket({ tax: 5000, total: 6800 }));
+  expect(result.ok).toBe(false);
 });
 
 test("ítem *ANULADO* (voided) no suma al total esperado — igual que fixtures/sample-tickets/05-item-anulado.txt", () => {

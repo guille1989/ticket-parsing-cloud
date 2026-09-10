@@ -54,6 +54,7 @@ export async function writeAnalyticsRows(
       // de forzar un join contra otra tabla para poder promediar/filtrar.
       discount: parsed.discount ?? null,
       tip: parsed.tip ?? null,
+      tax: parsed.tax ?? null,
       total: parsed.total,
     }),
   );

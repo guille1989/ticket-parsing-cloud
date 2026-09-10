@@ -75,6 +75,7 @@ export interface TicketRecord {
   parsedAt?: string;
   items?: ParsedItem[];
   total?: number;
+  tax?: number;
   discount?: number;
   tip?: number;
   failReason?: string;

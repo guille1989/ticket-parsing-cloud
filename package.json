@@ -12,7 +12,8 @@
     "list-tenants": "tsx scripts/list-tenants.ts",
     "set-tenant-status": "tsx scripts/set-tenant-status.ts",
     "delete-tenant": "tsx scripts/delete-tenant.ts",
-    "etapa-a-ocr": "tsx scripts/etapa-a-ocr.ts"
+    "etapa-a-ocr": "tsx scripts/etapa-a-ocr.ts",
+    "tenant-tickets": "tsx scripts/tenant-tickets.ts"
   },
   "devDependencies": {
     "@swc/core": "^1.15.0",
