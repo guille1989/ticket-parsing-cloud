@@ -6,7 +6,9 @@ import type { DynamoDBBatchResponse, DynamoDBRecord, DynamoDBStreamEvent } from 
 
 import { writeAnalyticsRows } from "../analytics/writeAnalyticsRows.js";
 import { tryBedrockFallback } from "../parsing/bedrockFallback.js";
+import { tryBedrockVision } from "../parsing/bedrockVision.js";
 import { checkEconomicCoherence } from "../parsing/economicCoherence.js";
+import { extractRasterTiles, looksRasterDominant, readEscpos } from "../parsing/escpos.js";
 import { getParser } from "../parsing/registry.js";
 import type { ParsedTicket } from "../parsing/types.js";
 import { ddb, RAW_BUCKET, ticketKey, ticketStatusGsiKey, TICKETS_TABLE } from "../shared/dynamo.js";
@@ -55,6 +57,7 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
     capturedAt: item.capturedAt,
     rawS3Key: item.rawS3Key,
     port: item.port,
+    rawKind: item.rawKind,
   };
 
   const tenant = await getTenant(message.tenantId);
@@ -73,8 +76,51 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
     return;
   }
 
+  // Leído acá (no a nivel de módulo) para que quede desactivado con solo no
+  // setear la variable (tests, o mientras no se habilite Bedrock) sin
+  // depender de cuándo se importa este archivo.
+  const bedrockModelId = process.env.BEDROCK_MODEL_ID;
+
   const raw = await s3.send(new GetObjectCommand({ Bucket: RAW_BUCKET, Key: message.rawS3Key }));
-  const rawText = (await raw.Body?.transformToString()) ?? "";
+
+  // La captura de spool (`rawKind: "escpos"`) sube los bytes ESC/POS crudos,
+  // que pueden ser texto O una imagen raster (varios POS, Loggro incluido,
+  // imprimen la factura entera como bitmap). Se resuelve acá cuál es: si es
+  // imagen, va por OCR con Bedrock vision; si es texto ESC/POS, se extrae el
+  // texto y sigue por el camino determinístico de siempre (el `parser` de
+  // arriba no se usa en el camino imagen).
+  let rawText: string;
+  if (message.rawKind === "escpos") {
+    const bytes = Buffer.from((await raw.Body?.transformToByteArray()) ?? new Uint8Array());
+    const content = readEscpos(bytes);
+
+    if (looksRasterDominant(content)) {
+      if (!bedrockModelId) {
+        await markFailed(message, "ticket-imagen (ESC/POS raster) y el OCR con Bedrock no está habilitado");
+        return;
+      }
+      const tiles = extractRasterTiles(bytes).map((tile) => tile.png);
+      const vision = coherentOrNull(await tryBedrockVision(tiles, bedrockModelId));
+      if (!vision.ticket) {
+        await markFailed(
+          message,
+          vision.incoherenceReason
+            ? `el OCR del ticket-imagen no dio un resultado coherente: ${vision.incoherenceReason}`
+            : "Bedrock vision no pudo extraer un ticket de la imagen",
+        );
+        return;
+      }
+      // Igual que el fallback de texto: lo que resuelve un LLM nunca llega
+      // directo a "parsed" — queda en revisión hasta medir precisión real.
+      await markParsed(message, vision.ticket, "bedrock-vision", "needs_review");
+      await writeAnalyticsRowsSafely(message, vision.ticket, "bedrock-vision", "needs_review");
+      return;
+    }
+
+    rawText = content.text;
+  } else {
+    rawText = (await raw.Body?.transformToString()) ?? "";
+  }
 
   // Ninguno de los dos caminos de parseo verifica que sus propios números
   // cierren entre sí — un total inventado (por regex mal armado, o por
@@ -86,10 +132,6 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
   let parsedBy: NonNullable<TicketRecord["parsedBy"]> = "deterministic";
   let incoherenceReason = deterministic.incoherenceReason;
 
-  // Leído acá (no a nivel de módulo) para que quede desactivado con solo no
-  // setear la variable (tests, o mientras no se habilite Bedrock) sin
-  // depender de cuándo se importa este archivo.
-  const bedrockModelId = process.env.BEDROCK_MODEL_ID;
   if (!parsed && bedrockModelId) {
     const fallback = coherentOrNull(await tryBedrockFallback(rawText, bedrockModelId));
     parsed = fallback.ticket;

@@ -32,17 +32,20 @@ test("acepta ticketId con mayúsculas (UUID es case-insensitive)", () => {
   expect(validateBody({ ...VALID_BODY, ticketId: "5F2B9C3A-1111-4444-8888-ABCDEFABCDEF" }).ok).toBe(true);
 });
 
-test("rechaza port vacío, demasiado largo, o con caracteres fuera del charset permitido", () => {
+test("rechaza port vacío, demasiado largo, con comillas/barra invertida o con caracteres de control", () => {
   expect(validateBody({ ...VALID_BODY, port: "" }).ok).toBe(false);
-  expect(validateBody({ ...VALID_BODY, port: "X".repeat(65) }).ok).toBe(false);
-  expect(validateBody({ ...VALID_BODY, port: "COM3; DROP TABLE" }).ok).toBe(false);
-  expect(validateBody({ ...VALID_BODY, port: "COM3 con espacio" }).ok).toBe(false);
+  expect(validateBody({ ...VALID_BODY, port: "X".repeat(101) }).ok).toBe(false);
+  expect(validateBody({ ...VALID_BODY, port: 'impresora "rara"' }).ok).toBe(false);
+  expect(validateBody({ ...VALID_BODY, port: "carpeta\\rara" }).ok).toBe(false);
+  expect(validateBody({ ...VALID_BODY, port: "com\n3" }).ok).toBe(false);
 });
 
-test("acepta port con el charset permitido: letras, números, _, . y -", () => {
+test("acepta identificadores de puerto y también nombres de impresora (con espacios y paréntesis)", () => {
   expect(validateBody({ ...VALID_BODY, port: "COM3" }).ok).toBe(true);
   expect(validateBody({ ...VALID_BODY, port: "datafono-caja1" }).ok).toBe(true);
   expect(validateBody({ ...VALID_BODY, port: "periferico_1.2" }).ok).toBe(true);
+  expect(validateBody({ ...VALID_BODY, port: "EPSON TM-T20II Receipt" }).ok).toBe(true);
+  expect(validateBody({ ...VALID_BODY, port: "HP LaserJet Pro (copia 1)" }).ok).toBe(true);
 });
 
 // capturedAt compone el sort key de DynamoDB — una fecha inválida rompe
@@ -70,4 +73,39 @@ test("rechaza rawText que supera el límite de tamaño", () => {
 
 test("acepta rawText justo en el límite de tamaño", () => {
   expect(validateBody({ ...VALID_BODY, rawText: "X".repeat(64 * 1024) }).ok).toBe(true);
+});
+
+// --- captura de spool: bytes ESC/POS en base64 ---
+
+const { rawText: _t, ...BASE_NO_RAW } = VALID_BODY;
+const escposBase64 = Buffer.from("\x1b@EMPANADAS\nTOTAL 6000\x1dV\x00", "latin1").toString("base64");
+
+test("acepta rawBase64 + rawEncoding escpos, y expone los bytes decodificados", () => {
+  const result = validateBody({ ...BASE_NO_RAW, rawBase64: escposBase64, rawEncoding: "escpos" });
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.rawKind).toBe("escpos");
+    expect(Buffer.isBuffer(result.value.rawContent)).toBe(true);
+    expect((result.value.rawContent as Buffer).toString("latin1")).toContain("EMPANADAS");
+  }
+});
+
+test("rechaza mandar rawText y rawBase64 a la vez, o ninguno de los dos", () => {
+  expect(validateBody({ ...VALID_BODY, rawBase64: escposBase64, rawEncoding: "escpos" }).ok).toBe(false);
+  expect(validateBody(BASE_NO_RAW).ok).toBe(false);
+});
+
+test("rechaza rawBase64 sin rawEncoding, o con un rawEncoding que no es escpos", () => {
+  expect(validateBody({ ...BASE_NO_RAW, rawBase64: escposBase64 }).ok).toBe(false);
+  expect(validateBody({ ...BASE_NO_RAW, rawBase64: escposBase64, rawEncoding: "text" }).ok).toBe(false);
+});
+
+test("rechaza rawBase64 que no es base64 canónico", () => {
+  expect(validateBody({ ...BASE_NO_RAW, rawBase64: "no es base64!!", rawEncoding: "escpos" }).ok).toBe(false);
+  expect(validateBody({ ...BASE_NO_RAW, rawBase64: "abc", rawEncoding: "escpos" }).ok).toBe(false); // largo no múltiplo de 4
+});
+
+test("rechaza rawBase64 que decodifica por encima del límite de 6 MB", () => {
+  const tooBig = Buffer.alloc(6 * 1024 * 1024 + 3).toString("base64");
+  expect(validateBody({ ...BASE_NO_RAW, rawBase64: tooBig, rawEncoding: "escpos" }).ok).toBe(false);
 });

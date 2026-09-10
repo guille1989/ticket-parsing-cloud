@@ -65,6 +65,13 @@ export interface TicketRecord {
   capturedAt: string;
   status: TicketStatus;
   rawS3Key: string;
+  /**
+   * Formato del artefacto crudo en S3. Ausente = `"text"` (tickets subidos
+   * antes de que existiera este campo, y toda la captura serie/TCP).
+   * `"escpos"` = bytes ESC/POS crudos, que pueden ser texto o una imagen
+   * raster — el parser decide y, si es imagen, le hace OCR.
+   */
+  rawKind?: "text" | "escpos";
   parsedAt?: string;
   items?: ParsedItem[];
   total?: number;
@@ -77,7 +84,7 @@ export interface TicketRecord {
    * LLM puede alucinar montos — este campo permite auditar/filtrar los
    * tickets resueltos por ese camino en vez de confiar en todos por igual.
    */
-  parsedBy?: "deterministic" | "bedrock-fallback";
+  parsedBy?: "deterministic" | "bedrock-fallback" | "bedrock-vision";
 }
 
 /**
@@ -92,6 +99,8 @@ export interface ParseJobMessage {
   rawS3Key: string;
   /** Puerto/periférico de origen — determina qué parser usar (ver TenantRecord.portParsers). */
   port: string;
+  /** Ver `TicketRecord.rawKind`. Ausente = `"text"`. */
+  rawKind?: "text" | "escpos";
 }
 
 /**

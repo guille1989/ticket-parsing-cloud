@@ -11,7 +11,8 @@
     "test-parser": "tsx scripts/test-parser.ts",
     "list-tenants": "tsx scripts/list-tenants.ts",
     "set-tenant-status": "tsx scripts/set-tenant-status.ts",
-    "delete-tenant": "tsx scripts/delete-tenant.ts"
+    "delete-tenant": "tsx scripts/delete-tenant.ts",
+    "etapa-a-ocr": "tsx scripts/etapa-a-ocr.ts"
   },
   "devDependencies": {
     "@swc/core": "^1.15.0",

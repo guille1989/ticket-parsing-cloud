@@ -106,6 +106,94 @@ test("INSERT + pending + texto válido: parsea y actualiza a parsed", async () =
   expect(mockBedrockSend).not.toHaveBeenCalled();
 });
 
+describe("captura de spool — rawKind escpos", () => {
+  const LOGGRO_RASTER = readFileSync(
+    join(process.cwd(), "fixtures", "escpos", "loggro-factura-raster.escpos"),
+  );
+  const escposRecord = () => pendingTicket({ rawKind: "escpos", rawS3Key: "tenants/t1/tk1.escpos" });
+  const s3Bytes = (buf: Buffer) =>
+    mockS3Send.mockResolvedValue({ Body: { transformToByteArray: async () => new Uint8Array(buf) } });
+
+  test("ticket-imagen sin BEDROCK_MODEL_ID: marca failed indicando que el OCR no está habilitado", async () => {
+    mockGetTenant.mockResolvedValue(validTenant);
+    s3Bytes(LOGGRO_RASTER);
+    mockDdbSend.mockResolvedValue({});
+
+    await handler({ Records: [streamRecord("INSERT", escposRecord())] });
+
+    expect(mockBedrockSend).not.toHaveBeenCalled();
+    const update = mockDdbSend.mock.calls[0][0].input;
+    expect(update.ExpressionAttributeValues[":status"]).toBe("failed");
+    expect(update.ExpressionAttributeValues[":reason"]).toMatch(/OCR|Bedrock/i);
+  });
+
+  test("ticket-imagen: reconstruye el raster, se lo pasa a Bedrock vision y marca needs_review", async () => {
+    process.env.BEDROCK_MODEL_ID = "test-model";
+    mockGetTenant.mockResolvedValue(validTenant);
+    s3Bytes(LOGGRO_RASTER);
+    mockBedrockSend.mockResolvedValue(
+      bedrockTextResponse(
+        JSON.stringify({
+          items: [{ description: "H2O PET 600ML", quantity: 1, unitPrice: 6100, subtotal: 6100, voided: false }],
+          total: 6100,
+          discount: null,
+          tip: null,
+          timestamp: "2026-09-09T10:16:24.000Z",
+        }),
+      ),
+    );
+    mockDdbSend.mockResolvedValue({});
+
+    await handler({ Records: [streamRecord("INSERT", escposRecord())] });
+
+    expect(mockBedrockSend).toHaveBeenCalledTimes(1);
+    // se mandó al menos una imagen PNG
+    const sentContent = mockBedrockSend.mock.calls[0][0].input.messages[0].content;
+    const images = sentContent.filter((block: Record<string, unknown>) => "image" in block);
+    expect(images.length).toBeGreaterThan(0);
+    expect(images[0].image.format).toBe("png");
+    expect(Buffer.isBuffer(images[0].image.source.bytes)).toBe(true);
+
+    const update = mockDdbSend.mock.calls[0][0].input;
+    expect(update.ExpressionAttributeValues[":status"]).toBe("needs_review");
+    expect(update.ExpressionAttributeValues[":parsedBy"]).toBe("bedrock-vision");
+    expect(update.ExpressionAttributeValues[":total"]).toBe(6100);
+  });
+
+  test("ticket-imagen que Bedrock no puede leer (unparseable): marca failed", async () => {
+    process.env.BEDROCK_MODEL_ID = "test-model";
+    mockGetTenant.mockResolvedValue(validTenant);
+    s3Bytes(LOGGRO_RASTER);
+    mockBedrockSend.mockResolvedValue(bedrockTextResponse(JSON.stringify({ unparseable: true })));
+    mockDdbSend.mockResolvedValue({});
+
+    await handler({ Records: [streamRecord("INSERT", escposRecord())] });
+
+    const update = mockDdbSend.mock.calls[0][0].input;
+    expect(update.ExpressionAttributeValues[":status"]).toBe("failed");
+    expect(update.ExpressionAttributeValues[":reason"]).toMatch(/Bedrock vision|imagen/i);
+  });
+
+  test("escpos que en realidad es TEXTO: extrae el texto y sigue por el parser determinístico", async () => {
+    mockGetTenant.mockResolvedValue(validTenant);
+    // el mismo ticket de texto de la fixture, envuelto en ESC @ ... GS V
+    const escposText = Buffer.concat([
+      Buffer.from([0x1b, 0x40]),
+      Buffer.from(VALID_TICKET_TEXT, "latin1"),
+      Buffer.from([0x1d, 0x56, 0x00]),
+    ]);
+    s3Bytes(escposText);
+    mockDdbSend.mockResolvedValue({});
+
+    await handler({ Records: [streamRecord("INSERT", escposRecord())] });
+
+    expect(mockBedrockSend).not.toHaveBeenCalled();
+    const update = mockDdbSend.mock.calls[0][0].input;
+    expect(update.ExpressionAttributeValues[":status"]).toBe("parsed");
+    expect(update.ExpressionAttributeValues[":parsedBy"]).toBe("deterministic");
+  });
+});
+
 test("tenant inexistente: marca failed sin tocar S3", async () => {
   mockGetTenant.mockResolvedValue(undefined);
   mockDdbSend.mockResolvedValue({});

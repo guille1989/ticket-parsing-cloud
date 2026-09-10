@@ -116,6 +116,41 @@ test("request válido: guarda en S3, escritura condicional en DynamoDB, responde
   expect(ddbCall.Item.status).toBe("pending");
 });
 
+test("captura de spool (rawBase64/escpos): guarda los BYTES en S3 como .escpos y marca rawKind", async () => {
+  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+  mockS3Send.mockResolvedValue({});
+  mockDdbSend.mockResolvedValue({});
+
+  const bytes = Buffer.from("\x1b@VENTA\x1dV\x00", "latin1");
+  const { rawText: _drop, ...bodyNoText } = VALID_BODY;
+  const result = await handler(
+    eventWith("key1", { ...bodyNoText, rawBase64: bytes.toString("base64"), rawEncoding: "escpos" }),
+  );
+
+  expect(result.statusCode).toBe(202);
+  const s3Call = mockS3Send.mock.calls[0][0].input;
+  expect(s3Call.Key).toBe(`tenants/t1/${VALID_BODY.ticketId}.escpos`);
+  expect(s3Call.ContentType).toBe("application/octet-stream");
+  expect(Buffer.isBuffer(s3Call.Body)).toBe(true);
+  expect((s3Call.Body as Buffer).equals(bytes)).toBe(true);
+
+  const ddbItem = mockDdbSend.mock.calls[0][0].input.Item;
+  expect(ddbItem.rawKind).toBe("escpos");
+  expect(ddbItem.rawS3Key).toBe(`tenants/t1/${VALID_BODY.ticketId}.escpos`);
+});
+
+test("captura de texto: rawKind queda en 'text' y la key sigue siendo .txt", async () => {
+  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+  mockS3Send.mockResolvedValue({});
+  mockDdbSend.mockResolvedValue({});
+
+  await handler(eventWith("key1", VALID_BODY));
+
+  const s3Call = mockS3Send.mock.calls[0][0].input;
+  expect(s3Call.Key).toBe(`tenants/t1/${VALID_BODY.ticketId}.txt`);
+  expect(mockDdbSend.mock.calls[0][0].input.Item.rawKind).toBe("text");
+});
+
 // El caso central del fix de idempotencia: el agente reintenta con el
 // MISMO ticketId (no sabe si el fallo anterior fue antes o después de que
 // el servidor procesara el pedido). Antes, esto generaba un ticketId

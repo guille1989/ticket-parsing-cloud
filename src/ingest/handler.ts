@@ -36,32 +36,44 @@ async function resolveTenantId(apiKeyId: string): Promise<ResolvedTenant | undef
 
 const s3 = new S3Client({});
 
-interface RawTicketBody {
-  ticketId: string;
-  port: string;
-  capturedAt: string;
-  rawText: string;
-}
+/**
+ * `"text"`: captura serie/TCP, `rawContent` es el texto crudo.
+ * `"escpos"`: captura de spool, `rawContent` son los bytes ESC/POS ya
+ * decodificados (pueden ser texto o una imagen raster — lo decide el parser).
+ */
+type RawTicketBody =
+  | { ticketId: string; port: string; capturedAt: string; rawKind: "text"; rawContent: string }
+  | { ticketId: string; port: string; capturedAt: string; rawKind: "escpos"; rawContent: Buffer };
 
-// `ticketId` termina siendo parte de la key de S3 (`tenants/<id>/<ticketId>.txt`)
+// `ticketId` termina siendo parte de la key de S3 (`tenants/<id>/<ticketId>.<ext>`)
 // y del sort key de DynamoDB — exigir forma de UUID (lo que ya genera el
 // agente) evita cualquier chance de path traversal o de romper esas claves
 // con caracteres raros.
 const TICKET_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // `port` se usa como key de un diccionario (`Tenants.portParsers`) y queda
-// guardado tal cual — alcanza con identificadores tipo COM3, LPT1, o un id
-// lógico de periférico TCP (`datafono-caja1`).
-const PORT_PATTERN = /^[A-Za-z0-9_.-]+$/;
-const MAX_PORT_LENGTH = 64;
+// guardado tal cual — NUNCA en una URL ni en la key de S3. Puede ser un
+// identificador tipo COM3 / LPT1, un id lógico de periférico TCP
+// (`datafono-caja1`), o —captura de spool— el nombre de la impresora, que
+// suele tener espacios y paréntesis ("EPSON TM-T20II Receipt", "HP LaserJet
+// (copia 1)"). Se permite todo lo imprimible ASCII salvo comillas y barra
+// invertida.
+const PORT_PATTERN = /^[\x20-\x21\x23-\x5b\x5d-\x7e]+$/;
+const MAX_PORT_LENGTH = 100;
 // El mismo formato que produce `new Date().toISOString()` — es lo único
 // que manda el agente. `capturedAt` compone el sort key de DynamoDB
 // (`TICKET#<capturedAt>#<ticketId>`), así que una fecha inválida rompe el
 // orden cronológico de todo el tenant, no solo este ticket.
 const ISO_8601_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-// Ninguna impresora térmica genera un ticket ni remotamente cerca de esto
-// — es una cota generosa para no bloquear un caso real, pero sí evitar
-// que un body gigante llegue a escribirse en S3.
+// Ninguna impresora térmica genera un ticket de TEXTO ni remotamente cerca
+// de esto — cota generosa para no bloquear un caso real, pero sí evitar que
+// un body gigante llegue a escribirse en S3.
 const MAX_RAW_TEXT_BYTES = 64 * 1024;
+// El `.SPL` de un ticket con logo raster ronda los 200 KB; 6 MB cubre con
+// margen cualquier ticket real y queda por debajo del límite de payload de
+// API Gateway (10 MB). Va alineado con `SPOOL_MAX_JOB_BYTES` del agente.
+const MAX_RAW_ESCPOS_BYTES = 6 * 1024 * 1024;
+const MAX_RAW_BASE64_CHARS = Math.ceil(MAX_RAW_ESCPOS_BYTES / 3) * 4 + 4;
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 
 type BodyValidation = { ok: true; value: RawTicketBody } | { ok: false; error: string };
 
@@ -82,12 +94,41 @@ export function validateBody(body: unknown): BodyValidation {
   ) {
     return {
       ok: false,
-      error: `port inválido (máx ${MAX_PORT_LENGTH} caracteres; solo letras, números, "_", "." o "-")`,
+      error: `port inválido (máx ${MAX_PORT_LENGTH} caracteres imprimibles; sin comillas ni barra invertida)`,
     };
   }
   if (typeof b.capturedAt !== "string" || !ISO_8601_PATTERN.test(b.capturedAt) || Number.isNaN(Date.parse(b.capturedAt))) {
     return { ok: false, error: "capturedAt inválido, se esperaba ISO-8601 (ej. 2026-07-27T12:00:00.000Z)" };
   }
+
+  const hasText = b.rawText !== undefined;
+  const hasBase64 = b.rawBase64 !== undefined;
+  if (hasText === hasBase64) {
+    return { ok: false, error: "se esperaba exactamente uno de rawText o rawBase64" };
+  }
+
+  const common = { ticketId: b.ticketId, port: b.port, capturedAt: b.capturedAt };
+
+  if (hasBase64) {
+    if (b.rawEncoding !== "escpos") {
+      return { ok: false, error: 'rawEncoding inválido: con rawBase64 se espera "escpos"' };
+    }
+    if (typeof b.rawBase64 !== "string" || b.rawBase64.length === 0) {
+      return { ok: false, error: "rawBase64 inválido, se esperaba base64 no vacío" };
+    }
+    if (b.rawBase64.length > MAX_RAW_BASE64_CHARS || b.rawBase64.length % 4 !== 0 || !BASE64_PATTERN.test(b.rawBase64)) {
+      return { ok: false, error: "rawBase64 inválido o demasiado grande" };
+    }
+    const rawContent = Buffer.from(b.rawBase64, "base64");
+    if (rawContent.length === 0) {
+      return { ok: false, error: "rawBase64 no decodifica a ningún byte" };
+    }
+    if (rawContent.length > MAX_RAW_ESCPOS_BYTES) {
+      return { ok: false, error: `contenido demasiado grande (máx ${MAX_RAW_ESCPOS_BYTES} bytes, recibidos ${rawContent.length})` };
+    }
+    return { ok: true, value: { ...common, rawKind: "escpos", rawContent } };
+  }
+
   if (typeof b.rawText !== "string" || b.rawText.length === 0) {
     return { ok: false, error: "rawText inválido, se esperaba texto no vacío" };
   }
@@ -95,8 +136,7 @@ export function validateBody(body: unknown): BodyValidation {
   if (rawTextBytes > MAX_RAW_TEXT_BYTES) {
     return { ok: false, error: `rawText demasiado grande (máx ${MAX_RAW_TEXT_BYTES} bytes, recibidos ${rawTextBytes})` };
   }
-
-  return { ok: true, value: { ticketId: b.ticketId, port: b.port, capturedAt: b.capturedAt, rawText: b.rawText } };
+  return { ok: true, value: { ...common, rawKind: "text", rawContent: b.rawText } };
 }
 
 export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
@@ -131,8 +171,9 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   // no sabe si un fallo de red pasó antes o después de que el servidor
   // procesara el pedido) manda el mismo id, y la escritura condicional de
   // abajo lo detecta como duplicado en vez de crear un ticket nuevo.
-  const { ticketId } = validBody;
-  const rawS3Key = `tenants/${tenantId}/${ticketId}.txt`;
+  const { ticketId, rawKind } = validBody;
+  const rawS3Key =
+    rawKind === "escpos" ? `tenants/${tenantId}/${ticketId}.escpos` : `tenants/${tenantId}/${ticketId}.txt`;
 
   // Re-subir el mismo contenido a la misma key en un reintento es
   // inofensivo (sobreescribe con bytes idénticos), así que esto no
@@ -141,8 +182,8 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     new PutObjectCommand({
       Bucket: RAW_BUCKET,
       Key: rawS3Key,
-      Body: validBody.rawText,
-      ContentType: "text/plain; charset=utf-8",
+      Body: validBody.rawContent,
+      ContentType: rawKind === "escpos" ? "application/octet-stream" : "text/plain; charset=utf-8",
     }),
   );
 
@@ -153,6 +194,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     capturedAt: validBody.capturedAt,
     status: "pending",
     rawS3Key,
+    rawKind,
     ...ticketKey(tenantId, validBody.capturedAt, ticketId),
     ...ticketStatusGsiKey(tenantId, "pending", validBody.capturedAt),
   };

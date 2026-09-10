@@ -465,8 +465,11 @@ export class TicketParsingCloudStack extends cdk.Stack {
       bundling: sharedBundling,
       // Con el fallback de Bedrock, un batch de 10 tickets que fallan el
       // parseo determinístico puede terminar haciendo hasta 10 invocaciones
-      // secuenciales al modelo — 20s se quedaba corto para ese caso.
-      timeout: cdk.Duration.seconds(60),
+      // secuenciales al modelo. Y los tickets-imagen (`rawKind: "escpos"`
+      // raster) además reconstruyen el bitmap y mandan varias franjas PNG a
+      // Bedrock vision — más lento y con más uso de memoria.
+      timeout: cdk.Duration.seconds(120),
+      memorySize: 1024,
       environment: {
         TICKETS_TABLE: ticketsTable.tableName,
         TENANTS_TABLE: tenantsTable.tableName,
