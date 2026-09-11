@@ -60,6 +60,19 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
     rawKind: item.rawKind,
   };
 
+  await reprocessTicket(message);
+}
+
+/**
+ * El parseo en sí — separado de `processRecord` (que solo sabe desarmar un
+ * evento del Stream) para poder reusarlo desde `scripts/reparse-ticket.ts`.
+ * Ese script arma el mismo `ParseJobMessage` a partir de un ticket que ya
+ * existe (típicamente uno en `status: "failed"`) y llama a esto directo,
+ * sin pasar por una escritura nueva en DynamoDB — así se puede reprocesar
+ * un ticket viejo después de arreglar un bug de parseo/prompt, sin
+ * necesidad de que el agente lo vuelva a subir.
+ */
+export async function reprocessTicket(message: ParseJobMessage): Promise<void> {
   const tenant = await getTenant(message.tenantId);
   if (!tenant) {
     // No es transitorio: el tenant no existe (se borró, o el mensaje está
