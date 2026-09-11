@@ -35,6 +35,20 @@ export function ticketStatusGsiKey(tenantId: string, status: string, capturedAt:
   };
 }
 
+/**
+ * Marcador de deduplicación de contenido — mismo `pk` que los tickets del
+ * tenant (`TENANT#<id>`) pero con un `sk` que empieza en "DEDUP#" en vez de
+ * "TICKET#", así el Stream de la tabla dispara igual al parser (no hay
+ * suscripción selectiva por prefijo de `sk`) pero `parser/handler.ts` lo
+ * ignora de inmediato porque no tiene `status: "pending"`. Ver `ingest/handler.ts`.
+ */
+export function dedupKey(tenantId: string, contentHash: string) {
+  return {
+    pk: `TENANT#${tenantId}`,
+    sk: `DEDUP#${contentHash}`,
+  };
+}
+
 /** Clave de la tabla Tenants: PK = TENANT#<tenantId>. */
 export function tenantKey(tenantId: string) {
   return { pk: `TENANT#${tenantId}` };

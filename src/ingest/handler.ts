@@ -1,10 +1,12 @@
+import { createHash } from "node:crypto";
+
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 
 import { resolveAgentByApiKeyId } from "../shared/agent.js";
-import { ddb, RAW_BUCKET, ticketKey, ticketStatusGsiKey, TICKETS_TABLE } from "../shared/dynamo.js";
+import { ddb, dedupKey, RAW_BUCKET, ticketKey, ticketStatusGsiKey, TICKETS_TABLE } from "../shared/dynamo.js";
 import { getTenant, resolveTenantByApiKeyId } from "../shared/tenant.js";
 import { TicketRecord } from "../shared/types.js";
 
@@ -74,6 +76,18 @@ const MAX_RAW_TEXT_BYTES = 64 * 1024;
 const MAX_RAW_ESCPOS_BYTES = 6 * 1024 * 1024;
 const MAX_RAW_BASE64_CHARS = Math.ceil(MAX_RAW_ESCPOS_BYTES / 3) * 4 + 4;
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * Ventana para descartar contenido idéntico repetido (ver `dedupKey`).
+ * Detectado en el piloto de Empanadas: Loggro reenvía el ticket completo
+ * como un job de impresión nuevo (mismo tamaño en bytes, mismos bytes) unos
+ * segundos después del original, aunque la impresora solo sacó un papel —
+ * sin esto, esa venta se registraba y facturaba dos veces. El ticket real
+ * (imagen del recibo) lleva número de factura y hora con segundos, así que
+ * dos ventas distintas no producen jamás los mismos bytes — 5 minutos da
+ * margen de sobra sin riesgo real de descartar una venta legítima.
+ */
+const DEDUP_WINDOW_SECONDS = 5 * 60;
 
 type BodyValidation = { ok: true; value: RawTicketBody } | { ok: false; error: string };
 
@@ -174,6 +188,40 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const { ticketId, rawKind } = validBody;
   const rawS3Key =
     rawKind === "escpos" ? `tenants/${tenantId}/${ticketId}.escpos` : `tenants/${tenantId}/${ticketId}.txt`;
+
+  // Hash sobre puerto + contenido crudo: dos tickets de un mismo puerto con
+  // bytes idénticos dentro de la ventana son, en la práctica, el mismo
+  // envío duplicado (ver comentario de DEDUP_WINDOW_SECONDS), no dos ventas
+  // que coincidieron. Escritura condicional = "primero en llegar gana";
+  // quien pierde la carrera se descarta sin tocar S3 ni la tabla de tickets.
+  const contentHash = createHash("sha256")
+    .update(validBody.port, "utf-8")
+    .update(rawKind === "escpos" ? (validBody.rawContent as Buffer) : Buffer.from(validBody.rawContent as string, "utf-8"))
+    .digest("hex");
+
+  try {
+    await ddb.send(
+      new PutCommand({
+        TableName: TICKETS_TABLE,
+        Item: {
+          ...dedupKey(tenantId, contentHash),
+          ticketId,
+          createdAt: new Date().toISOString(),
+          ttl: Math.floor(Date.now() / 1000) + DEDUP_WINDOW_SECONDS,
+        },
+        ConditionExpression: "attribute_not_exists(pk)",
+      }),
+    );
+  } catch (err) {
+    if (!(err instanceof ConditionalCheckFailedException)) {
+      throw err;
+    }
+    console.log(
+      `[ingest] ticket duplicado descartado (mismo contenido en los últimos ${DEDUP_WINDOW_SECONDS}s): ` +
+        `tenant=${tenantId} port=${validBody.port} ticketId=${ticketId}`,
+    );
+    return { statusCode: 202, body: JSON.stringify({ ticketId, duplicate: true }) };
+  }
 
   // Re-subir el mismo contenido a la misma key en un reintento es
   // inofensivo (sobreescribe con bytes idénticos), así que esto no

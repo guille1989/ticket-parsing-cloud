@@ -58,6 +58,10 @@ export class TicketParsingCloudStack extends cdk.Stack {
       // Dispara el parseo: el Lambda parser se suscribe a este stream en
       // vez de depender de que `ingest` mande un mensaje a SQS aparte.
       dynamoStream: dynamodb.StreamViewType.NEW_IMAGE,
+      // Usado solo por los marcadores de deduplicación (`sk` = "DEDUP#...",
+      // ver `dedupKey` en `shared/dynamo.ts`) — los tickets normales no
+      // llevan `ttl` y por lo tanto nunca expiran.
+      timeToLiveAttribute: "ttl",
     });
 
     const tenantsTable = new dynamodb.TableV2(this, "TenantsTable", {

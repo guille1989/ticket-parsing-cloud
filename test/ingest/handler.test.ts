@@ -110,10 +110,32 @@ test("request válido: guarda en S3, escritura condicional en DynamoDB, responde
   expect(s3Call.Key).toBe(`tenants/t1/${VALID_BODY.ticketId}.txt`);
   expect(s3Call.Body).toBe(VALID_BODY.rawText);
 
-  expect(mockDdbSend).toHaveBeenCalledTimes(1);
-  const ddbCall = mockDdbSend.mock.calls[0][0].input;
+  // 2 escrituras: el marcador de deduplicación de contenido y el ticket en sí.
+  expect(mockDdbSend).toHaveBeenCalledTimes(2);
+  const dedupCall = mockDdbSend.mock.calls[0][0].input;
+  expect(dedupCall.ConditionExpression).toBe("attribute_not_exists(pk)");
+  expect(dedupCall.Item.sk).toMatch(/^DEDUP#/);
+  const ddbCall = mockDdbSend.mock.calls[1][0].input;
   expect(ddbCall.ConditionExpression).toBe("attribute_not_exists(pk)");
   expect(ddbCall.Item.status).toBe("pending");
+});
+
+// Loggro (POS de Empanadas Típicas) reenvía a veces el mismo ticket como un
+// job de impresión de Windows nuevo segundos después del original, aunque
+// la impresora solo sacó un papel — sin esto se facturaba la venta dos
+// veces. Ver DEDUP_WINDOW_SECONDS en el handler.
+test("contenido idéntico al de un ticket reciente del mismo puerto: se descarta, no toca S3 ni crea otro ticket", async () => {
+  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+  mockDdbSend.mockRejectedValue(
+    new ConditionalCheckFailedException({ message: "ya existe", $metadata: {} }),
+  );
+
+  const result = await handler(eventWith("key1", VALID_BODY));
+
+  expect(result.statusCode).toBe(202);
+  expect(JSON.parse(result.body)).toEqual({ ticketId: VALID_BODY.ticketId, duplicate: true });
+  expect(mockS3Send).not.toHaveBeenCalled();
+  expect(mockDdbSend).toHaveBeenCalledTimes(1);
 });
 
 test("captura de spool (rawBase64/escpos): guarda los BYTES en S3 como .escpos y marca rawKind", async () => {
@@ -134,7 +156,7 @@ test("captura de spool (rawBase64/escpos): guarda los BYTES en S3 como .escpos y
   expect(Buffer.isBuffer(s3Call.Body)).toBe(true);
   expect((s3Call.Body as Buffer).equals(bytes)).toBe(true);
 
-  const ddbItem = mockDdbSend.mock.calls[0][0].input.Item;
+  const ddbItem = mockDdbSend.mock.calls[1][0].input.Item;
   expect(ddbItem.rawKind).toBe("escpos");
   expect(ddbItem.rawS3Key).toBe(`tenants/t1/${VALID_BODY.ticketId}.escpos`);
 });
@@ -148,7 +170,7 @@ test("captura de texto: rawKind queda en 'text' y la key sigue siendo .txt", asy
 
   const s3Call = mockS3Send.mock.calls[0][0].input;
   expect(s3Call.Key).toBe(`tenants/t1/${VALID_BODY.ticketId}.txt`);
-  expect(mockDdbSend.mock.calls[0][0].input.Item.rawKind).toBe("text");
+  expect(mockDdbSend.mock.calls[1][0].input.Item.rawKind).toBe("text");
 });
 
 // El caso central del fix de idempotencia: el agente reintenta con el
@@ -158,9 +180,12 @@ test("captura de texto: rawKind queda en 'text' y la key sigue siendo .txt", asy
 test("reintento con el mismo ticketId (ConditionalCheckFailedException): sigue respondiendo 202, no explota", async () => {
   mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
   mockS3Send.mockResolvedValue({});
-  mockDdbSend.mockRejectedValue(
-    new ConditionalCheckFailedException({ message: "ya existe", $metadata: {} }),
-  );
+  // El marcador de deduplicación de contenido pasa (ej. el reintento llegó
+  // después de que expiró la ventana), pero el ticket en sí ya existía con
+  // ese mismo id — es el caso que este test cubre.
+  mockDdbSend
+    .mockResolvedValueOnce({})
+    .mockRejectedValueOnce(new ConditionalCheckFailedException({ message: "ya existe", $metadata: {} }));
 
   const result = await handler(eventWith("key1", VALID_BODY));
 
@@ -192,7 +217,7 @@ test("api-key de un agente: resuelve el tenantId del agente, sin usar la api-key
   expect(mockGetTenant).toHaveBeenCalledWith("t-agente");
   const s3Call = mockS3Send.mock.calls[0][0].input;
   expect(s3Call.Key).toBe(`tenants/t-agente/${VALID_BODY.ticketId}.txt`);
-  const ddbCall = mockDdbSend.mock.calls[0][0].input;
+  const ddbCall = mockDdbSend.mock.calls[1][0].input;
   expect(ddbCall.Item.tenantId).toBe("t-agente");
 });
 
