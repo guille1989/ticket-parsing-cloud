@@ -5,11 +5,11 @@ import type { ParsedItem } from "../parsing/types.js";
  * Bedrock, aunque haya pasado el chequeo de coherencia económica — un LLM
  * puede alucinar de forma internamente consistente (números que cierran
  * entre sí pero no reflejan el ticket real), así que no se trata como
- * `parsed` hasta medir precisión real contra tickets de verdad. El
- * mecanismo para promover de `needs_review` a `parsed` (o rechazar) queda
- * pendiente — no existe todavía.
+ * `parsed` hasta que un humano lo confirme. `discarded` es lo que elige el
+ * dueño del negocio cuando revisa un `needs_review` y no era una venta real
+ * (ver `review/handler.ts`, el único lugar que hace esa transición).
  */
-export type TicketStatus = "pending" | "parsed" | "needs_review" | "failed";
+export type TicketStatus = "pending" | "parsed" | "needs_review" | "failed" | "discarded";
 
 export interface OnboardingState {
   version: 1;

@@ -496,6 +496,18 @@ export class TicketParsingCloudStack extends cdk.Stack {
       environment: { TICKETS_TABLE: ticketsTable.tableName },
     });
 
+    // Confirma/descarta un ticket needs_review (ver review/handler.ts) — el
+    // único mecanismo para sacarlo de ese estado. Necesita escribir en
+    // Tickets (cambiar status) y en el bucket de analítica (sincronizar o
+    // borrar la fila correspondiente), a diferencia de readFn que solo lee.
+    const reviewFn = new nodejs.NodejsFunction(this, "ReviewFunction", {
+      entry: "src/review/handler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: { TICKETS_TABLE: ticketsTable.tableName, ANALYTICS_BUCKET: analyticsBucket.bucketName },
+    });
+
     // ---- Widgets: motor de gráficos configurables por el usuario -------
     //
     // Create/List/Delete solo tocan DynamoDB (Widgets) — el mismo perfil
@@ -584,6 +596,8 @@ export class TicketParsingCloudStack extends cdk.Stack {
     ticketsTable.grantWriteData(ingestFn);
     ticketsTable.grantReadWriteData(parserFn);
     ticketsTable.grantReadData(readFn);
+    ticketsTable.grantReadWriteData(reviewFn);
+    analyticsBucket.grantReadWrite(reviewFn); // reescribe la fila al confirmar, la borra al descartar
     // Solo ingest y parser siguen resolviendo tenant por api-key (agente
     // máquina-a-máquina) — el resto lee el tenant del JWT de Cognito, sin
     // tocar esta tabla.
@@ -798,6 +812,10 @@ export class TicketParsingCloudStack extends cdk.Stack {
       apiKeyRequired: true,
     });
     tickets.addMethod("GET", new apigateway.LambdaIntegration(readFn), dashboardAuth);
+
+    // Confirmar/descartar un needs_review — ver review/handler.ts.
+    const ticketById = tickets.addResource("{ticketId}");
+    ticketById.addMethod("PATCH", new apigateway.LambdaIntegration(reviewFn), dashboardAuth);
 
     // /widgets, /widgets/{widgetId}, /widgets/{widgetId}/data, /widgets/fields
     const widgets = api.root.addResource("widgets");

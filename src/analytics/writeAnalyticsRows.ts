@@ -5,6 +5,19 @@ import type { TicketRecord } from "../shared/types.js";
 
 const s3 = new S3Client({});
 
+/**
+ * La misma key que arma `writeAnalyticsRows` para un ticket — expuesta
+ * aparte porque `review/handler.ts` la necesita para borrar la fila de un
+ * ticket descartado (`DeleteObjectCommand`) sin duplicar la lógica de
+ * partición año/mes.
+ */
+export function analyticsRowKey(tenantId: string, capturedAt: string, ticketId: string): string {
+  const parsed = new Date(capturedAt);
+  const year = parsed.getUTCFullYear();
+  const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+  return `tenant=${tenantId}/year=${year}/month=${month}/${ticketId}.jsonl`;
+}
+
 export interface AnalyticsTicketContext {
   tenantId: string;
   ticketId: string;
@@ -34,10 +47,6 @@ export async function writeAnalyticsRows(
   ctx: AnalyticsTicketContext,
   parsed: ParsedTicket,
 ): Promise<void> {
-  const capturedAt = new Date(ctx.capturedAt);
-  const year = capturedAt.getUTCFullYear();
-  const month = String(capturedAt.getUTCMonth() + 1).padStart(2, "0");
-
   const rows = parsed.items.map((item) =>
     JSON.stringify({
       tenantId: ctx.tenantId,
@@ -62,7 +71,7 @@ export async function writeAnalyticsRows(
     }),
   );
 
-  const key = `tenant=${ctx.tenantId}/year=${year}/month=${month}/${ctx.ticketId}.jsonl`;
+  const key = analyticsRowKey(ctx.tenantId, ctx.capturedAt, ctx.ticketId);
 
   await s3.send(
     new PutObjectCommand({

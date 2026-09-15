@@ -8,7 +8,7 @@ import { TicketRecord, TicketStatus } from "../shared/types.js";
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 50;
-const VALID_STATUSES: TicketStatus[] = ["pending", "parsed", "needs_review", "failed"];
+const VALID_STATUSES: TicketStatus[] = ["pending", "parsed", "needs_review", "failed", "discarded"];
 
 function parseLimit(raw: string | undefined): number {
   const parsed = raw ? Number(raw) : DEFAULT_LIMIT;
