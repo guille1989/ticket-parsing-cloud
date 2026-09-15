@@ -215,6 +215,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
             { name: "ticketid", type: "string" },
             { name: "capturedat", type: "string" },
             { name: "port", type: "string" },
+            { name: "agentid", type: "string" },
             { name: "status", type: "string" },
             { name: "parsedby", type: "string" },
             { name: "description", type: "string" },

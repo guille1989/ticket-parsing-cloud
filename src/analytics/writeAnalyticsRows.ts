@@ -10,6 +10,8 @@ export interface AnalyticsTicketContext {
   ticketId: string;
   capturedAt: string;
   port: string;
+  /** Ver `TicketRecord.agentId` — ausente para tickets subidos con la api-key compartida legacy. */
+  agentId?: string;
   parsedBy: NonNullable<TicketRecord["parsedBy"]>;
   status: "parsed" | "needs_review";
 }
@@ -42,6 +44,7 @@ export async function writeAnalyticsRows(
       ticketId: ctx.ticketId,
       capturedAt: ctx.capturedAt,
       port: ctx.port,
+      agentId: ctx.agentId ?? null,
       status: ctx.status,
       parsedBy: ctx.parsedBy,
       description: item.description,

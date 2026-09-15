@@ -62,6 +62,13 @@ export interface TicketRecord {
   tenantId: string;
   ticketId: string;
   port: string;
+  /**
+   * Agente (PC) que subió el ticket — resuelto por api-key en `ingest/handler.ts`.
+   * Ausente para tickets subidos con la api-key compartida legacy del tenant
+   * (nunca se activaron por código, no hay `AgentRecord` que resolver) o
+   * capturados antes de que este campo existiera.
+   */
+  agentId?: string;
   capturedAt: string;
   status: TicketStatus;
   rawS3Key: string;
@@ -100,6 +107,8 @@ export interface ParseJobMessage {
   rawS3Key: string;
   /** Puerto/periférico de origen — determina qué parser usar (ver TenantRecord.portParsers). */
   port: string;
+  /** Ver `TicketRecord.agentId`. */
+  agentId?: string;
   /** Ver `TicketRecord.rawKind`. Ausente = `"text"`. */
   rawKind?: "text" | "escpos";
 }

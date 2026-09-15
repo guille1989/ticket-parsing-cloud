@@ -57,6 +57,7 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
     capturedAt: item.capturedAt,
     rawS3Key: item.rawS3Key,
     port: item.port,
+    agentId: item.agentId,
     rawKind: item.rawKind,
   };
 
@@ -192,7 +193,15 @@ async function writeAnalyticsRowsSafely(
   try {
     await writeAnalyticsRows(
       analyticsBucket,
-      { tenantId: message.tenantId, ticketId: message.ticketId, capturedAt: message.capturedAt, port: message.port, parsedBy, status },
+      {
+        tenantId: message.tenantId,
+        ticketId: message.ticketId,
+        capturedAt: message.capturedAt,
+        port: message.port,
+        agentId: message.agentId,
+        parsedBy,
+        status,
+      },
       parsed,
     );
   } catch (err) {

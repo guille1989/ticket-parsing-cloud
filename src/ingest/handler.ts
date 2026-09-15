@@ -10,7 +10,7 @@ import { ddb, dedupKey, RAW_BUCKET, ticketKey, ticketStatusGsiKey, TICKETS_TABLE
 import { getTenant, resolveTenantByApiKeyId } from "../shared/tenant.js";
 import { TicketRecord } from "../shared/types.js";
 
-type ResolvedTenant = { tenantId: string; blocked: boolean };
+type ResolvedTenant = { tenantId: string; blocked: boolean; agentId?: string };
 
 /**
  * Un agente activado por código (ver `agents/activateHandler.ts`) sube con
@@ -29,7 +29,7 @@ async function resolveTenantId(apiKeyId: string): Promise<ResolvedTenant | undef
   const agent = await resolveAgentByApiKeyId(apiKeyId);
   if (agent) {
     const tenant = await getTenant(agent.tenantId);
-    return { tenantId: agent.tenantId, blocked: tenant?.status === "blocked" };
+    return { tenantId: agent.tenantId, blocked: tenant?.status === "blocked", agentId: agent.agentId };
   }
   const tenant = await resolveTenantByApiKeyId(apiKeyId);
   if (!tenant) return undefined;
@@ -166,7 +166,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   if (resolved.blocked) {
     return { statusCode: 403, body: JSON.stringify({ error: "tenant bloqueado" }) };
   }
-  const { tenantId } = resolved;
+  const { tenantId, agentId } = resolved;
 
   let body: unknown;
   try {
@@ -239,6 +239,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     tenantId,
     ticketId,
     port: validBody.port,
+    agentId,
     capturedAt: validBody.capturedAt,
     status: "pending",
     rawS3Key,
