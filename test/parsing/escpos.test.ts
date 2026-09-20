@@ -115,8 +115,8 @@ describe("readEscpos — segunda captura real de Loggro (factura con IVA desglos
 describe("rasterToPng", () => {
   test("apila franjas de distinto ancho sin romperse (pad a la más ancha + margen)", () => {
     const bands: RasterBand[] = [
-      { widthDots: 200, heightDots: 10, rowBytes: 25, data: Buffer.alloc(250, 0xff) },
-      { widthDots: 576, heightDots: 20, rowBytes: 72, data: Buffer.alloc(1440, 0x00) },
+      { widthDots: 200, heightDots: 10, rowBytes: 25, data: Buffer.alloc(250, 0xff), xOffset: 0 },
+      { widthDots: 576, heightDots: 20, rowBytes: 72, data: Buffer.alloc(1440, 0x00), xOffset: 0 },
     ];
     const png = rasterToPng(bands);
     expect(png).not.toBeNull();

@@ -16,7 +16,10 @@ import { deflateSync } from "node:zlib";
  * de gráficos, con saber cuántos bytes ocupan alcanza (un largo equivocado
  * solo mete unos pocos caracteres de ruido en `text`, tolerable). Los
  * comandos de raster (`GS 8 L`, `GS v 0`, `ESC *`) sí se parsean con
- * precisión.
+ * precisión, igual que `ESC $` (posición horizontal absoluta) — Loggro la
+ * usa para ubicar franjas angostas (ej. el bloque de QR/observaciones) que
+ * no arrancan en el margen izquierdo; ignorarla las dejaba pegadas al borde
+ * y superpuestas con la franja siguiente.
  */
 
 const ESC = 0x1b;
@@ -29,6 +32,8 @@ export interface RasterBand {
   /** 1 bit por pixel, fila mayor: `pixels[y * rowBytes + (x >> 3)]`, MSB primero. 1 = negro. */
   data: Buffer;
   rowBytes: number;
+  /** Puntos desde el margen izquierdo donde arranca esta franja (de `ESC $`, ver `readEscpos`). 0 = pegada al margen. */
+  xOffset: number;
 }
 
 export interface EscposContent {
@@ -144,13 +149,13 @@ function nonGraphicCommandLength(buf: Buffer, i: number): number {
   return -1;
 }
 
-function pushBand(bands: RasterBand[], widthDots: number, heightDots: number, data: Buffer): void {
+function pushBand(bands: RasterBand[], widthDots: number, heightDots: number, data: Buffer, xOffset: number): void {
   if (widthDots <= 0 || heightDots <= 0 || data.length === 0) return;
-  bands.push({ widthDots, heightDots, data, rowBytes: Math.ceil(widthDots / 8) });
+  bands.push({ widthDots, heightDots, data, rowBytes: Math.ceil(widthDots / 8), xOffset });
 }
 
 /** `ESC *` es formato COLUMNA (cada byte = 8 dots verticales) — se transpone a formato fila. */
-function bandFromEscStar(mode: number, columns: number, colData: Buffer): RasterBand | null {
+function bandFromEscStar(mode: number, columns: number, colData: Buffer, xOffset: number): RasterBand | null {
   const heightDots = mode === 0 || mode === 1 ? 8 : 24;
   const bytesPerCol = heightDots / 8;
   const rowBytes = Math.ceil(columns / 8);
@@ -166,7 +171,7 @@ function bandFromEscStar(mode: number, columns: number, colData: Buffer): Raster
       }
     }
   }
-  return { widthDots: columns, heightDots, data: out, rowBytes };
+  return { widthDots: columns, heightDots, data: out, rowBytes, xOffset };
 }
 
 export function readEscpos(buf: Buffer): EscposContent {
@@ -174,6 +179,10 @@ export function readEscpos(buf: Buffer): EscposContent {
   let rasterBytes = 0;
   const textParts: string[] = [];
   let i = 0;
+  // Posición horizontal fijada por el último `ESC $` — vale solo para la
+  // próxima franja/línea impresa y se resetea después (así lo define el
+  // comando en el spec de Epson: "effective only for the current line").
+  let xOffset = 0;
 
   while (i < buf.length) {
     const b = buf[i];
@@ -191,8 +200,9 @@ export function readEscpos(buf: Buffer): EscposContent {
         const rowBytes = Math.ceil(widthDots / 8);
         const dataStart = i + 17;
         const dataLen = rowBytes * heightDots;
-        pushBand(bands, widthDots, heightDots, buf.subarray(dataStart, dataStart + dataLen));
+        pushBand(bands, widthDots, heightDots, buf.subarray(dataStart, dataStart + dataLen), xOffset);
         rasterBytes += dataLen;
+        xOffset = 0;
       }
       i += 7 + Math.max(value, 2);
       continue;
@@ -211,8 +221,9 @@ export function readEscpos(buf: Buffer): EscposContent {
         const rowBytes = Math.ceil(widthDots / 8);
         const dataStart = i + 15;
         const dataLen = rowBytes * heightDots;
-        pushBand(bands, widthDots, heightDots, buf.subarray(dataStart, dataStart + dataLen));
+        pushBand(bands, widthDots, heightDots, buf.subarray(dataStart, dataStart + dataLen), xOffset);
         rasterBytes += dataLen;
+        xOffset = 0;
       }
       i += 5 + paramLen;
       continue;
@@ -225,8 +236,9 @@ export function readEscpos(buf: Buffer): EscposContent {
       const heightDots = yL + yH * 256;
       const dataStart = i + 8;
       const dataLen = rowBytes * heightDots;
-      pushBand(bands, rowBytes * 8, heightDots, buf.subarray(dataStart, dataStart + dataLen));
+      pushBand(bands, rowBytes * 8, heightDots, buf.subarray(dataStart, dataStart + dataLen), xOffset);
       rasterBytes += dataLen;
+      xOffset = 0;
       i += 8 + dataLen;
       continue;
     }
@@ -238,10 +250,11 @@ export function readEscpos(buf: Buffer): EscposContent {
       const bytesPerCol = mode === 0 || mode === 1 ? 1 : 3;
       const dataStart = i + 5;
       const dataLen = columns * bytesPerCol;
-      const band = bandFromEscStar(mode, columns, buf.subarray(dataStart, dataStart + dataLen));
+      const band = bandFromEscStar(mode, columns, buf.subarray(dataStart, dataStart + dataLen), xOffset);
       if (band) {
         bands.push(band);
         rasterBytes += dataLen;
+        xOffset = 0;
       }
       i += 5 + dataLen;
       continue;
@@ -253,6 +266,14 @@ export function readEscpos(buf: Buffer): EscposContent {
       const dataLen = x * y * 8;
       rasterBytes += dataLen;
       i += 4 + dataLen;
+      continue;
+    }
+
+    if (b === ESC && buf[i + 1] === 0x24) {
+      // ESC $ nL nH  posición horizontal absoluta (en dots), vale para la próxima franja
+      const nL = buf[i + 2], nH = buf[i + 3];
+      xOffset = nL + nH * 256;
+      i += 4;
       continue;
     }
 
@@ -322,9 +343,10 @@ function pngChunk(type: string, data: Buffer): Buffer {
 }
 
 /**
- * Apila las franjas raster verticalmente (alineadas a la izquierda, fondo
- * blanco) y devuelve un PNG en escala de grises de 8 bits. `null` si no hay
- * ninguna franja. Un bit en 1 (negro en ESC/POS) → pixel 0x00.
+ * Apila las franjas raster verticalmente (fondo blanco), cada una arrancando
+ * en su `xOffset` (ver `readEscpos`) en vez de siempre pegada al margen
+ * izquierdo, y devuelve un PNG en escala de grises de 8 bits. `null` si no
+ * hay ninguna franja. Un bit en 1 (negro en ESC/POS) → pixel 0x00.
  */
 /** Margen blanco a cada lado del lienzo — protege el texto que Loggro dibuja pegado al borde y ayuda al OCR. */
 const MARGIN = 8;
@@ -332,7 +354,7 @@ const MARGIN = 8;
 export function rasterToPng(bands: RasterBand[]): Buffer | null {
   if (bands.length === 0) return null;
 
-  const contentWidth = Math.max(...bands.map((band) => band.widthDots));
+  const contentWidth = Math.max(...bands.map((band) => band.xOffset + band.widthDots));
   const width = contentWidth + MARGIN * 2;
   const height = bands.reduce((sum, band) => sum + band.heightDots, 0);
   if (contentWidth <= 0 || height <= 0) return null;
@@ -344,7 +366,7 @@ export function rasterToPng(bands: RasterBand[]): Buffer | null {
   let yOffset = 0;
   for (const band of bands) {
     for (let y = 0; y < band.heightDots; y++) {
-      const rowStart = (yOffset + y) * (width + 1) + 1 + MARGIN;
+      const rowStart = (yOffset + y) * (width + 1) + 1 + MARGIN + band.xOffset;
       for (let x = 0; x < band.widthDots; x++) {
         const bit = (band.data[y * band.rowBytes + (x >> 3)] >> (7 - (x & 7))) & 1;
         if (bit) raw[rowStart + x] = 0x00;
@@ -380,7 +402,7 @@ export function extractRasterPng(buf: Buffer): RasterImage | null {
   if (!png) return null;
   return {
     png,
-    width: Math.max(...bands.map((b) => b.widthDots)) + MARGIN * 2,
+    width: Math.max(...bands.map((b) => b.xOffset + b.widthDots)) + MARGIN * 2,
     height: bands.reduce((sum, b) => sum + b.heightDots, 0),
   };
 }
@@ -411,7 +433,7 @@ export function extractRasterTiles(buf: Buffer, maxTileHeight = 1400): RasterIma
     if (png) {
       tiles.push({
         png,
-        width: Math.max(...group.map((b) => b.widthDots)) + MARGIN * 2,
+        width: Math.max(...group.map((b) => b.xOffset + b.widthDots)) + MARGIN * 2,
         height: group.reduce((sum, b) => sum + b.heightDots, 0),
       });
     }
