@@ -508,6 +508,18 @@ export class TicketParsingCloudStack extends cdk.Stack {
       environment: { TICKETS_TABLE: ticketsTable.tableName, ANALYTICS_BUCKET: analyticsBucket.bucketName },
     });
 
+    // Reconstruye a PNG el ticket-imagen de un `needs_review` para que el
+    // dueño del negocio lo compare contra el papel antes de confirmar/
+    // descartar (ver `image/handler.ts`) — necesita leer el raw bucket,
+    // a diferencia de reviewFn/readFn que nunca lo tocan.
+    const ticketImageFn = new nodejs.NodejsFunction(this, "TicketImageFunction", {
+      entry: "src/image/handler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: { TICKETS_TABLE: ticketsTable.tableName, RAW_BUCKET: rawTicketsBucket.bucketName },
+    });
+
     // ---- Widgets: motor de gráficos configurables por el usuario -------
     //
     // Create/List/Delete solo tocan DynamoDB (Widgets) — el mismo perfil
@@ -598,6 +610,8 @@ export class TicketParsingCloudStack extends cdk.Stack {
     ticketsTable.grantReadData(readFn);
     ticketsTable.grantReadWriteData(reviewFn);
     analyticsBucket.grantReadWrite(reviewFn); // reescribe la fila al confirmar, la borra al descartar
+    ticketsTable.grantReadData(ticketImageFn);
+    rawTicketsBucket.grantRead(ticketImageFn);
     // Solo ingest y parser siguen resolviendo tenant por api-key (agente
     // máquina-a-máquina) — el resto lee el tenant del JWT de Cognito, sin
     // tocar esta tabla.
@@ -816,6 +830,9 @@ export class TicketParsingCloudStack extends cdk.Stack {
     // Confirmar/descartar un needs_review — ver review/handler.ts.
     const ticketById = tickets.addResource("{ticketId}");
     ticketById.addMethod("PATCH", new apigateway.LambdaIntegration(reviewFn), dashboardAuth);
+
+    const ticketImage = ticketById.addResource("image");
+    ticketImage.addMethod("GET", new apigateway.LambdaIntegration(ticketImageFn), dashboardAuth);
 
     // /widgets, /widgets/{widgetId}, /widgets/{widgetId}/data, /widgets/fields
     const widgets = api.root.addResource("widgets");
