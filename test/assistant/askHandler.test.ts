@@ -198,6 +198,30 @@ test("run_widget_query: ejecuta la consulta real y responde con el resultado", a
   expect(toolResultMsg.content[0].toolResult.content[0].json.data).toEqual([{ label: "COM3", value: 12000 }]);
 });
 
+test("run_widget_query: ofrece y acepta agrupar por día (\"¿qué día vendí más?\")", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", groupBy: "day" }),
+    )
+    .mockResolvedValueOnce(textResponse("El día que más vendiste fue el 2026-09-12, con $85.000."));
+  mockRunAthenaQuery.mockResolvedValue([
+    { label: "2026-09-11", value: 40000 },
+    { label: "2026-09-12", value: 85000 },
+  ]);
+
+  const result = await handler(eventWith({ question: "¿qué día tenemos mayor ventas?" }, "tenant-x"));
+
+  expect(result.statusCode).toBe(200);
+  const tools = mockBedrockSend.mock.calls[0][0].input.toolConfig.tools;
+  const widgetTool = tools.find((t: { toolSpec: { name: string } }) => t.toolSpec.name === "run_widget_query");
+  expect(widgetTool.toolSpec.inputSchema.json.properties.groupBy.enum).toContain("day");
+
+  const [sql] = mockRunAthenaQuery.mock.calls[0];
+  expect(sql).toContain("substr(capturedat, 1, 10)");
+  const toolResultMsg = mockBedrockSend.mock.calls[1][0].input.messages[2];
+  expect(toolResultMsg.content[0].toolResult.status).toBeUndefined();
+});
+
 test("list_tickets: consulta DynamoDB por estado y limita el resultado", async () => {
   mockBedrockSend
     .mockResolvedValueOnce(toolUseResponse("tu1", "list_tickets", { status: "failed", limit: 5 }))

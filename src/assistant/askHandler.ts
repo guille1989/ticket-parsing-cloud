@@ -13,6 +13,7 @@ import {
   CATEGORICAL_FIELDS,
   EVENT_COUNT_FIELD,
   NUMERIC_FIELDS,
+  TEMPORAL_FIELDS,
   isTicketLevelField,
   isValidAggregation,
   isValidGroupByField,
@@ -35,7 +36,7 @@ const LIST_TICKETS_MAX_LIMIT = 15;
 const SYSTEM_PROMPT = `Sos el asistente de datos del dashboard de un negocio que usa InnoApp para capturar y analizar tickets de venta. Contestá siempre en español, en pocas oraciones, directo al grano.
 
 Tenés dos herramientas para consultar los datos REALES del negocio — nunca inventes números:
-- "run_widget_query": totales/promedios/conteos, opcionalmente agrupados por robot/estado/producto. Usala para preguntas de agregados ("¿cuánto vendí?", "¿qué producto vendió más?", "comparame las sucursales").
+- "run_widget_query": totales/promedios/conteos, opcionalmente agrupados por robot/estado/producto o por día. Usala para preguntas de agregados ("¿cuánto vendí?", "¿qué producto vendió más?", "comparame las sucursales", "¿qué día vendí más?").
 - "list_tickets": los tickets más recientes, opcionalmente filtrados por estado. Usala para preguntas puntuales sobre ventas concretas, no para totales.
 
 Si la pregunta no tiene que ver con los datos del negocio (tickets, ventas, robots), respondé brevemente que solo podés ayudar con eso. Basá la respuesta únicamente en lo que devolvió la herramienta — si no hay datos, decilo en vez de inventar. Cuando uses datos reales, mencioná brevemente sobre qué te basaste (ej. cantidad de tickets).
@@ -48,7 +49,7 @@ function buildTools(): Tool[] {
       toolSpec: {
         name: "run_widget_query",
         description:
-          "Calcula un agregado (suma, promedio, máximo, mínimo o cantidad) sobre los tickets de venta ya parseados del negocio, opcionalmente agrupado por una categoría y filtrado por fecha/puerto/estado.",
+          "Calcula un agregado (suma, promedio, máximo, mínimo o cantidad) sobre los tickets de venta ya parseados del negocio, opcionalmente agrupado por una categoría o por día y filtrado por fecha/puerto/estado.",
         inputSchema: {
           json: {
             type: "object",
@@ -61,8 +62,12 @@ function buildTools(): Tool[] {
               aggregation: { type: "string", enum: [...AGGREGATIONS], description: "Cómo agregar el campo." },
               groupBy: {
                 type: "string",
-                enum: [...CATEGORICAL_FIELDS],
-                description: "Campo categórico para desglosar el resultado (opcional, omitir para un solo total).",
+                // Sin "day" acá el modelo no tenía forma de contestar "¿qué
+                // día vendí más?" — runWidgetQueryTool ya lo aceptaba
+                // (isValidGroupByField), solo faltaba ofrecerlo.
+                enum: [...CATEGORICAL_FIELDS, ...TEMPORAL_FIELDS],
+                description:
+                  "Campo para desglosar el resultado (opcional, omitir para un solo total). 'day' agrupa por fecha (YYYY-MM-DD, en UTC), ordenado de la más vieja a la más nueva.",
               },
               filters: {
                 type: "object",
@@ -122,7 +127,7 @@ async function runWidgetQueryTool(input: unknown, tenantId: string): Promise<unk
   let groupBy: string | undefined;
   if (raw.groupBy !== undefined) {
     if (typeof raw.groupBy !== "string" || !isValidGroupByField(raw.groupBy)) {
-      throw new Error(`groupBy inválido: "${String(raw.groupBy)}". Válidos: ${CATEGORICAL_FIELDS.join(", ")}`);
+      throw new Error(`groupBy inválido: "${String(raw.groupBy)}". Válidos: ${[...CATEGORICAL_FIELDS, ...TEMPORAL_FIELDS].join(", ")}`);
     }
     groupBy = raw.groupBy;
   }
