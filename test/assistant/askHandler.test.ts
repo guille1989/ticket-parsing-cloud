@@ -186,6 +186,8 @@ test("run_widget_query: ejecuta la consulta real y responde con el resultado", a
   expect(mockRunAthenaQuery).toHaveBeenCalledTimes(1);
   const [sql, params] = mockRunAthenaQuery.mock.calls[0];
   expect(sql).toContain("ticket_items");
+  // El asistente pide menos categorías que un widget (tokens de entrada a Bedrock).
+  expect(sql).toMatch(/LIMIT 50$/);
   expect(params[0]).toBe("tenant-x");
 
   // El segundo turno le manda al modelo el resultado real de la herramienta.

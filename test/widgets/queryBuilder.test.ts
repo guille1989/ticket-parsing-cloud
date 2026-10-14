@@ -55,7 +55,7 @@ test("bar/donut con groupBy y campo de TICKET: colapsa por (ticketid, groupBy) a
   expect(sql).toBe(
     "SELECT port AS label, SUM(total) AS value FROM (SELECT ticketid, port, MAX(total) AS total " +
       "FROM ticket_analytics.ticket_items WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) GROUP BY ticketid, port) " +
-      "GROUP BY port ORDER BY value DESC LIMIT 50",
+      "GROUP BY port ORDER BY value DESC LIMIT 200",
   );
 });
 
@@ -75,13 +75,19 @@ test("agrupar un campo de ticket por un campo NO-description (port/status/parsed
   expect(() => buildWidgetQuery(widget({ metric: { field: "total", aggregation: "sum" }, groupBy: "status" }))).not.toThrow();
 });
 
-test("bar/donut con groupBy: agrupa, ordena por value y limita a 50", () => {
+test("bar/donut con groupBy: agrupa, ordena por value y limita a 200", () => {
   const { sql } = buildWidgetQuery(widget());
 
   expect(sql).toContain("SELECT description AS label, SUM(subtotal) AS value");
   expect(sql).toContain("GROUP BY description");
   expect(sql).toContain("ORDER BY value DESC");
-  expect(sql).toContain("LIMIT 50");
+  expect(sql).toContain("LIMIT 200");
+});
+
+test("maxGroups recorta las categorías (lo usa el asistente) sin tocar el tope temporal", () => {
+  expect(buildWidgetQuery(widget(), 50).sql).toMatch(/LIMIT 50$/);
+  expect(buildWidgetQuery(widget({ metric: { field: "total", aggregation: "sum" }, groupBy: "port" }), 50).sql).toMatch(/LIMIT 50$/);
+  expect(buildWidgetQuery(widget({ metric: { field: "total", aggregation: "sum" }, groupBy: "day" }), 50).sql).toMatch(/LIMIT 800$/);
 });
 
 test("line temporal agrupa por día y ordena cronológicamente", () => {

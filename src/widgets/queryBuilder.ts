@@ -15,7 +15,12 @@ import type { WidgetRecord } from "../shared/types.js";
 const ANALYTICS_DATABASE = "ticket_analytics";
 const ANALYTICS_TABLE = "ticket_items";
 
-const MAX_GROUPS = 50;
+// Tope de categorías de un widget (barras/dona). El dashboard las muestra
+// todas con scroll, así que tiene que cubrir el catálogo de un negocio:
+// con 50, el widget por producto de Empanadas Típicas ya llegaba justo al
+// tope. El asistente pide menos (ASSISTANT_MAX_GROUPS en askHandler.ts)
+// porque cada fila le llega a Bedrock como tokens de entrada.
+export const MAX_GROUPS = 200;
 const MAX_TIME_POINTS = 800;
 
 const AGG_SQL: Record<string, string> = { sum: "SUM", avg: "AVG", max: "MAX", min: "MIN", count: "COUNT" };
@@ -34,7 +39,7 @@ export interface AthenaQuery {
  * verdad). Los VALORES (tenantId, fechas, texto de filtros) viajan como
  * `ExecutionParameters` de Athena (placeholders `?`), nunca interpolados.
  */
-export function buildWidgetQuery(widget: WidgetRecord): AthenaQuery {
+export function buildWidgetQuery(widget: WidgetRecord, maxGroups: number = MAX_GROUPS): AthenaQuery {
   if (!isValidMetricField(widget.metric.field)) {
     throw new Error(`campo de métrica inválido: "${widget.metric.field}"`);
   }
@@ -60,7 +65,7 @@ export function buildWidgetQuery(widget: WidgetRecord): AthenaQuery {
   // ÍTEM, así que un ticket con 3 ítems no puede contar como 3 eventos. La
   // agregación elegida no aplica acá, se ignora a propósito.
   if (widget.metric.field === EVENT_COUNT_FIELD) {
-    return buildDirectQuery(from, whereClause, params, "COUNT(DISTINCT ticketid)", widget.groupBy);
+    return buildDirectQuery(from, whereClause, params, "COUNT(DISTINCT ticketid)", widget.groupBy, maxGroups);
   }
 
   const column = numericColumn(widget.metric.field);
@@ -74,10 +79,10 @@ export function buildWidgetQuery(widget: WidgetRecord): AthenaQuery {
   // dato, solo elimina las copias antes de que la agregación de afuera las
   // vuelva a contar.
   if (isTicketLevelField(widget.metric.field)) {
-    return buildTicketLevelQuery(from, whereClause, params, column, aggSql, widget.groupBy);
+    return buildTicketLevelQuery(from, whereClause, params, column, aggSql, widget.groupBy, maxGroups);
   }
 
-  return buildDirectQuery(from, whereClause, params, `${aggSql}(${column})`, widget.groupBy);
+  return buildDirectQuery(from, whereClause, params, `${aggSql}(${column})`, widget.groupBy, maxGroups);
 }
 
 // `capturedat` (usado en los filtros de fecha de abajo) es una columna
@@ -144,6 +149,7 @@ function buildDirectQuery(
   params: string[],
   selectExpr: string,
   groupBy: string | undefined,
+  maxGroups: number,
 ): AthenaQuery {
   if (!groupBy) {
     return { sql: `SELECT ${selectExpr} AS value FROM ${from} WHERE ${whereClause}`, params };
@@ -151,7 +157,7 @@ function buildDirectQuery(
   const groupColumn = groupByExpression(groupBy as never);
   const temporal = isTemporalGroupByField(groupBy);
   const orderBy = temporal ? "label ASC" : "value DESC";
-  const limit = temporal ? MAX_TIME_POINTS : MAX_GROUPS;
+  const limit = temporal ? MAX_TIME_POINTS : maxGroups;
   return {
     sql:
       `SELECT ${groupColumn} AS label, ${selectExpr} AS value ` +
@@ -169,6 +175,7 @@ function buildTicketLevelQuery(
   column: string,
   aggSql: string,
   groupBy: string | undefined,
+  maxGroups: number,
 ): AthenaQuery {
   if (!groupBy) {
     const inner = `SELECT ticketid, MAX(${column}) AS ${column} FROM ${from} WHERE ${whereClause} GROUP BY ticketid`;
@@ -178,7 +185,7 @@ function buildTicketLevelQuery(
   const groupColumn = groupByExpression(groupBy as never);
   const temporal = isTemporalGroupByField(groupBy);
   const orderBy = temporal ? "label ASC" : "value DESC";
-  const limit = temporal ? MAX_TIME_POINTS : MAX_GROUPS;
+  const limit = temporal ? MAX_TIME_POINTS : maxGroups;
   const innerGroupSelect = temporal ? `${groupColumn} AS group_label` : groupColumn;
   const outerGroupColumn = temporal ? "group_label" : groupColumn;
   const inner =

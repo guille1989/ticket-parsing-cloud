@@ -30,6 +30,10 @@ const MAX_QUESTION_LENGTH = 500;
 const MAX_TURNS = 4;
 
 const TICKET_STATUSES: TicketStatus[] = ["pending", "parsed", "needs_review", "failed"];
+// Menos que el tope de los widgets (MAX_GROUPS en queryBuilder.ts): cada
+// fila le llega al modelo como tokens de entrada, y para contestar "¿qué
+// producto vendió más?" alcanza con los primeros 50 ordenados por valor.
+const ASSISTANT_MAX_GROUPS = 50;
 const LIST_TICKETS_DEFAULT_LIMIT = 10;
 const LIST_TICKETS_MAX_LIMIT = 15;
 
@@ -156,7 +160,7 @@ async function runWidgetQueryTool(input: unknown, tenantId: string): Promise<unk
     filters,
   };
 
-  const query = buildWidgetQuery(widget);
+  const query = buildWidgetQuery(widget, ASSISTANT_MAX_GROUPS);
   const data = await runAthenaQuery(query.sql, query.params, process.env.ATHENA_WORKGROUP!);
   return { data };
 }
