@@ -94,6 +94,35 @@ describe("varias líneas sin precio legible → total en una línea 'Sin desglos
   });
 });
 
+describe("factura con productos exentos (cc98b8ee): total $14.100, Base + Impuesto = $9.200", () => {
+  // Impreso: 1 Cristal Sin Gas (código hash: precios fuera del papel) y 2 Empanadas Rancheras;
+  // Impuestos: IVA 19% Base $7.731, Impuesto $1.469; VALOR A PAGAR $14.100.
+  test("precios no visibles (en 0): 'Sin desglose' con el total impreso, coherente", () => {
+    const input = ticket([item("Cristal Sin Gas 600 ml", 1, 0), item("Empanada Ranchera", 2, 0)], 14100, 1469, 7731);
+    const result = reconciledAndCoherent(input);
+    expect(result.total).toBe(14100);
+    expect(result.items).toEqual(sinDesglose(14100));
+  });
+
+  test("lo que había guardado el OCR viejo: total − IVA como precio de un ítem → 'Sin desglose'", () => {
+    const input = ticket([item("Criste Gas 60", 1, 12631), item("Empe Ranch", 2, 735)], 14100, 1469, 7731);
+    expect(reconciledAndCoherent(input).items).toEqual(sinDesglose(14100));
+  });
+
+  test("con los precios legibles no se toca", () => {
+    const input = ticket([item("Empanada Ranchera", 2, 4600), item("Cristal Sin Gas 600 ml", 1, 4900)], 14100, 1469, 7731);
+    expect(reconciledAndCoherent(input)).toEqual(input);
+  });
+
+  test("si el modelo se saltó la línea exenta, NO se baja el total a la parte gravada", () => {
+    const input = ticket([item("Empanada Ranchera", 2, 4600)], 14100, 1469, 7731);
+    const result = reconcileWithTaxSection(input);
+    expect(result.total).toBe(14100);
+    // y la coherencia lo rechaza por la suma, como cualquier línea perdida
+    expect(checkEconomicCoherence(result).ok).toBe(false);
+  });
+});
+
 describe("no toca facturas multi-ítem bien leídas", () => {
   test("e8d12dd4-like: Horneada Caprese 2 × 5400 + DIARIO 12000 = 22800", () => {
     const input = ticket([item("Horneada Caprese", 2, 5400), item("DIARIO", 1, 12000)], 22800, 3640, 19160);

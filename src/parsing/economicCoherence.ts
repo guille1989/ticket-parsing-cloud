@@ -103,25 +103,30 @@ export function checkEconomicCoherence(ticket: ParsedTicket): CoherenceResult {
   }
 
   // La sección de impuestos impresa trae su propia cuenta: Base + Impuesto
-  // = VALOR A PAGAR. Son dos números independientes de los ítems y del
-  // total, así que cruzarlos atrapa un total calculado en vez de leído (el
-  // OCR de Loggro devolvía precio + IVA cuando el precio ya lo incluía). Solo
-  // sin descuento/propina: no sabemos cómo los compone cada POS con la Base.
+  // es la parte GRAVADA de la venta. Con productos exentos/excluidos el
+  // VALOR A PAGAR es mayor (cc98b8ee: Base 7731 + IVA 1469 = 9200, total
+  // 14100), pero nunca menor. Son números independientes de los ítems y del
+  // total, así que además atrapan el IVA sumado dos veces (el OCR de Loggro
+  // devolvía total = precio + IVA cuando el precio ya lo incluía). Solo sin
+  // descuento/propina: no sabemos cómo los compone cada POS con la Base.
   if (ticket.taxBase !== undefined) {
     if (!Number.isFinite(ticket.taxBase) || ticket.taxBase < 0) {
       return { ok: false, reason: `base gravable inválida (${ticket.taxBase})` };
     }
-    const printedTotal = ticket.taxBase + (ticket.tax ?? 0);
-    if (
-      ticket.tax !== undefined &&
-      ticket.discount === undefined &&
-      ticket.tip === undefined &&
-      !withinTolerance(ticket.total, printedTotal)
-    ) {
-      return {
-        ok: false,
-        reason: `el total (${ticket.total}) no coincide con Base + Impuesto de la factura (${ticket.taxBase} + ${ticket.tax} = ${printedTotal})`,
-      };
+    if (ticket.tax !== undefined && ticket.discount === undefined && ticket.tip === undefined) {
+      const taxedPart = ticket.taxBase + ticket.tax;
+      if (ticket.total < taxedPart - TOLERANCE_ABS) {
+        return {
+          ok: false,
+          reason: `el total (${ticket.total}) es menor que Base + Impuesto de la factura (${ticket.taxBase} + ${ticket.tax} = ${taxedPart})`,
+        };
+      }
+      if (ticket.tax > TOLERANCE_ABS && withinTolerance(itemsSum, taxedPart) && withinTolerance(ticket.total, itemsSum + ticket.tax)) {
+        return {
+          ok: false,
+          reason: `el total (${ticket.total}) suma el impuesto dos veces: los ítems ya dan Base + Impuesto (${ticket.taxBase} + ${ticket.tax} = ${taxedPart})`,
+        };
+      }
     }
   }
 

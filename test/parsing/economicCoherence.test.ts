@@ -214,7 +214,7 @@ test("impuesto mayor que la suma de ítems: no coherente", () => {
   expect(result.ok).toBe(false);
 });
 
-test("Base + Impuesto impresos que no dan el total: no coherente (total calculado, no leído)", () => {
+test("IVA sumado dos veces (los ítems ya dan Base + Impuesto y el total le suma el impuesto otra vez): no coherente", () => {
   const result = checkEconomicCoherence(
     ticket({
       items: [{ description: "Horneada de Carne", quantity: 1, unitPrice: 5400, subtotal: 5400, voided: false }],
@@ -224,7 +224,50 @@ test("Base + Impuesto impresos que no dan el total: no coherente (total calculad
     }),
   );
   expect(result.ok).toBe(false);
-  if (!result.ok) expect(result.reason).toMatch(/Base \+ Impuesto/);
+  if (!result.ok) expect(result.reason).toMatch(/impuesto dos veces/);
+});
+
+describe("factura con productos exentos (cc98b8ee): Base + Impuesto es solo la parte gravada", () => {
+  // VALOR A PAGAR $14.100; Impuestos: IVA 19% Base $7.731, Impuesto $1.469 (= $9.200).
+  test("con los precios por línea legibles: coherente aunque total > Base + Impuesto", () => {
+    const result = checkEconomicCoherence(
+      ticket({
+        items: [
+          { description: "Empanada Ranchera", quantity: 2, unitPrice: 4600, subtotal: 9200, voided: false },
+          { description: "Cristal Sin Gas 600 ml", quantity: 1, unitPrice: 4900, subtotal: 4900, voided: false },
+        ],
+        total: 14100,
+        tax: 1469,
+        taxBase: 7731,
+      }),
+    );
+    expect(result).toEqual({ ok: true });
+  });
+
+  test("con el total en 'Sin desglose': coherente", () => {
+    const result = checkEconomicCoherence(
+      ticket({
+        items: [{ description: "Sin desglose (precios no legibles)", quantity: 1, unitPrice: 14100, subtotal: 14100, voided: false }],
+        total: 14100,
+        tax: 1469,
+        taxBase: 7731,
+      }),
+    );
+    expect(result).toEqual({ ok: true });
+  });
+});
+
+test("total menor que Base + Impuesto: no coherente (la parte gravada no puede superar el total)", () => {
+  const result = checkEconomicCoherence(
+    ticket({
+      items: [{ description: "DIARIO", quantity: 1, unitPrice: 9000, subtotal: 9000, voided: false }],
+      total: 9000,
+      tax: 1916,
+      taxBase: 10084,
+    }),
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.reason).toMatch(/menor que Base \+ Impuesto/);
 });
 
 test("Base + Impuesto = total: coherente", () => {

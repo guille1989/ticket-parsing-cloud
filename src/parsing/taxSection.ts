@@ -17,8 +17,9 @@ function near(a: number, b: number): boolean {
 /**
  * Corrige lo que el OCR de una factura colombiana impresa como imagen
  * (Loggro) arma mal con la sección de impuestos. En esas facturas el
- * Precio/Total de cada línea YA incluye el IVA y Base + Impuesto = VALOR A
- * PAGAR = suma de líneas. Cuando un código de producto largo empuja las
+ * Precio/Total de cada línea YA incluye el IVA, la suma de líneas es el
+ * VALOR A PAGAR y Base + Impuesto es la parte gravada (todo el VALOR A
+ * PAGAR, salvo productos exentos). Cuando un código de producto largo empuja las
  * columnas Precio/Total fuera del papel, los precios por línea no están en
  * la imagen y el modelo los inventaba con Base e Impuesto:
  *
@@ -54,8 +55,12 @@ export function reconcileWithTaxSection(ticket: ParsedTicket): ParsedTicket {
   let total = ticket.total;
 
   // El modelo le volvió a sumar el IVA al total: los ítems ya dan Base +
-  // Impuesto (lo impreso) y solo el total no.
-  if (taxBase !== undefined && !near(total, taxBase + tax) && near(productsSum, taxBase + tax)) {
+  // Impuesto (lo impreso) y el total es eso más el impuesto otra vez. Se
+  // exigen las dos igualdades, no solo "total ≠ Base + Impuesto": con
+  // productos exentos el total es legítimamente mayor (ver
+  // `checkEconomicCoherence`), y si el modelo se saltó la línea exenta no hay
+  // que bajarle el total a la parte gravada.
+  if (taxBase !== undefined && near(productsSum, taxBase + tax) && near(total, productsSum + tax)) {
     total = taxBase + tax;
   }
 
@@ -69,13 +74,13 @@ export function reconcileWithTaxSection(ticket: ParsedTicket): ParsedTicket {
   }
 
   if (products.length >= 2) {
-    const base = taxBase ?? total - tax;
-    const printedTotal = taxBase !== undefined ? taxBase + tax : total;
-    const taxSectionLeaked = products.some(
-      (item) => Math.round(item.subtotal) === Math.round(tax) || near(item.subtotal, base),
-    );
-    const sumsToBase = near(productsSum, base);
-    const unreadablePrices = products.some((item) => item.subtotal === 0) && !near(productsSum, printedTotal);
+    // La Base impresa, y la que se deduce del total: con productos exentos
+    // no coinciden, y el modelo usaba cualquiera de las dos como precio.
+    const bases = taxBase !== undefined ? [taxBase, total - tax] : [total - tax];
+    const isBase = (amount: number) => bases.some((base) => near(amount, base));
+    const taxSectionLeaked = products.some((item) => Math.round(item.subtotal) === Math.round(tax) || isBase(item.subtotal));
+    const sumsToBase = isBase(productsSum);
+    const unreadablePrices = products.some((item) => item.subtotal === 0) && !near(productsSum, total);
     if (taxSectionLeaked || sumsToBase || unreadablePrices) {
       const unattributed: ParsedItem = {
         description: UNATTRIBUTED_DESCRIPTION,
