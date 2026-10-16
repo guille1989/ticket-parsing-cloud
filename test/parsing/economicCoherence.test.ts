@@ -214,6 +214,48 @@ test("impuesto mayor que la suma de ítems: no coherente", () => {
   expect(result.ok).toBe(false);
 });
 
+test("Base + Impuesto impresos que no dan el total: no coherente (total calculado, no leído)", () => {
+  const result = checkEconomicCoherence(
+    ticket({
+      items: [{ description: "Horneada de Carne", quantity: 1, unitPrice: 5400, subtotal: 5400, voided: false }],
+      total: 6262,
+      tax: 862,
+      taxBase: 4538,
+    }),
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.reason).toMatch(/Base \+ Impuesto/);
+});
+
+test("Base + Impuesto = total: coherente", () => {
+  const result = checkEconomicCoherence(
+    ticket({
+      items: [{ description: "DIARIO", quantity: 2, unitPrice: 12000, subtotal: 24000, voided: false }],
+      total: 24000,
+      tax: 3832,
+      taxBase: 20168,
+    }),
+  );
+  expect(result).toEqual({ ok: true });
+});
+
+test("con propina no se exige Base + Impuesto = total", () => {
+  const result = checkEconomicCoherence(
+    ticket({
+      items: [{ description: "DIARIO", quantity: 1, unitPrice: 12000, subtotal: 12000, voided: false }],
+      total: 13000,
+      tip: 1000,
+      tax: 1916,
+      taxBase: 10084,
+    }),
+  );
+  expect(result).toEqual({ ok: true });
+});
+
+test.each([-1, NaN])("base gravable inválida (%s): no coherente", (taxBase) => {
+  expect(checkEconomicCoherence(ticket({ taxBase })).ok).toBe(false);
+});
+
 test("ítem *ANULADO* (voided) no suma al total esperado — igual que fixtures/sample-tickets/05-item-anulado.txt", () => {
   const result = checkEconomicCoherence({
     items: [

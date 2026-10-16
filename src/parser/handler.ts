@@ -6,6 +6,7 @@ import type { DynamoDBBatchResponse, DynamoDBRecord, DynamoDBStreamEvent } from 
 
 import { writeAnalyticsRows } from "../analytics/writeAnalyticsRows.js";
 import { tryBedrockFallback } from "../parsing/bedrockFallback.js";
+import { isNotASale } from "../parsing/bedrockShared.js";
 import { tryBedrockVision } from "../parsing/bedrockVision.js";
 import { checkEconomicCoherence } from "../parsing/economicCoherence.js";
 import { extractRasterTiles, looksRasterDominant, readEscpos } from "../parsing/escpos.js";
@@ -16,6 +17,15 @@ import { getTenant } from "../shared/tenant.js";
 import { ParseJobMessage, TicketRecord } from "../shared/types.js";
 
 const s3 = new S3Client({});
+
+/**
+ * Sigue siendo `failed` (no `discarded`: esa transición es solo del dueño,
+ * ver `review/handler.ts`), pero con un motivo que no se confunda con un
+ * error de OCR — Loggro imprime el "Comprobante Informe Diario" en la misma
+ * impresora que las facturas, así que llega uno por cada cierre de caja.
+ */
+const NOT_A_SALE_REASON =
+  "el documento no es una venta: es un reporte de caja (informe diario / cierre) con los totales por medio de pago";
 
 /**
  * Dispara directo del Stream de la tabla Tickets — ver el comentario en
@@ -114,7 +124,12 @@ export async function reprocessTicket(message: ParseJobMessage): Promise<void> {
         return;
       }
       const tiles = extractRasterTiles(bytes).map((tile) => tile.png);
-      const vision = coherentOrNull(await tryBedrockVision(tiles, bedrockModelId));
+      const visionResult = await tryBedrockVision(tiles, bedrockModelId);
+      if (isNotASale(visionResult)) {
+        await markFailed(message, NOT_A_SALE_REASON);
+        return;
+      }
+      const vision = coherentOrNull(visionResult);
       if (!vision.ticket) {
         await markFailed(
           message,
@@ -147,7 +162,12 @@ export async function reprocessTicket(message: ParseJobMessage): Promise<void> {
   let incoherenceReason = deterministic.incoherenceReason;
 
   if (!parsed && bedrockModelId) {
-    const fallback = coherentOrNull(await tryBedrockFallback(rawText, bedrockModelId));
+    const fallbackResult = await tryBedrockFallback(rawText, bedrockModelId);
+    if (isNotASale(fallbackResult)) {
+      await markFailed(message, NOT_A_SALE_REASON);
+      return;
+    }
+    const fallback = coherentOrNull(fallbackResult);
     parsed = fallback.ticket;
     parsedBy = "bedrock-fallback";
     if (fallback.incoherenceReason) incoherenceReason = fallback.incoherenceReason;

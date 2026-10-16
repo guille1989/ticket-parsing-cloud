@@ -18,6 +18,13 @@ export interface ParsedTicket {
    * ítems ya vienen con IVA incluido).
    */
   tax?: number;
+  /**
+   * Base gravable total de la sección de impuestos, tal como está impresa
+   * (columna "Base"). No se persiste: sirve solo para verificar lo leído —
+   * en una factura colombiana Base + Impuesto = VALOR A PAGAR, y es un
+   * número independiente de los ítems y del total (ver `taxSection.ts`).
+   */
+  taxBase?: number;
   total: number;
   timestamp: string; // ISO 8601
 }

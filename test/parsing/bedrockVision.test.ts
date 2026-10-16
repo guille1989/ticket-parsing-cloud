@@ -8,7 +8,9 @@ jest.mock("@aws-sdk/client-bedrock-runtime", () => {
   };
 });
 
+import { NOT_A_SALE } from "../../src/parsing/bedrockShared";
 import { tryBedrockVision } from "../../src/parsing/bedrockVision";
+import { UNATTRIBUTED_DESCRIPTION } from "../../src/parsing/taxSection";
 
 function bedrockTextResponse(text: string) {
   return { output: { message: { content: [{ text }] } } };
@@ -75,6 +77,64 @@ test("el modelo responde unparseable: devuelve null sin reintentar", async () =>
 
   expect(result).toBeNull();
   expect(wait).not.toHaveBeenCalled();
+});
+
+test("el prompt le pide reconocer el cierre de caja de Loggro y no meter medios de pago como ítem", async () => {
+  mockBedrockSend.mockResolvedValue(bedrockTextResponse(validTicketJson()));
+
+  await tryBedrockVision(tiles, "test-model", jest.fn().mockResolvedValue(undefined));
+
+  const system = mockBedrockSend.mock.calls[0][0].input.system[0].text;
+  expect(system).toContain("Comprobante Informe Diario");
+  expect(system).toContain('{"notASale":true}');
+  expect(system).toMatch(/NUNCA metas como ítem un medio de pago[^\n]*"QR"/);
+});
+
+test("el modelo reconoce un reporte de caja: devuelve NOT_A_SALE, no un ticket ni null", async () => {
+  mockBedrockSend.mockResolvedValue(bedrockTextResponse('{"notASale":true}'));
+
+  const result = await tryBedrockVision(tiles, "test-model", jest.fn().mockResolvedValue(undefined));
+
+  expect(result).toEqual(NOT_A_SALE);
+});
+
+test("el prompt dice que los precios de línea ya incluyen IVA y pide taxBase, sin la excepción de usar la Base como precio", async () => {
+  mockBedrockSend.mockResolvedValue(bedrockTextResponse(validTicketJson()));
+
+  await tryBedrockVision(tiles, "test-model", jest.fn().mockResolvedValue(undefined));
+
+  const system: string = mockBedrockSend.mock.calls[0][0].input.system[0].text;
+  expect(system).toContain('"taxBase":number|null');
+  expect(system).toContain("YA incluyen el IVA");
+  expect(system).not.toMatch(/suma de subtotales \+ tax = total/);
+});
+
+test("Base e Impuesto metidos como precios de dos ítems: sale el total en una línea 'Sin desglose'", async () => {
+  mockBedrockSend.mockResolvedValue(
+    bedrockTextResponse(
+      JSON.stringify({
+        items: [
+          { description: "H2Oh! Limonat 600 ml", quantity: 1, unitPrice: 15210, subtotal: 15210, voided: false },
+          { description: "DIARIO", quantity: 1, unitPrice: 2890, subtotal: 2890, voided: false },
+        ],
+        total: 18100,
+        tax: 2890,
+        taxBase: 15210,
+        discount: null,
+        tip: null,
+        timestamp: "2026-09-17T17:30:18.000Z",
+      }),
+    ),
+  );
+
+  const result = await tryBedrockVision(tiles, "test-model", jest.fn().mockResolvedValue(undefined));
+
+  expect(result).toEqual(
+    expect.objectContaining({
+      total: 18100,
+      items: [expect.objectContaining({ description: UNATTRIBUTED_DESCRIPTION, subtotal: 18100 })],
+    }),
+  );
 });
 
 test("un error que no es throttling se propaga", async () => {

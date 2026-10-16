@@ -102,6 +102,29 @@ export function checkEconomicCoherence(ticket: ParsedTicket): CoherenceResult {
     }
   }
 
+  // La sección de impuestos impresa trae su propia cuenta: Base + Impuesto
+  // = VALOR A PAGAR. Son dos números independientes de los ítems y del
+  // total, así que cruzarlos atrapa un total calculado en vez de leído (el
+  // OCR de Loggro devolvía precio + IVA cuando el precio ya lo incluía). Solo
+  // sin descuento/propina: no sabemos cómo los compone cada POS con la Base.
+  if (ticket.taxBase !== undefined) {
+    if (!Number.isFinite(ticket.taxBase) || ticket.taxBase < 0) {
+      return { ok: false, reason: `base gravable inválida (${ticket.taxBase})` };
+    }
+    const printedTotal = ticket.taxBase + (ticket.tax ?? 0);
+    if (
+      ticket.tax !== undefined &&
+      ticket.discount === undefined &&
+      ticket.tip === undefined &&
+      !withinTolerance(ticket.total, printedTotal)
+    ) {
+      return {
+        ok: false,
+        reason: `el total (${ticket.total}) no coincide con Base + Impuesto de la factura (${ticket.taxBase} + ${ticket.tax} = ${printedTotal})`,
+      };
+    }
+  }
+
   // El total tiene que cerrar con la suma de ítems (ajustada por
   // descuento/propina) — o, en las facturas donde los ítems van a precio
   // base y el "VALOR A PAGAR" ya incluye el IVA, con esa suma más `tax`.

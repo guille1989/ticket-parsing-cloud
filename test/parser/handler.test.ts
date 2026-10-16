@@ -174,6 +174,84 @@ describe("captura de spool — rawKind escpos", () => {
     expect(update.ExpressionAttributeValues[":reason"]).toMatch(/Bedrock vision|imagen/i);
   });
 
+  test("cierre de caja de Loggro que Bedrock convierte en ítems Efectivo/QR: marca failed como no-venta, sin analítica", async () => {
+    process.env.BEDROCK_MODEL_ID = "test-model";
+    process.env.ANALYTICS_BUCKET = "test-analytics";
+    mockGetTenant.mockResolvedValue(validTenant);
+    s3Bytes(LOGGRO_RASTER);
+    mockBedrockSend.mockResolvedValue(
+      bedrockTextResponse(
+        JSON.stringify({
+          items: [
+            { description: "Efectivo", quantity: 23, unitPrice: 9413, subtotal: 216500, voided: false },
+            { description: "QR", quantity: 2, unitPrice: 10900, subtotal: 21800, voided: false },
+          ],
+          total: 238300,
+          tax: 36483,
+          discount: null,
+          tip: null,
+          timestamp: "2026-10-06T21:14:08.000Z",
+        }),
+      ),
+    );
+    mockDdbSend.mockResolvedValue({});
+
+    await handler({ Records: [streamRecord("INSERT", escposRecord())] });
+
+    expect(mockDdbSend).toHaveBeenCalledTimes(1);
+    const update = mockDdbSend.mock.calls[0][0].input;
+    expect(update.ExpressionAttributeValues[":status"]).toBe("failed");
+    expect(update.ExpressionAttributeValues[":reason"]).toMatch(/no es una venta/);
+    // solo el GetObject del raw — ninguna fila de analítica con "Efectivo"/"QR"
+    expect(mockS3Send).toHaveBeenCalledTimes(1);
+  });
+
+  test('Bedrock responde {"notASale":true}: marca failed como no-venta, no como error de OCR', async () => {
+    process.env.BEDROCK_MODEL_ID = "test-model";
+    mockGetTenant.mockResolvedValue(validTenant);
+    s3Bytes(LOGGRO_RASTER);
+    mockBedrockSend.mockResolvedValue(bedrockTextResponse(JSON.stringify({ notASale: true })));
+    mockDdbSend.mockResolvedValue({});
+
+    await handler({ Records: [streamRecord("INSERT", escposRecord())] });
+
+    const update = mockDdbSend.mock.calls[0][0].input;
+    expect(update.ExpressionAttributeValues[":status"]).toBe("failed");
+    expect(update.ExpressionAttributeValues[":reason"]).toMatch(/no es una venta/);
+  });
+
+  test("factura con precios por línea cortados (Base/Impuesto como ítems): needs_review con el total en 'Sin desglose'", async () => {
+    process.env.BEDROCK_MODEL_ID = "test-model";
+    mockGetTenant.mockResolvedValue(validTenant);
+    s3Bytes(LOGGRO_RASTER);
+    mockBedrockSend.mockResolvedValue(
+      bedrockTextResponse(
+        JSON.stringify({
+          items: [
+            { description: "ALMOHADA", quantity: 2, unitPrice: 8487.5, subtotal: 16975, voided: false },
+            { description: "CAFE LECHE", quantity: 2, unitPrice: 1612.5, subtotal: 3225, voided: false },
+          ],
+          total: 20200,
+          tax: 3225,
+          taxBase: 16975,
+          discount: null,
+          tip: null,
+          timestamp: "2026-09-18T18:35:17.000Z",
+        }),
+      ),
+    );
+    mockDdbSend.mockResolvedValue({});
+
+    await handler({ Records: [streamRecord("INSERT", escposRecord())] });
+
+    const update = mockDdbSend.mock.calls[0][0].input;
+    expect(update.ExpressionAttributeValues[":status"]).toBe("needs_review");
+    expect(update.ExpressionAttributeValues[":total"]).toBe(20200);
+    expect(update.ExpressionAttributeValues[":items"]).toEqual([
+      expect.objectContaining({ description: "Sin desglose (precios no legibles)", quantity: 1, subtotal: 20200 }),
+    ]);
+  });
+
   test("escpos que en realidad es TEXTO: extrae el texto y sigue por el parser determinístico", async () => {
     mockGetTenant.mockResolvedValue(validTenant);
     // el mismo ticket de texto de la fixture, envuelto en ESC @ ... GS V
@@ -272,6 +350,20 @@ test("ni el parser ni Bedrock (fallback activo) reconocen el texto: marca failed
   const update = mockDdbSend.mock.calls[0][0].input;
   expect(update.ExpressionAttributeValues[":status"]).toBe("failed");
   expect(update.ExpressionAttributeValues[":reason"]).toMatch(/ni el parser .* ni el fallback de Bedrock/);
+});
+
+test('texto que el parser no reconoce y Bedrock dice {"notASale":true}: marca failed como no-venta', async () => {
+  process.env.BEDROCK_MODEL_ID = "test-model";
+  mockGetTenant.mockResolvedValue(validTenant);
+  mockS3Send.mockResolvedValue({ Body: { transformToString: async () => "CIERRE DE CAJA\nEfectivo  23  $216.500" } });
+  mockBedrockSend.mockResolvedValue(bedrockTextResponse(JSON.stringify({ notASale: true })));
+  mockDdbSend.mockResolvedValue({});
+
+  await handler({ Records: [streamRecord("INSERT", pendingTicket())] });
+
+  const update = mockDdbSend.mock.calls[0][0].input;
+  expect(update.ExpressionAttributeValues[":status"]).toBe("failed");
+  expect(update.ExpressionAttributeValues[":reason"]).toMatch(/no es una venta/);
 });
 
 test("Bedrock tira un error transitorio (ej. throttling): se reporta como batch item failure, no marca failed", async () => {
