@@ -315,7 +315,7 @@ test("logQa: registra pregunta+respuesta cuando el modelo no usa herramientas", 
     tenantId: "tenant-log",
     question: "¿cómo estás?",
     answer: "Todo bien.",
-    toolsUsed: [],
+    toolCalls: [],
     turns: 1,
     historyTurns: 0,
   });
@@ -337,7 +337,93 @@ test("logQa: registra qué herramientas se usaron y cuántos turnos hicieron fal
 
   const entries = qaLogEntries();
   expect(entries).toHaveLength(1);
-  expect(entries[0]).toMatchObject({ toolsUsed: ["run_widget_query"], turns: 2, historyTurns: 2 });
+  expect(entries[0]).toMatchObject({
+    toolCalls: [{ name: "run_widget_query", input: { field: "total", aggregation: "sum" } }],
+    turns: 2,
+    historyTurns: 2,
+  });
+  expect((entries[0].toolCalls as Array<Record<string, unknown>>)[0]).not.toHaveProperty("error");
+});
+
+test("logQa: registra el input y el error de cada herramienta que falló", async () => {
+  // Reproduce el caso real del 2026-10-16 ("ventas de octubre, lo q diga
+  // horneadas"): un intento rechazado por validación y otro que falla en
+  // Athena, antes de que el modelo conteste sin datos.
+  mockBedrockSend
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", groupBy: "description" }),
+    )
+    .mockResolvedValueOnce(
+      toolUseResponse("tu2", "run_widget_query", {
+        field: "subtotal",
+        aggregation: "sum",
+        groupBy: "description",
+        filters: { dateFrom: "2026-10-01", dateTo: "2026-10-31" },
+      }),
+    )
+    .mockResolvedValueOnce(textResponse("Hubo un problema técnico al consultar los datos."));
+  mockRunAthenaQuery.mockRejectedValue(new Error("la consulta de Athena falló: TYPE_MISMATCH"));
+  const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+  await handler(eventWith({ question: "Ventas de octubre por horneadas y empanadas" }, "tenant-log"));
+  consoleErrorSpy.mockRestore();
+
+  const entries = qaLogEntries();
+  expect(entries).toHaveLength(1);
+  expect(entries[0].turns).toBe(3);
+  expect(entries[0].toolCalls).toEqual([
+    {
+      name: "run_widget_query",
+      input: { field: "total", aggregation: "sum", groupBy: "description" },
+      error: expect.stringContaining("no se puede agrupar"),
+    },
+    {
+      name: "run_widget_query",
+      input: {
+        field: "subtotal",
+        aggregation: "sum",
+        groupBy: "description",
+        filters: { dateFrom: "2026-10-01", dateTo: "2026-10-31" },
+      },
+      error: "la consulta de Athena falló: TYPE_MISMATCH",
+    },
+  ]);
+});
+
+test("run_widget_query: descriptionContains (\"lo que diga horneadas\") llega al SQL como parámetro", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "run_widget_query", {
+        field: "subtotal",
+        aggregation: "sum",
+        filters: { dateFrom: "2026-10-01", dateTo: "2026-10-31", descriptionContains: "  horne  " },
+      }),
+    )
+    .mockResolvedValueOnce(textResponse("En octubre vendiste $396.343 en horneadas."));
+  mockRunAthenaQuery.mockResolvedValue([{ value: 396343 }]);
+
+  const result = await handler(eventWith({ question: "Ventas de octubre de horneadas" }, "tenant-x"));
+
+  expect(result.statusCode).toBe(200);
+  const [sql, params] = mockRunAthenaQuery.mock.calls[0];
+  expect(sql).toContain("strpos(lower(description), lower(?)) > 0");
+  expect(params).toEqual(["tenant-x", "2026", "2026", "2026-10-01", "2026-10-31T23:59:59.999Z", "horne"]);
+});
+
+test("el prompt lleva la fecha de hoy (sin ella el modelo preguntaba \"¿octubre de qué año?\")", async () => {
+  mockBedrockSend.mockResolvedValue(textResponse("ok"));
+  await handler(eventWith({ question: "hola" }));
+  const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+  expect(systemText).toContain(`Hoy es ${new Date().toISOString().slice(0, 10)}`);
+  expect(systemText).toContain("No pidas aclaraciones");
+});
+
+test("el prompt le indica al modelo qué hacer cuando una herramienta falla", async () => {
+  mockBedrockSend.mockResolvedValue(textResponse("ok"));
+  await handler(eventWith({ question: "hola" }));
+  const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+  expect(systemText).toContain("Si una herramienta devuelve un error");
+  expect(systemText).toContain("problema técnico");
 });
 
 test("logQa: no registra nada cuando el request se rechaza antes de llegar a Bedrock", async () => {

@@ -36,6 +36,7 @@ const TICKET_STATUSES: TicketStatus[] = ["pending", "parsed", "needs_review", "f
 const ASSISTANT_MAX_GROUPS = 50;
 const LIST_TICKETS_DEFAULT_LIMIT = 10;
 const LIST_TICKETS_MAX_LIMIT = 15;
+const MAX_DESCRIPTION_FILTER_LENGTH = 50;
 
 const SYSTEM_PROMPT = `Sos el asistente de datos del dashboard de un negocio que usa InnoApp para capturar y analizar tickets de venta. Contestá siempre en español, en pocas oraciones, directo al grano.
 
@@ -43,9 +44,25 @@ Tenés dos herramientas para consultar los datos REALES del negocio — nunca in
 - "run_widget_query": totales/promedios/conteos, opcionalmente agrupados por robot/estado/producto o por día. Usala para preguntas de agregados ("¿cuánto vendí?", "¿qué producto vendió más?", "comparame las sucursales", "¿qué día vendí más?").
 - "list_tickets": los tickets más recientes, opcionalmente filtrados por estado. Usala para preguntas puntuales sobre ventas concretas, no para totales.
 
+No pidas aclaraciones si la pregunta se puede contestar con una suposición razonable: consultá, contestá y decí en una frase qué supusiste. Supuestos por defecto:
+- "Ventas" es plata: "subtotal" si es por producto, "total" si es del negocio entero.
+- Un mes o un día sin año es el más reciente que ya empezó, según la fecha de hoy (va al final).
+- "Las horneadas", "lo que diga empanadas" y parecidos son un tipo de producto: usá el filtro "descriptionContains" con una raíz corta de la palabra, una consulta por cada tipo. La suma la hace la herramienta, no la calcules vos.
+Pedí aclaración solo si no hay ninguna interpretación razonable.
+
 Si la pregunta no tiene que ver con los datos del negocio (tickets, ventas, robots), respondé brevemente que solo podés ayudar con eso. Basá la respuesta únicamente en lo que devolvió la herramienta — si no hay datos, decilo en vez de inventar. Cuando uses datos reales, mencioná brevemente sobre qué te basaste (ej. cantidad de tickets).
 
-Puede haber preguntas anteriores de la misma conversación antes de la actual — usalas para interpretar referencias ambiguas ("¿y por producto?", "¿y la semana pasada?"), pero siempre volvé a llamar a la herramienta correspondiente para traer datos frescos, nunca reuses un número que hayas dado antes sin volver a consultarlo.`;
+Puede haber preguntas anteriores de la misma conversación antes de la actual — usalas para interpretar referencias ambiguas ("¿y por producto?", "¿y la semana pasada?"), pero siempre volvé a llamar a la herramienta correspondiente para traer datos frescos, nunca reuses un número que hayas dado antes sin volver a consultarlo.
+
+Si una herramienta devuelve un error, no adivines por qué falló ni le atribuyas la causa a los datos del negocio (por ejemplo al estado de los tickets). Si el error dice que un parámetro es inválido, corregilo y probá de nuevo. Si es otro tipo de error, decile al usuario que hubo un problema técnico al consultar los datos y que pruebe de nuevo en un rato, y ofrecé lo que sí hayas podido consultar.`;
+
+/**
+ * El modelo no sabe qué día es: sin esto, "ventas de octubre" terminaba en
+ * "¿octubre de qué año?" (2026-10-16). UTC, igual que el agrupado por "day".
+ */
+function buildSystemPrompt(now: Date): string {
+  return `${SYSTEM_PROMPT}\n\nHoy es ${now.toISOString().slice(0, 10)} (fecha UTC).`;
+}
 
 function buildTools(): Tool[] {
   return [
@@ -76,10 +93,15 @@ function buildTools(): Tool[] {
               filters: {
                 type: "object",
                 properties: {
-                  dateFrom: { type: "string", description: "Fecha ISO-8601 desde (opcional)." },
-                  dateTo: { type: "string", description: "Fecha ISO-8601 hasta (opcional)." },
+                  dateFrom: { type: "string", description: "Fecha desde, YYYY-MM-DD (opcional)." },
+                  dateTo: { type: "string", description: "Fecha hasta, YYYY-MM-DD, incluye ese día entero (opcional)." },
                   port: { type: "string", description: "Filtrar por un robot/puerto puntual (opcional)." },
                   status: { type: "string", enum: TICKET_STATUSES, description: "Filtrar por estado del ticket (opcional)." },
+                  descriptionContains: {
+                    type: "string",
+                    description:
+                      "Solo productos cuyo nombre contiene este texto, sin distinguir mayúsculas (opcional). Usá una raíz corta ('horne', 'empa') porque los nombres pueden venir abreviados. Solo con 'subtotal', 'quantity', 'unitPrice' o 'event_count'.",
+                  },
                 },
               },
             },
@@ -147,6 +169,9 @@ async function runWidgetQueryTool(input: unknown, tenantId: string): Promise<unk
     if (typeof f.dateTo === "string") filters.dateTo = f.dateTo;
     if (typeof f.port === "string") filters.port = f.port;
     if (typeof f.status === "string" && TICKET_STATUSES.includes(f.status as TicketStatus)) filters.status = f.status;
+    if (typeof f.descriptionContains === "string" && f.descriptionContains.trim()) {
+      filters.descriptionContains = f.descriptionContains.trim().slice(0, MAX_DESCRIPTION_FILTER_LENGTH);
+    }
   }
 
   const widget: WidgetRecord = {
@@ -282,8 +307,23 @@ function validateBody(body: unknown): Validation {
  * CloudWatch Logs sin infraestructura nueva — retención acotada a propósito
  * en el stack (ver `AssistantAskFunction` en el CDK), porque esto guarda
  * contenido real de negocio (montos, productos), no solo metadata técnica.
+ *
+ * `toolCalls` lleva el input que armó el modelo y, si falló, el error que
+ * recibió de vuelta — con solo el nombre de la herramienta (antes
+ * `toolsUsed`) no había forma de saber desde este log por qué una
+ * respuesta salió sin datos (caso "ventas de octubre" del 2026-10-16:
+ * dos consultas fallidas que solo se veían cruzando con los console.error).
  */
-function logQa(entry: { tenantId: string; question: string; answer: string; toolsUsed: string[]; turns: number; historyTurns: number }): void {
+type ToolCallLog = { name: string; input: unknown; error?: string };
+
+function logQa(entry: {
+  tenantId: string;
+  question: string;
+  answer: string;
+  toolCalls: ToolCallLog[];
+  turns: number;
+  historyTurns: number;
+}): void {
   console.log(JSON.stringify({ event: "assistant_qa", timestamp: new Date().toISOString(), ...entry }));
 }
 
@@ -318,22 +358,23 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   }
 
   const modelId = process.env.BEDROCK_MODEL_ID!;
+  const systemPrompt = buildSystemPrompt(new Date());
   const tools = buildTools();
   const messages: Message[] = [
     ...validation.history.map((turn): Message => ({ role: turn.role, content: [{ text: turn.text }] })),
     { role: "user", content: [{ text: validation.question }] },
   ];
-  // Para el log de auditoría al final — qué herramientas se invocaron, sin
-  // importar si tuvieron éxito (un intento de herramienta inexistente
-  // también es una señal útil, ver logQa()).
-  const toolsUsed: string[] = [];
+  // Para el log de auditoría al final — qué herramientas se invocaron y con
+  // qué input, sin importar si tuvieron éxito (un intento de herramienta
+  // inexistente también es una señal útil, ver logQa()).
+  const toolCalls: ToolCallLog[] = [];
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       const response = await bedrock.send(
         new ConverseCommand({
           modelId,
-          system: [{ text: SYSTEM_PROMPT }],
+          system: [{ text: systemPrompt }],
           messages,
           toolConfig: { tools },
           // Acotado a propósito (costo/latencia) — sección 10.1 de PROYECTO.md
@@ -353,7 +394,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
         if (!text) {
           return jsonResponse(502, { error: "el modelo no devolvió respuesta" });
         }
-        logQa({ tenantId, question: validation.question, answer: text, toolsUsed, turns: turn + 1, historyTurns: validation.history.length });
+        logQa({ tenantId, question: validation.question, answer: text, toolCalls, turns: turn + 1, historyTurns: validation.history.length });
         return jsonResponse(200, { answer: text });
       }
 
@@ -361,7 +402,8 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
       const toolResultContent: ContentBlock[] = await Promise.all(
         toolUseBlocks.map(async (block): Promise<ContentBlock> => {
           const toolUse = block.toolUse!;
-          toolsUsed.push(toolUse.name ?? "(sin nombre)");
+          const callLog: ToolCallLog = { name: toolUse.name ?? "(sin nombre)", input: toolUse.input };
+          toolCalls.push(callLog);
           try {
             const result = await callTool(toolUse.name ?? "", toolUse.input, tenantId);
             return {
@@ -369,10 +411,11 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
             } as ContentBlock;
           } catch (err) {
             console.error(`[assistant] fallo la herramienta "${toolUse.name}":`, err);
+            callLog.error = err instanceof Error ? err.message : "error desconocido";
             return {
               toolResult: {
                 toolUseId: toolUse.toolUseId,
-                content: [{ text: err instanceof Error ? err.message : "error desconocido" }],
+                content: [{ text: callLog.error }],
                 status: "error" as const,
               },
             } as ContentBlock;

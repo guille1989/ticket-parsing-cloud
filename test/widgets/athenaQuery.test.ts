@@ -47,6 +47,32 @@ test("KPI (una sola columna): devuelve un value por fila, sin label", async () =
   expect(data).toEqual([{ value: 1800 }]);
 });
 
+test("manda cada parámetro como literal de texto entre comillas (sin esto, 2026-10-01 llega como la resta 2015)", async () => {
+  mockAthenaSend.mockImplementation((command) => {
+    if (command instanceof StartQueryExecutionCommand) return Promise.resolve({ QueryExecutionId: "q1" });
+    if (command instanceof GetQueryExecutionCommand) {
+      return Promise.resolve({ QueryExecution: { Status: { State: "SUCCEEDED" } } });
+    }
+    if (command instanceof GetQueryResultsCommand) return Promise.resolve(resultSet(1, [["1"]]));
+    throw new Error("comando inesperado");
+  });
+
+  await runWidgetQuery(
+    "SELECT 1 FROM x WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND capturedat >= ? AND port = ?",
+    ["de728d42-eb0b-43e4-ba15-16c10962c719", "2026", "2026-10-01", "Caja d'Ana"],
+    "wg",
+  );
+
+  const start = mockAthenaSend.mock.calls.map(([cmd]) => cmd).find((cmd) => cmd instanceof StartQueryExecutionCommand);
+  expect(start?.input.ExecutionParameters).toEqual([
+    "'de728d42-eb0b-43e4-ba15-16c10962c719'",
+    "'2026'",
+    "'2026-10-01'",
+    // La comilla del valor se duplica: queda dentro del literal, no lo cierra.
+    "'Caja d''Ana'",
+  ]);
+});
+
 test("bar/donut (dos columnas): devuelve label + value por fila", async () => {
   mockAthenaSend.mockImplementation((command) => {
     if (command instanceof StartQueryExecutionCommand) return Promise.resolve({ QueryExecutionId: "q1" });

@@ -116,7 +116,28 @@ test("cada filtro presente agrega su condición y su parámetro, en orden — el
   );
 
   expect(sql).toContain("tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND capturedat >= ? AND capturedat <= ? AND port = ? AND status = ?");
-  expect(params).toEqual(["t1", "2026", "2026", "2026-07-01", "2026-07-31", "COM3", "parsed"]);
+  // dateTo de solo fecha se lleva al final del día — si no, los tickets del 31 quedaban afuera.
+  expect(params).toEqual(["t1", "2026", "2026", "2026-07-01", "2026-07-31T23:59:59.999Z", "COM3", "parsed"]);
+});
+
+test("dateTo con hora se respeta tal cual", () => {
+  const { params } = buildWidgetQuery(widget({ filters: { dateTo: "2026-07-31T12:00:00.000Z" } }));
+  expect(params).toContain("2026-07-31T12:00:00.000Z");
+});
+
+test("descriptionContains filtra por nombre de producto sin distinguir mayúsculas, como parámetro", () => {
+  const { sql, params } = buildWidgetQuery(
+    widget({ metric: { field: "subtotal", aggregation: "sum" }, filters: { descriptionContains: "Horne" } }),
+  );
+  expect(sql).toContain("strpos(lower(description), lower(?)) > 0");
+  expect(sql).not.toContain("Horne");
+  expect(params.at(-1)).toBe("Horne");
+});
+
+test("descriptionContains con un campo del ticket (total) se rechaza: sumaría tickets enteros, no el producto", () => {
+  expect(() =>
+    buildWidgetQuery(widget({ metric: { field: "total", aggregation: "sum" }, filters: { descriptionContains: "empa" } })),
+  ).toThrow(/usá "subtotal"/);
 });
 
 // Acota la proyección de particiones de Athena a un rango chico (ver el

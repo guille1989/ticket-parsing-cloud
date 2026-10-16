@@ -20,6 +20,20 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Athena no toma cada `ExecutionParameters` como un string ya tipado: lo
+ * parsea como un literal SQL. Sin comillas, "2026-10-01" se evalúa como la
+ * resta 2026 - 10 - 1 = 2015 (entero) y `capturedat >= ?` falla con
+ * `TYPE_MISMATCH: varchar <= integer` — así se rompía el filtro de fechas
+ * del asistente (2026-10-16, "ventas de octubre"). Todos los valores que
+ * arma queryBuilder.ts son strings, así que se mandan siempre como literal
+ * de texto, escapando la comilla simple ('' en SQL) para que un valor con
+ * comillas no pueda cerrar el literal.
+ */
+function toSqlStringLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
  * Corre una consulta de Athena de punta a punta: dispara, sondea hasta que
  * termina, y trae los resultados ya transformados a algo simple para
  * graficar. Athena es async por naturaleza (no hay una API síncrona de
@@ -31,7 +45,7 @@ export async function runWidgetQuery(sql: string, params: string[], workGroup: s
   const start = await athena.send(
     new StartQueryExecutionCommand({
       QueryString: sql,
-      ExecutionParameters: params,
+      ExecutionParameters: params.map(toSqlStringLiteral),
       WorkGroup: workGroup,
     }),
   );

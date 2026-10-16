@@ -57,6 +57,14 @@ export function buildWidgetQuery(widget: WidgetRecord, maxGroups: number = MAX_G
       `no se puede agrupar "${widget.metric.field}" (un valor por ticket) por "description" (un valor por ítem) — usá "subtotal" para desglosar por producto`,
     );
   }
+  // Mismo motivo que arriba: filtrar ítems por descripción y después sumar
+  // el total del ticket daría el total de los tickets que tienen ese
+  // producto, no lo que se vendió de él.
+  if (widget.filters?.descriptionContains && isTicketLevelField(widget.metric.field)) {
+    throw new Error(
+      `no se puede filtrar "${widget.metric.field}" (un valor por ticket) por descripción de producto — usá "subtotal" (o "quantity" para unidades)`,
+    );
+  }
 
   const { whereClause, params } = buildWhere(widget);
   const from = `${ANALYTICS_DATABASE}.${ANALYTICS_TABLE}`;
@@ -101,14 +109,13 @@ export function buildWidgetQuery(widget: WidgetRecord, maxGroups: number = MAX_G
 // columna `year` como `string` (`partitionKeys` en el stack), pero la
 // proyección de particiones la define con `"projection.year.type":
 // "integer"` — Athena arma el plan de la consulta según ESE tipo
-// proyectado. Y el CAST hace falta en LOS DOS lados: los `?` de
-// `ExecutionParameters` no viajan como varchar solo por estar declarados
-// como `string[]` acá — Athena infiere el tipo de cada parámetro por su
-// forma literal ("2025" se infiere como integer, con CAST o sin él del
-// otro lado), así que sin castear el parámetro también tira
-// `TYPE_MISMATCH: Cannot apply operator: varchar <= integer` igual.
-// Confirmado reproduciendo el mismo `EXECUTE ... USING` que usa el Lambda
-// (vía `--execution-parameters` sin comillas) contra Athena real.
+// proyectado. El CAST del lado del parámetro (`CAST(? AS VARCHAR)`) era
+// para lo mismo visto desde el otro lado: Athena parsea cada parámetro
+// como literal SQL y "2025" sin comillas es un integer. Desde 2026-10-16
+// athenaQuery.ts manda todos los parámetros entre comillas (ver
+// `toSqlStringLiteral`), así que ese CAST ya es redundante — se deja
+// porque no cambia el resultado y la consulta ya está probada así contra
+// Athena real.
 const DEFAULT_YEAR_LOOKBACK = 1;
 
 function buildWhere(widget: WidgetRecord): { whereClause: string; params: string[] } {
@@ -128,7 +135,7 @@ function buildWhere(widget: WidgetRecord): { whereClause: string; params: string
   }
   if (widget.filters?.dateTo) {
     conditions.push("capturedat <= ?");
-    params.push(widget.filters.dateTo);
+    params.push(inclusiveDateTo(widget.filters.dateTo));
   }
   if (widget.filters?.port) {
     conditions.push("port = ?");
@@ -138,8 +145,24 @@ function buildWhere(widget: WidgetRecord): { whereClause: string; params: string
     conditions.push("status = ?");
     params.push(widget.filters.status);
   }
+  // strpos y no LIKE: así un "%" o "_" en el texto se busca tal cual, sin
+  // tener que escaparlo como comodín.
+  if (widget.filters?.descriptionContains) {
+    conditions.push("strpos(lower(description), lower(?)) > 0");
+    params.push(widget.filters.descriptionContains);
+  }
 
   return { whereClause: conditions.join(" AND "), params };
+}
+
+/**
+ * `capturedat` es un ISO-8601 con hora y se compara como texto, así que
+ * un `dateTo` de solo fecha ("2026-10-31") quedaba por debajo de cualquier
+ * ticket de ese mismo día ("2026-10-31T10:00..." > "2026-10-31") y el
+ * último día del rango se perdía entero. Se lleva al final del día.
+ */
+function inclusiveDateTo(dateTo: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(dateTo) ? `${dateTo}T23:59:59.999Z` : dateTo;
 }
 
 /** Métricas por ítem (quantity/unitPrice/subtotal) y event_count: se agregan directo, sin sub-consulta. */

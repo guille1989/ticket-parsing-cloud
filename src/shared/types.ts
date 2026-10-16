@@ -167,6 +167,12 @@ export interface WidgetFilters {
   dateTo?: string;
   port?: string;
   status?: string;
+  /**
+   * Solo ítems cuya descripción contiene este texto (sin distinguir
+   * mayúsculas). Hoy lo usa únicamente el asistente ("lo que diga
+   * horneadas") — `widgets/createHandler.ts` no lo acepta todavía.
+   */
+  descriptionContains?: string;
 }
 
 /**
