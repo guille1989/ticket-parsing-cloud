@@ -37,12 +37,16 @@ const ASSISTANT_MAX_GROUPS = 50;
 const LIST_TICKETS_DEFAULT_LIMIT = 10;
 const LIST_TICKETS_MAX_LIMIT = 15;
 const MAX_DESCRIPTION_FILTER_LENGTH = 50;
+const REPORT_MAX_SECTIONS = 6;
+const REPORT_MAX_TITLE_LENGTH = 100;
 
 const SYSTEM_PROMPT = `Sos el asistente de datos del dashboard de un negocio que usa InnoApp para capturar y analizar tickets de venta. Contestá siempre en español, en pocas oraciones, directo al grano.
 
-Tenés dos herramientas para consultar los datos REALES del negocio — nunca inventes números:
+Tenés tres herramientas para consultar los datos REALES del negocio — nunca inventes números:
 - "run_widget_query": totales/promedios/conteos, opcionalmente agrupados por robot/estado/producto o por día. Usala para preguntas de agregados ("¿cuánto vendí?", "¿qué producto vendió más?", "comparame las sucursales", "¿qué día vendí más?").
 - "list_tickets": los tickets más recientes, opcionalmente filtrados por estado. Usala para preguntas puntuales sobre ventas concretas, no para totales.
+
+- "build_report": arma un reporte descargable (varias secciones, cada una con su consulta). Usala SOLO cuando el usuario pida un reporte, informe o resumen para descargar. Las tablas las calcula la herramienta con datos reales; vos no transcribas números. Después de llamarla, contestá en pocas oraciones con los hallazgos principales y decí que el reporte está listo para descargar.
 
 No pidas aclaraciones si la pregunta se puede contestar con una suposición razonable: consultá, contestá y decí en una frase qué supusiste. Supuestos por defecto:
 - "Ventas" es plata: "subtotal" si es por producto, "total" si es del negocio entero.
@@ -64,7 +68,42 @@ function buildSystemPrompt(now: Date): string {
   return `${SYSTEM_PROMPT}\n\nHoy es ${now.toISOString().slice(0, 10)} (fecha UTC).`;
 }
 
+function widgetQueryProperties() {
+  return {
+      field: {
+        type: "string",
+        enum: [...NUMERIC_FIELDS, EVENT_COUNT_FIELD],
+        description: "Campo a agregar. 'event_count' cuenta tickets en vez de sumar un campo.",
+      },
+      aggregation: { type: "string", enum: [...AGGREGATIONS], description: "Cómo agregar el campo." },
+      groupBy: {
+        type: "string",
+        // Sin "day" acá el modelo no tenía forma de contestar "¿qué
+        // día vendí más?" — runWidgetQueryTool ya lo aceptaba
+        // (isValidGroupByField), solo faltaba ofrecerlo.
+        enum: [...CATEGORICAL_FIELDS, ...TEMPORAL_FIELDS],
+        description:
+          "Campo para desglosar el resultado (opcional, omitir para un solo total). 'day' agrupa por fecha (YYYY-MM-DD, en UTC), ordenado de la más vieja a la más nueva.",
+      },
+      filters: {
+        type: "object",
+        properties: {
+          dateFrom: { type: "string", description: "Fecha desde, YYYY-MM-DD (opcional)." },
+          dateTo: { type: "string", description: "Fecha hasta, YYYY-MM-DD, incluye ese día entero (opcional)." },
+          port: { type: "string", description: "Filtrar por un robot/puerto puntual (opcional)." },
+          status: { type: "string", enum: TICKET_STATUSES, description: "Filtrar por estado del ticket (opcional)." },
+          descriptionContains: {
+            type: "string",
+            description:
+              "Solo productos cuyo nombre contiene este texto, sin distinguir mayúsculas (opcional). Usá una raíz corta ('horne', 'empa') porque los nombres pueden venir abreviados. Solo con 'subtotal', 'quantity', 'unitPrice' o 'event_count'.",
+          },
+        },
+      },
+  };
+}
+
 function buildTools(): Tool[] {
+  const queryProperties = widgetQueryProperties();
   return [
     {
       toolSpec: {
@@ -75,37 +114,36 @@ function buildTools(): Tool[] {
           json: {
             type: "object",
             properties: {
-              field: {
-                type: "string",
-                enum: [...NUMERIC_FIELDS, EVENT_COUNT_FIELD],
-                description: "Campo a agregar. 'event_count' cuenta tickets en vez de sumar un campo.",
-              },
-              aggregation: { type: "string", enum: [...AGGREGATIONS], description: "Cómo agregar el campo." },
-              groupBy: {
-                type: "string",
-                // Sin "day" acá el modelo no tenía forma de contestar "¿qué
-                // día vendí más?" — runWidgetQueryTool ya lo aceptaba
-                // (isValidGroupByField), solo faltaba ofrecerlo.
-                enum: [...CATEGORICAL_FIELDS, ...TEMPORAL_FIELDS],
-                description:
-                  "Campo para desglosar el resultado (opcional, omitir para un solo total). 'day' agrupa por fecha (YYYY-MM-DD, en UTC), ordenado de la más vieja a la más nueva.",
-              },
-              filters: {
-                type: "object",
-                properties: {
-                  dateFrom: { type: "string", description: "Fecha desde, YYYY-MM-DD (opcional)." },
-                  dateTo: { type: "string", description: "Fecha hasta, YYYY-MM-DD, incluye ese día entero (opcional)." },
-                  port: { type: "string", description: "Filtrar por un robot/puerto puntual (opcional)." },
-                  status: { type: "string", enum: TICKET_STATUSES, description: "Filtrar por estado del ticket (opcional)." },
-                  descriptionContains: {
-                    type: "string",
-                    description:
-                      "Solo productos cuyo nombre contiene este texto, sin distinguir mayúsculas (opcional). Usá una raíz corta ('horne', 'empa') porque los nombres pueden venir abreviados. Solo con 'subtotal', 'quantity', 'unitPrice' o 'event_count'.",
+              ...queryProperties,
+            },
+            required: ["field", "aggregation"],
+          },
+        },
+      },
+    },
+    {
+      toolSpec: {
+        name: "build_report",
+        description: `Arma un reporte descargable con hasta ${REPORT_MAX_SECTIONS} secciones; cada sección es una consulta de datos con su título. Solo cuando el usuario pida un reporte/informe. Cada KPI con dateFrom y dateTo se compara solo con el periodo anterior (campo previous). Armá el reporte con 1 o 2 KPIs (sin groupBy), una tendencia (groupBy day) y un ranking (por description, port, etc.). Devuelve los datos para que redactes los hallazgos.`,
+        inputSchema: {
+          json: {
+            type: "object",
+            properties: {
+              title: { type: "string", description: "Título del reporte (incluí el periodo si aplica)." },
+              sections: {
+                type: "array",
+                maxItems: REPORT_MAX_SECTIONS,
+                items: {
+                  type: "object",
+                  properties: {
+                    heading: { type: "string", description: "Título de la sección, ej. 'Ventas por día'." },
+                    ...queryProperties,
                   },
+                  required: ["heading", "field", "aggregation"],
                 },
               },
             },
-            required: ["field", "aggregation"],
+            required: ["title", "sections"],
           },
         },
       },
@@ -232,7 +270,103 @@ async function listTicketsTool(input: unknown, tenantId: string): Promise<unknow
   return { tickets, count: tickets.length };
 }
 
-async function callTool(name: string, input: unknown, tenantId: string): Promise<unknown> {
+/**
+ * `kpi` = un solo número, `trend` = serie por día, `ranking` = por categoría.
+ * Se deduce de la consulta (no lo elige el modelo) para que el cliente sepa
+ * qué gráfica dibujar sin depender de que el modelo lo etiquete bien.
+ */
+export type ReportSectionKind = "kpi" | "trend" | "ranking";
+export type ReportSection = {
+  kind: ReportSectionKind;
+  heading: string;
+  field: string;
+  aggregation: string;
+  groupBy?: string;
+  filters?: Record<string, unknown>;
+  data: Array<{ label?: string; value: number }>;
+  /** Solo en `kpi` con dateFrom y dateTo: el mismo cálculo en el periodo anterior de igual duración. */
+  previous?: number;
+};
+export type Report = { title: string; generatedAt: string; sections: ReportSection[] };
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 86_400_000;
+
+/** Periodo inmediatamente anterior y de igual duración; null si el rango no es de fechas válidas. */
+function previousPeriod(dateFrom: unknown, dateTo: unknown): { dateFrom: string; dateTo: string } | null {
+  if (typeof dateFrom !== "string" || typeof dateTo !== "string" || !ISO_DATE.test(dateFrom) || !ISO_DATE.test(dateTo)) return null;
+  const from = Date.parse(`${dateFrom}T00:00:00Z`);
+  const to = Date.parse(`${dateTo}T00:00:00Z`);
+  if (Number.isNaN(from) || Number.isNaN(to) || to < from) return null;
+  const days = Math.round((to - from) / DAY_MS) + 1;
+  const prevTo = from - DAY_MS;
+  const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  return { dateFrom: iso(prevTo - (days - 1) * DAY_MS), dateTo: iso(prevTo) };
+}
+
+/**
+ * Las tablas del reporte salen de las mismas consultas validadas que usa
+ * `run_widget_query`; el modelo solo elige título, secciones y filtros, nunca
+ * escribe cifras. El reporte completo va al cliente en `report`; al modelo
+ * solo le vuelven los datos para que redacte el resumen.
+ */
+async function buildReportTool(input: unknown, tenantId: string, ctx: ToolContext): Promise<unknown> {
+  const raw = (input ?? {}) as Record<string, unknown>;
+  const title = typeof raw.title === "string" ? raw.title.trim().slice(0, REPORT_MAX_TITLE_LENGTH) : "";
+  if (!title) throw new Error("title inválido (string no vacío)");
+  if (!Array.isArray(raw.sections) || raw.sections.length === 0 || raw.sections.length > REPORT_MAX_SECTIONS) {
+    throw new Error(`sections inválido: se esperaban entre 1 y ${REPORT_MAX_SECTIONS} secciones`);
+  }
+
+  const sections = await Promise.all(
+    raw.sections.map(async (item, i): Promise<ReportSection> => {
+      const section = (item ?? {}) as Record<string, unknown>;
+      const heading = typeof section.heading === "string" ? section.heading.trim().slice(0, REPORT_MAX_TITLE_LENGTH) : "";
+      if (!heading) throw new Error(`sections[${i}].heading inválido`);
+      try {
+        const { data } = (await runWidgetQueryTool(section, tenantId)) as { data: ReportSection["data"] };
+        const groupBy = typeof section.groupBy === "string" ? section.groupBy : undefined;
+        const filters = section.filters && typeof section.filters === "object" ? (section.filters as Record<string, unknown>) : undefined;
+        const kind: ReportSectionKind = !groupBy ? "kpi" : groupBy === "day" ? "trend" : "ranking";
+
+        let previous: number | undefined;
+        const prevRange = kind === "kpi" ? previousPeriod(filters?.dateFrom, filters?.dateTo) : null;
+        if (prevRange) {
+          // Si la comparación falla, el reporte sigue sin ella en vez de caerse.
+          try {
+            const prev = (await runWidgetQueryTool({ ...section, filters: { ...filters, ...prevRange } }, tenantId)) as {
+              data: ReportSection["data"];
+            };
+            previous = prev.data[0]?.value ?? 0;
+          } catch (err) {
+            console.error("[assistant] fallo la comparación con el periodo anterior:", err);
+          }
+        }
+
+        return {
+          kind,
+          heading,
+          field: section.field as string,
+          aggregation: section.aggregation as string,
+          groupBy,
+          filters,
+          data,
+          previous,
+        };
+      } catch (err) {
+        throw new Error(`sections[${i}] ("${heading}"): ${err instanceof Error ? err.message : "error desconocido"}`);
+      }
+    }),
+  );
+
+  ctx.report = { title, generatedAt: new Date().toISOString(), sections };
+  return { ok: true, title, sections: sections.map((s) => ({ heading: s.heading, data: s.data, previous: s.previous })) };
+}
+
+type ToolContext = { report?: Report };
+
+async function callTool(name: string, input: unknown, tenantId: string, ctx: ToolContext): Promise<unknown> {
+  if (name === "build_report") return buildReportTool(input, tenantId, ctx);
   if (name === "run_widget_query") return runWidgetQueryTool(input, tenantId);
   if (name === "list_tickets") return listTicketsTool(input, tenantId);
   throw new Error(`herramienta desconocida: "${name}"`);
@@ -368,6 +502,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   // qué input, sin importar si tuvieron éxito (un intento de herramienta
   // inexistente también es una señal útil, ver logQa()).
   const toolCalls: ToolCallLog[] = [];
+  const toolContext: ToolContext = {};
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -379,7 +514,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
           toolConfig: { tools },
           // Acotado a propósito (costo/latencia) — sección 10.1 de PROYECTO.md
           // ya mostró lo rápido que un costo "chico" escala sin límites explícitos.
-          inferenceConfig: { maxTokens: 512, temperature: 0.3 },
+          inferenceConfig: { maxTokens: 1024, temperature: 0.3 },
         }),
       );
 
@@ -395,7 +530,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
           return jsonResponse(502, { error: "el modelo no devolvió respuesta" });
         }
         logQa({ tenantId, question: validation.question, answer: text, toolCalls, turns: turn + 1, historyTurns: validation.history.length });
-        return jsonResponse(200, { answer: text });
+        return jsonResponse(200, toolContext.report ? { answer: text, report: toolContext.report } : { answer: text });
       }
 
       const toolUseBlocks = (outputMessage.content ?? []).filter((block) => block.toolUse);
@@ -405,7 +540,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
           const callLog: ToolCallLog = { name: toolUse.name ?? "(sin nombre)", input: toolUse.input };
           toolCalls.push(callLog);
           try {
-            const result = await callTool(toolUse.name ?? "", toolUse.input, tenantId);
+            const result = await callTool(toolUse.name ?? "", toolUse.input, tenantId, toolContext);
             return {
               toolResult: { toolUseId: toolUse.toolUseId, content: [{ json: result as Record<string, unknown> }] },
             } as ContentBlock;

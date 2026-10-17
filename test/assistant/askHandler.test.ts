@@ -434,3 +434,90 @@ test("logQa: no registra nada cuando el request se rechaza antes de llegar a Bed
 
   expect(qaLogEntries()).toHaveLength(0);
 });
+
+test("build_report: ejecuta una consulta por sección y devuelve el reporte con datos reales", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "build_report", {
+        title: "Ventas de octubre",
+        sections: [
+          { heading: "Total", field: "total", aggregation: "sum", filters: { dateFrom: "2026-10-01" } },
+          { heading: "Por robot", field: "total", aggregation: "sum", groupBy: "port" },
+        ],
+      }),
+    )
+    .mockResolvedValueOnce(textResponse("Reporte listo: COM3 lidera."));
+  mockRunAthenaQuery
+    .mockResolvedValueOnce([{ value: 20000 }])
+    .mockResolvedValueOnce([{ label: "COM3", value: 12000 }]);
+
+  const result = await handler(eventWith({ question: "hazme un reporte de octubre" }, "tenant-x"));
+
+  expect(result.statusCode).toBe(200);
+  const body = JSON.parse(result.body);
+  expect(body.answer).toBe("Reporte listo: COM3 lidera.");
+  expect(body.report.title).toBe("Ventas de octubre");
+  expect(body.report.sections.map((s: { heading: string }) => s.heading)).toEqual(["Total", "Por robot"]);
+  expect(body.report.sections[1].data).toEqual([{ label: "COM3", value: 12000 }]);
+  // Ambas consultas llevan el tenant del JWT.
+  expect(mockRunAthenaQuery).toHaveBeenCalledTimes(2);
+  for (const [, params] of mockRunAthenaQuery.mock.calls) expect(params[0]).toBe("tenant-x");
+});
+
+test("build_report: una sección inválida hace fallar la herramienta y no se devuelve reporte", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "build_report", {
+        title: "X",
+        sections: [{ heading: "Mala", field: "inventado", aggregation: "sum" }],
+      }),
+    )
+    .mockResolvedValueOnce(textResponse("Hubo un problema técnico."));
+
+  const result = await handler(eventWith({ question: "reporte" }, "tenant-x"));
+
+  expect(JSON.parse(result.body).report).toBeUndefined();
+  const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
+  expect(toolResult.status).toBe("error");
+  expect(toolResult.content[0].text).toContain("sections[0]");
+  expect(mockRunAthenaQuery).not.toHaveBeenCalled();
+});
+
+test("build_report: rechaza más secciones que el tope", async () => {
+  const sections = Array.from({ length: 7 }, (_, i) => ({ heading: `S${i}`, field: "total", aggregation: "sum" }));
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "build_report", { title: "X", sections }))
+    .mockResolvedValueOnce(textResponse("ok"));
+
+  await handler(eventWith({ question: "reporte" }, "tenant-x"));
+
+  expect(mockRunAthenaQuery).not.toHaveBeenCalled();
+  expect(mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult.status).toBe("error");
+});
+
+test("build_report: deduce el tipo de sección y compara el KPI con el periodo anterior", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "build_report", {
+        title: "Octubre",
+        sections: [
+          { heading: "Ventas", field: "total", aggregation: "sum", filters: { dateFrom: "2026-10-01", dateTo: "2026-10-31" } },
+          { heading: "Por día", field: "total", aggregation: "sum", groupBy: "day" },
+          { heading: "Por producto", field: "subtotal", aggregation: "sum", groupBy: "description" },
+        ],
+      }),
+    )
+    .mockResolvedValueOnce(textResponse("listo"));
+  mockRunAthenaQuery.mockImplementation(async (_sql: string, params: string[]) =>
+    // El periodo anterior de octubre (31 días) es 2026-08-31 .. 2026-09-30.
+    params.includes("2026-08-31") ? [{ value: 800 }] : [{ value: 1000 }],
+  );
+
+  const result = await handler(eventWith({ question: "reporte de octubre" }, "tenant-x"));
+
+  const { report } = JSON.parse(result.body);
+  expect(report.sections.map((s: { kind: string }) => s.kind)).toEqual(["kpi", "trend", "ranking"]);
+  expect(report.sections[0].previous).toBe(800);
+  expect(report.sections[1].previous).toBeUndefined();
+  expect(mockRunAthenaQuery).toHaveBeenCalledTimes(4);
+});
