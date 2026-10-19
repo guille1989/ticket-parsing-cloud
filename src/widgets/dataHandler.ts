@@ -8,6 +8,25 @@ import type { WidgetRecord } from "../shared/types.js";
 import { runWidgetQuery } from "./athenaQuery.js";
 import { buildWidgetQuery } from "./queryBuilder.js";
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Rango opcional (`?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD`) que el dashboard manda
+ * cuando el usuario filtra una gráfica por fechas. Se suma a los filtros que el
+ * widget ya trae guardados; sin parámetros el comportamiento es el de siempre.
+ */
+function parseDateRange(event: APIGatewayProxyWithCognitoAuthorizerEvent): { dateFrom?: string; dateTo?: string } | { error: string } {
+  const range: { dateFrom?: string; dateTo?: string } = {};
+  for (const key of ["dateFrom", "dateTo"] as const) {
+    const value = event.queryStringParameters?.[key];
+    if (value === undefined) continue;
+    if (!ISO_DATE.test(value) || Number.isNaN(Date.parse(value))) return { error: `${key} inválida, se esperaba YYYY-MM-DD` };
+    range[key] = value;
+  }
+  if (range.dateFrom && range.dateTo && range.dateFrom > range.dateTo) return { error: "dateFrom no puede ser posterior a dateTo" };
+  return range;
+}
+
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
   const tenantId = resolveTenantIdFromEvent(event);
   if (!tenantId) {
@@ -19,6 +38,11 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
     return jsonResponse(400, { error: "falta widgetId en el path" });
   }
 
+  const range = parseDateRange(event);
+  if ("error" in range) {
+    return jsonResponse(400, { error: range.error });
+  }
+
   const result = await ddb.send(new GetCommand({ TableName: WIDGETS_TABLE, Key: widgetKey(tenantId, widgetId) }));
   const widget = result.Item as WidgetRecord | undefined;
   if (!widget) {
@@ -27,7 +51,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
 
   let query;
   try {
-    query = buildWidgetQuery(widget);
+    query = buildWidgetQuery({ ...widget, filters: { ...widget.filters, ...range } });
   } catch (err) {
     // No debería pasar nunca si createHandler validó bien al guardar, pero
     // si un registro corrupto llegó hasta acá, mejor un 500 claro que

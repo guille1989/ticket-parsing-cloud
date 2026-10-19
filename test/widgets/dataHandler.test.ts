@@ -29,10 +29,11 @@ const validWidget = {
   createdAt: "2026-07-29T20:00:00.000Z",
 };
 
-function eventWith(widgetId: string | undefined): APIGatewayProxyWithCognitoAuthorizerEvent {
+function eventWith(widgetId: string | undefined, query?: Record<string, string>): APIGatewayProxyWithCognitoAuthorizerEvent {
   return {
     requestContext: { authorizer: { claims: { "custom:tenantId": "t1" } } },
     pathParameters: widgetId ? { widgetId } : null,
+    queryStringParameters: query ?? null,
   } as unknown as APIGatewayProxyWithCognitoAuthorizerEvent;
 }
 
@@ -91,4 +92,35 @@ test("sin sesión de Cognito (sin claim de tenantId): 403, no toca DynamoDB", as
   } as unknown as APIGatewayProxyWithCognitoAuthorizerEvent);
   expect(result.statusCode).toBe(403);
   expect(mockDdbSend).not.toHaveBeenCalled();
+});
+
+test("con dateFrom/dateTo el rango viaja a la consulta de Athena (dateTo inclusivo)", async () => {
+  mockDdbSend.mockResolvedValue({ Item: validWidget });
+  mockRunWidgetQuery.mockResolvedValue([{ label: "Café", value: 3 }]);
+
+  const result = await handler(eventWith("w1", { dateFrom: "2026-10-01", dateTo: "2026-10-19" }));
+
+  expect(result.statusCode).toBe(200);
+  const [sql, params] = mockRunWidgetQuery.mock.calls[0];
+  expect(sql).toContain("capturedat");
+  expect(params).toContain("2026-10-01");
+  expect(params).toContain("2026-10-19T23:59:59.999Z");
+});
+
+test("sin rango la consulta no filtra por fecha (comportamiento previo)", async () => {
+  mockDdbSend.mockResolvedValue({ Item: validWidget });
+  mockRunWidgetQuery.mockResolvedValue([]);
+
+  await handler(eventWith("w1"));
+
+  expect(mockRunWidgetQuery.mock.calls[0][1].some((p: string) => /^\d{4}-\d{2}-\d{2}/.test(String(p)))).toBe(false);
+});
+
+test("fechas inválidas o invertidas: 400 y nunca llega a Athena", async () => {
+  mockDdbSend.mockResolvedValue({ Item: validWidget });
+
+  expect((await handler(eventWith("w1", { dateFrom: "ayer" }))).statusCode).toBe(400);
+  expect((await handler(eventWith("w1", { dateFrom: "2026-10-19", dateTo: "2026-10-01" }))).statusCode).toBe(400);
+  expect((await handler(eventWith("w1", { dateTo: "2026-02-31x" }))).statusCode).toBe(400);
+  expect(mockRunWidgetQuery).not.toHaveBeenCalled();
 });
