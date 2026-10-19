@@ -187,3 +187,45 @@ test("los distintos campos de agregación producen la función SQL correcta", ()
     "MIN(total)",
   );
 });
+
+// --- groupBy "hour" y zona horaria ---
+
+test("groupBy hour sin zona: recorta el ISO a la hora en UTC, orden cronológico", () => {
+  const { sql } = buildWidgetQuery(widget({ visualization: "line", groupBy: "hour", metric: { field: "subtotal", aggregation: "sum" } }));
+
+  expect(sql).toContain("replace(substr(capturedat, 1, 13), 'T', ' ') AS label");
+  expect(sql).toContain("ORDER BY label ASC");
+});
+
+test("groupBy hour con zona: convierte con at_timezone y la zona va inlineada", () => {
+  const { sql } = buildWidgetQuery(
+    widget({ visualization: "line", groupBy: "hour", metric: { field: "subtotal", aggregation: "sum" } }),
+    undefined,
+    "America/Bogota",
+  );
+
+  expect(sql).toContain("format_datetime(at_timezone(from_iso8601_timestamp(capturedat), 'America/Bogota'), 'yyyy-MM-dd HH')");
+});
+
+test("groupBy day con zona: fecha local, y los filtros de fecha comparan la fecha local", () => {
+  const { sql, params } = buildWidgetQuery(
+    widget({
+      groupBy: "day",
+      metric: { field: "subtotal", aggregation: "sum" },
+      filters: { dateFrom: "2026-10-19", dateTo: "2026-10-19" },
+    }),
+    undefined,
+    "America/Bogota",
+  );
+
+  expect(sql).toContain("'America/Bogota'), 'yyyy-MM-dd') >= ?");
+  expect(sql).toContain("'America/Bogota'), 'yyyy-MM-dd') <= ?");
+  expect(params.slice(-2)).toEqual(["2026-10-19", "2026-10-19"]);
+});
+
+test("zona horaria inválida o con intento de inyección: se rechaza antes de generar SQL", () => {
+  const w = widget({ groupBy: "hour", metric: { field: "subtotal", aggregation: "sum" } });
+
+  expect(() => buildWidgetQuery(w, undefined, "x'); DROP TABLE t;--")).toThrow(/zona horaria inválida/);
+  expect(() => buildWidgetQuery(w, undefined, "Mars/Olympus")).toThrow(/zona horaria inválida/);
+});

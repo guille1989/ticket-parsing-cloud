@@ -6,6 +6,7 @@ import { ATHENA_WORKGROUP, ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynam
 import { jsonResponse } from "../shared/http.js";
 import type { WidgetRecord } from "../shared/types.js";
 import { runWidgetQuery } from "./athenaQuery.js";
+import { isValidTimeZone } from "./fields.js";
 import { buildWidgetQuery } from "./queryBuilder.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -51,7 +52,10 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
 
   let query;
   try {
-    query = buildWidgetQuery({ ...widget, filters: { ...widget.filters, ...range } });
+    // `?tz=America/Bogota` (zona del navegador): agrupa y filtra por día/hora local. Inválida o ausente → UTC.
+    const tzParam = event.queryStringParameters?.tz;
+    const timeZone = tzParam && isValidTimeZone(tzParam) ? tzParam : undefined;
+    query = buildWidgetQuery({ ...widget, filters: { ...widget.filters, ...range } }, undefined, timeZone);
   } catch (err) {
     // No debería pasar nunca si createHandler validó bien al guardar, pero
     // si un registro corrupto llegó hasta acá, mejor un 500 claro que

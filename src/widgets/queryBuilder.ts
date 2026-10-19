@@ -6,6 +6,8 @@ import {
   isValidAggregation,
   isValidGroupByField,
   isValidMetricField,
+  isValidTimeZone,
+  localDateExpression,
   numericColumn,
 } from "./fields.js";
 import type { WidgetRecord } from "../shared/types.js";
@@ -39,7 +41,7 @@ export interface AthenaQuery {
  * verdad). Los VALORES (tenantId, fechas, texto de filtros) viajan como
  * `ExecutionParameters` de Athena (placeholders `?`), nunca interpolados.
  */
-export function buildWidgetQuery(widget: WidgetRecord, maxGroups: number = MAX_GROUPS): AthenaQuery {
+export function buildWidgetQuery(widget: WidgetRecord, maxGroups: number = MAX_GROUPS, timeZone?: string): AthenaQuery {
   if (!isValidMetricField(widget.metric.field)) {
     throw new Error(`campo de métrica inválido: "${widget.metric.field}"`);
   }
@@ -66,14 +68,18 @@ export function buildWidgetQuery(widget: WidgetRecord, maxGroups: number = MAX_G
     );
   }
 
-  const { whereClause, params } = buildWhere(widget);
+  if (timeZone !== undefined && timeZone !== "UTC" && !isValidTimeZone(timeZone)) {
+    throw new Error(`zona horaria inválida: "${timeZone}"`);
+  }
+
+  const { whereClause, params } = buildWhere(widget, timeZone);
   const from = `${ANALYTICS_DATABASE}.${ANALYTICS_TABLE}`;
 
   // "event_count" cuenta tickets, no filas — la tabla tiene una fila por
   // ÍTEM, así que un ticket con 3 ítems no puede contar como 3 eventos. La
   // agregación elegida no aplica acá, se ignora a propósito.
   if (widget.metric.field === EVENT_COUNT_FIELD) {
-    return buildDirectQuery(from, whereClause, params, "COUNT(DISTINCT ticketid)", widget.groupBy, maxGroups);
+    return buildDirectQuery(from, whereClause, params, "COUNT(DISTINCT ticketid)", widget.groupBy, maxGroups, timeZone);
   }
 
   const column = numericColumn(widget.metric.field);
@@ -87,10 +93,10 @@ export function buildWidgetQuery(widget: WidgetRecord, maxGroups: number = MAX_G
   // dato, solo elimina las copias antes de que la agregación de afuera las
   // vuelva a contar.
   if (isTicketLevelField(widget.metric.field)) {
-    return buildTicketLevelQuery(from, whereClause, params, column, aggSql, widget.groupBy, maxGroups);
+    return buildTicketLevelQuery(from, whereClause, params, column, aggSql, widget.groupBy, maxGroups, timeZone);
   }
 
-  return buildDirectQuery(from, whereClause, params, `${aggSql}(${column})`, widget.groupBy, maxGroups);
+  return buildDirectQuery(from, whereClause, params, `${aggSql}(${column})`, widget.groupBy, maxGroups, timeZone);
 }
 
 // `capturedat` (usado en los filtros de fecha de abajo) es una columna
@@ -118,7 +124,7 @@ export function buildWidgetQuery(widget: WidgetRecord, maxGroups: number = MAX_G
 // Athena real.
 const DEFAULT_YEAR_LOOKBACK = 1;
 
-function buildWhere(widget: WidgetRecord): { whereClause: string; params: string[] } {
+function buildWhere(widget: WidgetRecord, timeZone?: string): { whereClause: string; params: string[] } {
   const params: string[] = [widget.tenantId];
   const conditions = ["tenant = ?"];
 
@@ -129,13 +135,27 @@ function buildWhere(widget: WidgetRecord): { whereClause: string; params: string
   conditions.push("CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR)");
   params.push(String(fromYear), String(toYear));
 
+  // Con zona horaria, "desde/hasta" son días LOCALES: se compara la fecha
+  // local de cada ticket, no el instante UTC (si no, "hoy" en Bogotá cortaba
+  // a las 19:00 locales).
+  const dateCol = timeZone ? localDateExpression(timeZone) : "capturedat";
+  const dateOnly = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v);
   if (widget.filters?.dateFrom) {
-    conditions.push("capturedat >= ?");
+    if (timeZone && dateOnly(widget.filters.dateFrom)) {
+      conditions.push(`${dateCol} >= ?`);
+    } else {
+      conditions.push("capturedat >= ?");
+    }
     params.push(widget.filters.dateFrom);
   }
   if (widget.filters?.dateTo) {
-    conditions.push("capturedat <= ?");
-    params.push(inclusiveDateTo(widget.filters.dateTo));
+    if (timeZone && dateOnly(widget.filters.dateTo)) {
+      conditions.push(`${dateCol} <= ?`);
+      params.push(widget.filters.dateTo);
+    } else {
+      conditions.push("capturedat <= ?");
+      params.push(inclusiveDateTo(widget.filters.dateTo));
+    }
   }
   if (widget.filters?.port) {
     conditions.push("port = ?");
@@ -173,11 +193,12 @@ function buildDirectQuery(
   selectExpr: string,
   groupBy: string | undefined,
   maxGroups: number,
+  timeZone?: string,
 ): AthenaQuery {
   if (!groupBy) {
     return { sql: `SELECT ${selectExpr} AS value FROM ${from} WHERE ${whereClause}`, params };
   }
-  const groupColumn = groupByExpression(groupBy as never);
+  const groupColumn = groupByExpression(groupBy as never, timeZone);
   const temporal = isTemporalGroupByField(groupBy);
   const orderBy = temporal ? "label ASC" : "value DESC";
   const limit = temporal ? MAX_TIME_POINTS : maxGroups;
@@ -199,13 +220,14 @@ function buildTicketLevelQuery(
   aggSql: string,
   groupBy: string | undefined,
   maxGroups: number,
+  timeZone?: string,
 ): AthenaQuery {
   if (!groupBy) {
     const inner = `SELECT ticketid, MAX(${column}) AS ${column} FROM ${from} WHERE ${whereClause} GROUP BY ticketid`;
     return { sql: `SELECT ${aggSql}(${column}) AS value FROM (${inner})`, params };
   }
 
-  const groupColumn = groupByExpression(groupBy as never);
+  const groupColumn = groupByExpression(groupBy as never, timeZone);
   const temporal = isTemporalGroupByField(groupBy);
   const orderBy = temporal ? "label ASC" : "value DESC";
   const limit = temporal ? MAX_TIME_POINTS : maxGroups;

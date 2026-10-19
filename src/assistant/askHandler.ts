@@ -18,6 +18,7 @@ import {
   isTicketLevelField,
   isValidAggregation,
   isValidGroupByField,
+  isValidTimeZone,
   isValidMetricField,
 } from "../widgets/fields.js";
 import { buildWidgetQuery } from "../widgets/queryBuilder.js";
@@ -66,7 +67,11 @@ Si una herramienta devuelve un error, no adivines por qué falló ni le atribuya
  * El modelo no sabe qué día es: sin esto, "ventas de octubre" terminaba en
  * "¿octubre de qué año?" (2026-10-16). UTC, igual que el agrupado por "day".
  */
-function buildSystemPrompt(now: Date): string {
+function buildSystemPrompt(now: Date, timeZone?: string): string {
+  if (timeZone) {
+    const localDate = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+    return `${SYSTEM_PROMPT}\n\nHoy es ${localDate} (zona horaria del usuario: ${timeZone}). Las fechas y horas de las consultas están en esa zona.`;
+  }
   return `${SYSTEM_PROMPT}\n\nHoy es ${now.toISOString().slice(0, 10)} (fecha UTC).`;
 }
 
@@ -85,7 +90,7 @@ function widgetQueryProperties() {
         // (isValidGroupByField), solo faltaba ofrecerlo.
         enum: [...CATEGORICAL_FIELDS, ...TEMPORAL_FIELDS],
         description:
-          "Campo para desglosar el resultado (opcional, omitir para un solo total). 'day' agrupa por fecha (YYYY-MM-DD, en UTC), ordenado de la más vieja a la más nueva.",
+          "Campo para desglosar el resultado (opcional, omitir para un solo total). 'day' agrupa por fecha (YYYY-MM-DD) y 'hour' por hora (YYYY-MM-DD HH, 24h), ordenados de lo más viejo a lo más nuevo.",
       },
       filters: {
         type: "object",
@@ -177,7 +182,7 @@ function buildTools(): Tool[] {
  * un usuario, pero el mismo principio aplica: nunca confiar un nombre de
  * campo directo, siempre revalidar antes de generar SQL.
  */
-async function runWidgetQueryTool(input: unknown, tenantId: string): Promise<unknown> {
+async function runWidgetQueryTool(input: unknown, tenantId: string, timeZone?: string): Promise<unknown> {
   const raw = (input ?? {}) as Record<string, unknown>;
 
   const field = typeof raw.field === "string" ? raw.field : "";
@@ -225,7 +230,7 @@ async function runWidgetQueryTool(input: unknown, tenantId: string): Promise<unk
     filters,
   };
 
-  const query = buildWidgetQuery(widget, ASSISTANT_MAX_GROUPS);
+  const query = buildWidgetQuery(widget, ASSISTANT_MAX_GROUPS, timeZone);
   const data = await runAthenaQuery(query.sql, query.params, process.env.ATHENA_WORKGROUP!);
   return { data };
 }
@@ -326,17 +331,17 @@ async function buildReportTool(input: unknown, tenantId: string, ctx: ToolContex
       const heading = typeof section.heading === "string" ? section.heading.trim().slice(0, REPORT_MAX_TITLE_LENGTH) : "";
       if (!heading) throw new Error(`sections[${i}].heading inválido`);
       try {
-        const { data } = (await runWidgetQueryTool(section, tenantId)) as { data: ReportSection["data"] };
+        const { data } = (await runWidgetQueryTool(section, tenantId, ctx.timeZone)) as { data: ReportSection["data"] };
         const groupBy = typeof section.groupBy === "string" ? section.groupBy : undefined;
         const filters = section.filters && typeof section.filters === "object" ? (section.filters as Record<string, unknown>) : undefined;
-        const kind: ReportSectionKind = !groupBy ? "kpi" : groupBy === "day" ? "trend" : "ranking";
+        const kind: ReportSectionKind = !groupBy ? "kpi" : groupBy === "day" || groupBy === "hour" ? "trend" : "ranking";
 
         let previous: number | undefined;
         const prevRange = kind === "kpi" ? previousPeriod(filters?.dateFrom, filters?.dateTo) : null;
         if (prevRange) {
           // Si la comparación falla, el reporte sigue sin ella en vez de caerse.
           try {
-            const prev = (await runWidgetQueryTool({ ...section, filters: { ...filters, ...prevRange } }, tenantId)) as {
+            const prev = (await runWidgetQueryTool({ ...section, filters: { ...filters, ...prevRange } }, tenantId, ctx.timeZone)) as {
               data: ReportSection["data"];
             };
             previous = prev.data[0]?.value ?? 0;
@@ -365,17 +370,17 @@ async function buildReportTool(input: unknown, tenantId: string, ctx: ToolContex
   return { ok: true, title, sections: sections.map((s) => ({ heading: s.heading, data: s.data, previous: s.previous })) };
 }
 
-type ToolContext = { report?: Report };
+type ToolContext = { report?: Report; timeZone?: string };
 
 async function callTool(name: string, input: unknown, tenantId: string, ctx: ToolContext): Promise<unknown> {
   if (name === "build_report") return buildReportTool(input, tenantId, ctx);
-  if (name === "run_widget_query") return runWidgetQueryTool(input, tenantId);
+  if (name === "run_widget_query") return runWidgetQueryTool(input, tenantId, ctx.timeZone);
   if (name === "list_tickets") return listTicketsTool(input, tenantId);
   throw new Error(`herramienta desconocida: "${name}"`);
 }
 
 type HistoryTurn = { role: "user" | "assistant"; text: string };
-type Validation = { ok: true; question: string; history: HistoryTurn[] } | { ok: false; error: string };
+type Validation = { ok: true; question: string; history: HistoryTurn[]; timeZone?: string } | { ok: false; error: string };
 
 // Memoria de conversación acotada: el cliente manda los últimos intercambios
 // (los mismos que ya muestra en pantalla), el servidor los antepone al
@@ -435,7 +440,10 @@ function validateBody(body: unknown): Validation {
     return { ok: false, error: historyValidation.error };
   }
 
-  return { ok: true, question: question.trim(), history: historyValidation.history };
+  // Opcional: el navegador manda su zona IANA. Una inválida se ignora (UTC) en vez de rechazar la pregunta.
+  const timeZone = typeof b.timeZone === "string" && isValidTimeZone(b.timeZone) ? b.timeZone : undefined;
+
+  return { ok: true, question: question.trim(), history: historyValidation.history, timeZone };
 }
 
 /**
@@ -499,7 +507,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   }
 
   const modelId = process.env.BEDROCK_MODEL_ID!;
-  const systemPrompt = buildSystemPrompt(new Date());
+  const systemPrompt = buildSystemPrompt(new Date(), validation.timeZone);
   const tools = buildTools();
   const messages: Message[] = [
     ...validation.history.map((turn): Message => ({ role: turn.role, content: [{ text: turn.text }] })),
@@ -509,7 +517,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   // qué input, sin importar si tuvieron éxito (un intento de herramienta
   // inexistente también es una señal útil, ver logQa()).
   const toolCalls: ToolCallLog[] = [];
-  const toolContext: ToolContext = {};
+  const toolContext: ToolContext = { timeZone: validation.timeZone };
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
