@@ -381,6 +381,10 @@ type Validation = { ok: true; question: string; history: HistoryTurn[] } | { ok:
 // anteriores — cada pregunta nueva vuelve a consultar datos frescos en vez
 // de confiar en un número que pudo haber cambiado desde entonces.
 const MAX_HISTORY_TURNS = 6;
+// Las respuestas del asistente (rol "assistant") pueden ser largas — análisis
+// con listas, reportes — y el cliente las reenvía tal cual. Rechazarlas por
+// pasar el tope de las preguntas rompía toda la conversación; se recortan.
+const MAX_HISTORY_ASSISTANT_TEXT_LENGTH = 2000;
 
 function validateHistory(raw: unknown): { ok: true; history: HistoryTurn[] } | { ok: false; error: string } {
   if (raw === undefined) return { ok: true, history: [] };
@@ -401,10 +405,11 @@ function validateHistory(raw: unknown): { ok: true; history: HistoryTurn[] } | {
     if (role !== expectedRole) {
       return { ok: false, error: `history[${i}].role inválido, se esperaba "${expectedRole}" (debe alternar empezando por "user")` };
     }
-    if (typeof text !== "string" || text.trim().length === 0 || text.length > MAX_QUESTION_LENGTH) {
+    const maxLength = role === "assistant" ? Infinity : MAX_QUESTION_LENGTH;
+    if (typeof text !== "string" || text.trim().length === 0 || text.length > maxLength) {
       return { ok: false, error: `history[${i}].text inválido` };
     }
-    history.push({ role: role as "user" | "assistant", text: text.trim() });
+    history.push({ role: role as "user" | "assistant", text: text.trim().slice(0, role === "assistant" ? MAX_HISTORY_ASSISTANT_TEXT_LENGTH : MAX_QUESTION_LENGTH) });
   }
   return { ok: true, history };
 }

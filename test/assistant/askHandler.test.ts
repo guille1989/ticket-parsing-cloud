@@ -134,6 +134,17 @@ test("rechaza history más larga que el tope", async () => {
   expect(mockBedrockSend).not.toHaveBeenCalled();
 });
 
+test("recorta respuestas largas del asistente en history en vez de rechazarlas", async () => {
+  mockBedrockSend.mockResolvedValue(textResponse("ok"));
+  const history = [
+    { role: "user", text: "analizame los productos" },
+    { role: "assistant", text: "x".repeat(3000) },
+  ];
+  const result = await handler(eventWith({ question: "ponmelo en un reporte", history }));
+  expect(result.statusCode).toBe(200);
+  expect(mockBedrockSend.mock.calls[0][0].input.messages[1].content[0].text).toHaveLength(2000);
+});
+
 test("rechaza un mensaje de history vacío", async () => {
   const result = await handler(eventWith({ question: "hola", history: [{ role: "user", text: "   " }] }));
   expect(result.statusCode).toBe(400);
