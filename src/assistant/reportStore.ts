@@ -32,7 +32,10 @@ export async function saveReport(
   // ISO primero: el SK ordena cronológicamente y el sufijo evita colisiones en el mismo milisegundo.
   const reportId = `${createdAt}_${randomUUID().slice(0, 8)}`;
   const ttl = Math.floor(now.getTime() / 1000) + REPORT_RETENTION_DAYS * 24 * 60 * 60;
-  const item: StoredReportItem = { ...reportKey(tenantId, reportId), reportId, title: report.title, summary, report, createdAt, ttl };
+  // El reporte trae campos `undefined` (groupBy/previous/filters opcionales) y DynamoDB
+  // los rechaza: el round-trip por JSON los descarta, igual que al serializar la respuesta.
+  const plainReport = JSON.parse(JSON.stringify(report)) as unknown;
+  const item: StoredReportItem = { ...reportKey(tenantId, reportId), reportId, title: report.title, summary, report: plainReport, createdAt, ttl };
   await ddb.send(new PutCommand({ TableName: REPORTS_TABLE, Item: item }));
   return { reportId, expiresAt: new Date(ttl * 1000).toISOString() };
 }
