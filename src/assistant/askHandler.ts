@@ -3,6 +3,7 @@ import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 import { checkAssistantRateLimit } from "./rateLimit.js";
+import { saveReport } from "./reportStore.js";
 import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, TICKETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
@@ -536,7 +537,15 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
           return jsonResponse(502, { error: "el modelo no devolvió respuesta" });
         }
         logQa({ tenantId, question: validation.question, answer: text, toolCalls, turns: turn + 1, historyTurns: validation.history.length });
-        return jsonResponse(200, toolContext.report ? { answer: text, report: toolContext.report } : { answer: text });
+        if (!toolContext.report) return jsonResponse(200, { answer: text });
+        // Si guardar falla, el reporte igual le llega al cliente (descargable en el momento), solo que no queda en "Reportes".
+        let reportId: string | undefined;
+        try {
+          reportId = (await saveReport(tenantId, text, toolContext.report)).reportId;
+        } catch (err) {
+          console.error("[assistant] no se pudo guardar el reporte:", err);
+        }
+        return jsonResponse(200, { answer: text, report: toolContext.report, reportId });
       }
 
       const toolUseBlocks = (outputMessage.content ?? []).filter((block) => block.toolUse);

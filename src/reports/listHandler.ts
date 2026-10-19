@@ -1,0 +1,38 @@
+import { QueryCommand } from "@aws-sdk/lib-dynamodb";
+import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
+
+import type { StoredReportItem } from "../assistant/reportStore.js";
+import { resolveTenantIdFromEvent } from "../shared/auth.js";
+import { ddb, REPORTS_TABLE } from "../shared/dynamo.js";
+import { jsonResponse } from "../shared/http.js";
+
+/** Lista los reportes del negocio (solo metadata, sin el contenido), del más nuevo al más viejo. */
+export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
+  const tenantId = resolveTenantIdFromEvent(event);
+  if (!tenantId) {
+    return jsonResponse(403, { error: "no autenticado" });
+  }
+
+  const result = await ddb.send(
+    new QueryCommand({
+      TableName: REPORTS_TABLE,
+      KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+      ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":prefix": "REPORT#" },
+      ProjectionExpression: "reportId, title, createdAt, #ttl",
+      ExpressionAttributeNames: { "#ttl": "ttl" },
+      ScanIndexForward: false,
+    }),
+  );
+
+  // DynamoDB borra los vencidos con demora (hasta ~48 h): se filtran acá.
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const reports = ((result.Items ?? []) as Pick<StoredReportItem, "reportId" | "title" | "createdAt" | "ttl">[])
+    .filter((item) => item.ttl > nowSeconds)
+    .map((item) => ({
+      reportId: item.reportId,
+      title: item.title,
+      createdAt: item.createdAt,
+      expiresAt: new Date(item.ttl * 1000).toISOString(),
+    }));
+  return jsonResponse(200, { reports });
+}

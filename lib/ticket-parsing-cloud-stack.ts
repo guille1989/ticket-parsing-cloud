@@ -125,6 +125,15 @@ export class TicketParsingCloudStack extends cdk.Stack {
       timeToLiveAttribute: "ttl",
     });
 
+    // Reports: reportes generados por el asistente (build_report). PK =
+    // TENANT#<id>, SK = REPORT#<reportId>. Se borran solos a los 30 días con
+    // TTL (ver `assistant/reportStore.ts`), no hay job de limpieza.
+    const reportsTable = new dynamodb.TableV2(this, "ReportsTable", {
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: "ttl",
+    });
+
     // SignupUsage: rate limit por IP para POST /signup (público, sin
     // api-key ni Cognito) — mismo patrón que AssistantUsage, PK =
     // IP#<ip>#WINDOW#HOUR#<bucket>. Ver `signup/rateLimit.ts`.
@@ -797,6 +806,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
         TICKETS_TABLE: ticketsTable.tableName,
         ATHENA_WORKGROUP: athenaWorkGroupName,
         ASSISTANT_USAGE_TABLE: assistantUsageTable.tableName,
+        REPORTS_TABLE: reportsTable.tableName,
       },
       logGroup: assistantAskLogGroup,
     });
@@ -804,6 +814,34 @@ export class TicketParsingCloudStack extends cdk.Stack {
     grantAnalyticsQueryAccess(assistantAskFn);
     ticketsTable.grantReadData(assistantAskFn);
     assistantUsageTable.grantReadWriteData(assistantAskFn);
+    reportsTable.grantWriteData(assistantAskFn);
+
+    // ---- Reportes guardados: listar / abrir / borrar ----
+    const reportsEnv = { REPORTS_TABLE: reportsTable.tableName };
+    const reportsListFn = new nodejs.NodejsFunction(this, "ReportsListFunction", {
+      entry: "src/reports/listHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: reportsEnv,
+    });
+    const reportsGetFn = new nodejs.NodejsFunction(this, "ReportsGetFunction", {
+      entry: "src/reports/getHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: reportsEnv,
+    });
+    const reportsDeleteFn = new nodejs.NodejsFunction(this, "ReportsDeleteFunction", {
+      entry: "src/reports/deleteHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: reportsEnv,
+    });
+    reportsTable.grantReadData(reportsListFn);
+    reportsTable.grantReadData(reportsGetFn);
+    reportsTable.grantWriteData(reportsDeleteFn);
 
     agentsTable.grantReadData(ingestFn);
     agentsTable.grantReadWriteData(activateFn);
@@ -881,6 +919,12 @@ export class TicketParsingCloudStack extends cdk.Stack {
     const assistant = api.root.addResource("assistant");
     assistant.addResource("ask").addMethod("POST", new apigateway.LambdaIntegration(assistantAskFn), dashboardAuth);
 
+    const reports = api.root.addResource("reports");
+    reports.addMethod("GET", new apigateway.LambdaIntegration(reportsListFn), dashboardAuth);
+    const reportById = reports.addResource("{reportId}");
+    reportById.addMethod("GET", new apigateway.LambdaIntegration(reportsGetFn), dashboardAuth);
+    reportById.addMethod("DELETE", new apigateway.LambdaIntegration(reportsDeleteFn), dashboardAuth);
+
     // ---- Outputs -------------------------------------------------------
 
     new cdk.CfnOutput(this, "ApiUrl", { value: api.url });
@@ -892,6 +936,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
     new cdk.CfnOutput(this, "WidgetsTableName", { value: widgetsTable.tableName });
     new cdk.CfnOutput(this, "AgentsTableName", { value: agentsTable.tableName });
     new cdk.CfnOutput(this, "ActivationCodesTableName", { value: activationCodesTable.tableName });
+    new cdk.CfnOutput(this, "ReportsTableName", { value: reportsTable.tableName });
     new cdk.CfnOutput(this, "AssistantUsageTableName", { value: assistantUsageTable.tableName });
     new cdk.CfnOutput(this, "RawTicketsBucketName", { value: rawTicketsBucket.bucketName });
     new cdk.CfnOutput(this, "AnalyticsBucketName", { value: analyticsBucket.bucketName });

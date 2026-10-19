@@ -8,6 +8,7 @@ export const TENANTS_TABLE = process.env.TENANTS_TABLE ?? "";
 export const WIDGETS_TABLE = process.env.WIDGETS_TABLE ?? "";
 export const AGENTS_TABLE = process.env.AGENTS_TABLE ?? "";
 export const ACTIVATION_CODES_TABLE = process.env.ACTIVATION_CODES_TABLE ?? "";
+export const REPORTS_TABLE = process.env.REPORTS_TABLE ?? "";
 export const ASSISTANT_USAGE_TABLE = process.env.ASSISTANT_USAGE_TABLE ?? "";
 export const SIGNUP_USAGE_TABLE = process.env.SIGNUP_USAGE_TABLE ?? "";
 export const RAW_BUCKET = process.env.RAW_BUCKET ?? "";
@@ -52,6 +53,14 @@ export function dedupKey(tenantId: string, contentHash: string) {
 /** Clave de la tabla Tenants: PK = TENANT#<tenantId>. */
 export function tenantKey(tenantId: string) {
   return { pk: `TENANT#${tenantId}` };
+}
+
+/** Clave de la tabla Reports: PK = TENANT#<tenantId>, SK = REPORT#<reportId> (reportId = ISO de creación + sufijo, ordena por fecha). */
+export function reportKey(tenantId: string, reportId: string) {
+  return {
+    pk: `TENANT#${tenantId}`,
+    sk: `REPORT#${reportId}`,
+  };
 }
 
 /** Clave de la tabla Widgets: PK = TENANT#<tenantId>, SK = WIDGET#<widgetId>. */
