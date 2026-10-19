@@ -8,7 +8,7 @@ import { incrementWithCap } from "../shared/rateLimit.js";
 // (frena un loop/bug del cliente, la misma clase de falla que disparó el
 // incidente de costo de S3 en la sección 10.1) y una diaria (tope de costo
 // agregado por negocio).
-const MINUTE_LIMIT = 6;
+const MINUTE_LIMIT = 10;
 const DAY_LIMIT = 150;
 const MINUTE_TTL_SECONDS = 120;
 const DAY_TTL_SECONDS = 2 * 24 * 60 * 60;
