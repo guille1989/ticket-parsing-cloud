@@ -42,6 +42,19 @@ describe("saveReport", () => {
   });
 });
 
+test("saveReport no manda campos undefined a DynamoDB (los rechaza al serializar)", async () => {
+  const report = {
+    title: "Ventas",
+    sections: [{ kind: "kpi", heading: "Total", groupBy: undefined, filters: undefined, previous: undefined, data: [{ value: 1 }] }],
+  };
+  await saveReport("t1", "resumen", report);
+
+  const stored = mockDdbSend.mock.calls[0][0].input.Item.report as { sections: Array<Record<string, unknown>> };
+  expect("groupBy" in stored.sections[0]).toBe(false);
+  expect("previous" in stored.sections[0]).toBe(false);
+  expect(stored.sections[0].data).toEqual([{ value: 1 }]);
+});
+
 describe("GET /reports", () => {
   test("lista del más nuevo al más viejo y descarta los vencidos que DynamoDB todavía no borró", async () => {
     mockDdbSend.mockResolvedValue({
@@ -77,6 +90,15 @@ describe("GET /reports/{reportId}", () => {
     expect(result.statusCode).toBe(200);
     expect(JSON.parse(result.body).report.title).toBe("T");
     expect(mockDdbSend.mock.calls[0][0].input.Key).toEqual({ pk: "TENANT#t1", sk: "REPORT#r1" });
+  });
+
+  test("decodifica el reportId que API Gateway entrega codificado (los ':' del timestamp llegan como %3A)", async () => {
+    mockDdbSend.mockResolvedValue({ Item: { reportId: "x", summary: "s", report: {}, createdAt: "c", ttl: nowSeconds() + 1000 } });
+    await getHandler(eventWith("2026-10-19T16%3A59%3A00.000Z_ab12cd34"));
+    expect(mockDdbSend.mock.calls[0][0].input.Key.sk).toBe("REPORT#2026-10-19T16:59:00.000Z_ab12cd34");
+
+    await deleteHandler(eventWith("2026-10-19T16%3A59%3A00.000Z_ab12cd34"));
+    expect(mockDdbSend.mock.calls[1][0].input.Key.sk).toBe("REPORT#2026-10-19T16:59:00.000Z_ab12cd34");
   });
 
   test("inexistente o vencido: 404", async () => {

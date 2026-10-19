@@ -5,6 +5,7 @@ import type { StoredReportItem } from "../assistant/reportStore.js";
 import { resolveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, REPORTS_TABLE, reportKey } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
+import { reportIdFromEvent } from "./reportIdParam.js";
 
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
   const tenantId = resolveTenantIdFromEvent(event);
@@ -12,7 +13,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
     return jsonResponse(403, { error: "no autenticado" });
   }
 
-  const reportId = event.pathParameters?.reportId;
+  const reportId = reportIdFromEvent(event);
   if (!reportId) {
     return jsonResponse(400, { error: "falta reportId en el path" });
   }
