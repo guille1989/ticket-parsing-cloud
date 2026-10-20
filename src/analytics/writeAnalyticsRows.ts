@@ -30,7 +30,7 @@ export interface AnalyticsTicketContext {
 }
 
 /**
- * Escribe una fila por ítem del ticket a S3, en el layout particionado
+ * Arma el cuerpo NDJSON de un ticket: una fila por ítem, que va a S3 en el layout particionado
  * (tenant=/year=/month=/) que espera la tabla de Glue con partition
  * projection — ver `ticket-parsing-cloud-stack.ts`. Sin partición por día
  * a propósito (ver comentario ahí) — el dato de fecha exacta sigue en la
@@ -42,11 +42,7 @@ export interface AnalyticsTicketContext {
  * `SUM(subtotal) WHERE description = 'X'` cruzando todos los tickets, algo
  * que DynamoDB no hace bien con `items` anidado dentro de un solo registro.
  */
-export async function writeAnalyticsRows(
-  bucket: string,
-  ctx: AnalyticsTicketContext,
-  parsed: ParsedTicket,
-): Promise<void> {
+export function buildAnalyticsBody(ctx: AnalyticsTicketContext, parsed: ParsedTicket): string {
   const rows = parsed.items.map((item) =>
     JSON.stringify({
       tenantId: ctx.tenantId,
@@ -71,13 +67,22 @@ export async function writeAnalyticsRows(
     }),
   );
 
+  return rows.join("\n") + "\n";
+}
+
+/** Escribe (o reemplaza) el objeto del ticket: la clave es determinística, así que repetirlo es idempotente. */
+export async function writeAnalyticsRows(
+  bucket: string,
+  ctx: AnalyticsTicketContext,
+  parsed: ParsedTicket,
+): Promise<void> {
   const key = analyticsRowKey(ctx.tenantId, ctx.capturedAt, ctx.ticketId);
 
   await s3.send(
     new PutObjectCommand({
       Bucket: bucket,
       Key: key,
-      Body: rows.join("\n") + "\n",
+      Body: buildAnalyticsBody(ctx, parsed),
       ContentType: "application/x-ndjson",
     }),
   );

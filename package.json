@@ -14,7 +14,8 @@
     "delete-tenant": "tsx scripts/delete-tenant.ts",
     "etapa-a-ocr": "tsx scripts/etapa-a-ocr.ts",
     "tenant-tickets": "tsx scripts/tenant-tickets.ts",
-    "reparse-ticket": "tsx scripts/reparse-ticket.ts"
+    "reparse-ticket": "tsx scripts/reparse-ticket.ts",
+    "reconcile-analytics": "tsx scripts/reconcile-analytics.ts"
   },
   "devDependencies": {
     "@swc/core": "^1.15.0",
