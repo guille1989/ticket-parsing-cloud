@@ -499,9 +499,8 @@ export class TicketParsingCloudStack extends cdk.Stack {
       runtime: nodeRuntime,
       bundling: sharedBundling,
       timeout: cdk.Duration.seconds(10),
-      // Sin TENANTS_TABLE: el tenant sale del claim `custom:tenantId` del
-      // JWT de Cognito (ya verificado por el authorizer), no de una
-      // consulta por api-key — ver el comentario sobre Cognito más arriba.
+      // TENANTS_TABLE y el permiso GetItem se agregan a todas las rutas
+      // humanas al final, para comprobar bloqueos incluso con JWT vigentes.
       environment: { TICKETS_TABLE: ticketsTable.tableName },
     });
 
@@ -534,8 +533,8 @@ export class TicketParsingCloudStack extends cdk.Stack {
     // Create/List/Delete solo tocan DynamoDB (Widgets) — el mismo perfil
     // de permisos que el resto de la API. Data es el único que necesita
     // Athena/Glue/S3, así que queda separado para no darle esos permisos
-    // de más a los otros tres (principio de menor privilegio). Ninguno
-    // necesita TENANTS_TABLE: el tenant sale del JWT de Cognito.
+    // de más a los otros tres (principio de menor privilegio). Todos leen
+    // además Tenants para comprobar el acceso actual del negocio.
 
     const widgetsEnv = { WIDGETS_TABLE: widgetsTable.tableName };
 
@@ -762,7 +761,6 @@ export class TicketParsingCloudStack extends cdk.Stack {
         WIDGETS_TABLE: widgetsTable.tableName,
       },
     });
-    tenantsTable.grantReadData(meGetFn);
     tenantsTable.grantReadWriteData(onboardingUpdateFn);
     agentsTable.grantReadData(onboardingUpdateFn);
     widgetsTable.grantWriteData(onboardingUpdateFn);
@@ -853,6 +851,20 @@ export class TicketParsingCloudStack extends cdk.Stack {
     activationCodesTable.grantReadData(agentsCodesFn);
     agentsTable.grantReadWriteData(agentsHeartbeatFn);
     agentsTable.grantReadWriteData(agentsUpdateLocationFn);
+
+    // El authorizer valida el JWT; el handler comprueba el bloqueo actual
+    // con GetItem consistente, sin caché. Esto cubre también tokens emitidos
+    // antes de bloquear al tenant y no depende de que el usuario renueve sesión.
+    for (const fn of [
+      readFn, reviewFn, ticketImageFn,
+      widgetsCreateFn, widgetsListFn, widgetsDeleteFn, widgetsFieldsFn, widgetsDataFn,
+      agentsListFn, agentsCodesFn, agentsUpdateLocationFn,
+      meGetFn, onboardingUpdateFn, assistantAskFn,
+      reportsListFn, reportsGetFn, reportsDeleteFn,
+    ]) {
+      fn.addEnvironment("TENANTS_TABLE", tenantsTable.tableName);
+      tenantsTable.grant(fn, "dynamodb:GetItem");
+    }
 
     // ---- API Gateway: rutas ---------------------------------------------
 

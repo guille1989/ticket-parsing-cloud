@@ -4,11 +4,12 @@ import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent }
 
 import { checkAssistantRateLimit } from "./rateLimit.js";
 import { saveReport } from "./reportStore.js";
-import { resolveTenantIdFromEvent } from "../shared/auth.js";
+import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { AGENTS_TABLE, ddb, TICKETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import type { AgentRecord, TicketRecord, TicketStatus, WidgetAggregation, WidgetFilters, WidgetRecord } from "../shared/types.js";
-import { runWidgetQuery as runAthenaQuery } from "../widgets/athenaQuery.js";
+import { runWidgetQuery as runAthenaQuery, type WidgetDataPoint } from "../widgets/athenaQuery.js";
+import { dateFilterError } from "../widgets/dateFilters.js";
 import {
   AGGREGATIONS,
   CATEGORICAL_FIELDS,
@@ -45,6 +46,7 @@ const REPORT_MAX_TITLE_LENGTH = 100;
 const SYSTEM_PROMPT = `Sos el asistente de datos del dashboard de un negocio que usa InnoApp para capturar y analizar tickets de venta. Contestá siempre en español, en pocas oraciones, directo al grano.
 
 Tenés tres herramientas para consultar los datos REALES del negocio — nunca inventes números:
+Las métricas de venta usan tickets confirmados por defecto y excluyen líneas anuladas al consultar productos. Un value null significa que no hay observaciones para esa métrica: no lo conviertas en cero ni calcules un porcentaje contra una base ausente. sampleCount, cuando aparece, indica el número de observaciones del promedio. Las consultas explícitas por estado o método de parseo pueden incluir datos pendientes de revisión y debés aclararlo.
 - "run_widget_query": totales/promedios/conteos, opcionalmente agrupados por sucursal/estado/producto o por día. Usala para preguntas de agregados ("¿cuánto vendí?", "¿qué producto vendió más?", "comparame las sucursales", "¿qué día vendí más?").
 - "list_tickets": los tickets más recientes, opcionalmente filtrados por estado. Usala para preguntas puntuales sobre ventas concretas, no para totales.
 
@@ -211,13 +213,25 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
   }
 
   let filters: WidgetFilters | undefined;
-  if (raw.filters && typeof raw.filters === "object") {
+  if (raw.filters !== undefined) {
+    if (!raw.filters || typeof raw.filters !== "object" || Array.isArray(raw.filters)) throw new Error("filters inválido, se esperaba un objeto");
     const f = raw.filters as Record<string, unknown>;
     filters = {};
-    if (typeof f.dateFrom === "string") filters.dateFrom = f.dateFrom;
-    if (typeof f.dateTo === "string") filters.dateTo = f.dateTo;
-    if (typeof f.port === "string") filters.port = f.port;
-    if (typeof f.status === "string" && TICKET_STATUSES.includes(f.status as TicketStatus)) filters.status = f.status;
+    for (const key of ["dateFrom", "dateTo"] as const) {
+      if (f[key] !== undefined && typeof f[key] !== "string") throw new Error(key + " inválida, se esperaba una fecha");
+      if (typeof f[key] === "string") filters[key] = f[key];
+    }
+    const dateError = dateFilterError(filters);
+    if (dateError) throw new Error(dateError);
+    if (f.port !== undefined) {
+      if (typeof f.port !== "string" || !f.port.trim()) throw new Error("port inválido");
+      filters.port = f.port;
+    }
+    if (f.status !== undefined) {
+      if (typeof f.status !== "string" || !TICKET_STATUSES.includes(f.status as TicketStatus)) throw new Error("status inválido");
+      filters.status = f.status as TicketStatus;
+    }
+    if (f.descriptionContains !== undefined && (typeof f.descriptionContains !== "string" || !f.descriptionContains.trim())) throw new Error("descriptionContains inválido");
     if (typeof f.descriptionContains === "string" && f.descriptionContains.trim()) {
       filters.descriptionContains = f.descriptionContains.trim().slice(0, MAX_DESCRIPTION_FILTER_LENGTH);
     }
@@ -305,9 +319,9 @@ export type ReportSection = {
   aggregation: string;
   groupBy?: string;
   filters?: Record<string, unknown>;
-  data: Array<{ label?: string; value: number }>;
+  data: WidgetDataPoint[];
   /** Solo en `kpi` con dateFrom y dateTo: el mismo cálculo en el periodo anterior de igual duración. */
-  previous?: number;
+  previous?: number | null;
 };
 export type Report = { title: string; generatedAt: string; sections: ReportSection[] };
 
@@ -351,7 +365,7 @@ async function buildReportTool(input: unknown, tenantId: string, ctx: ToolContex
         const filters = section.filters && typeof section.filters === "object" ? (section.filters as Record<string, unknown>) : undefined;
         const kind: ReportSectionKind = !groupBy ? "kpi" : groupBy === "day" || groupBy === "hour" ? "trend" : "ranking";
 
-        let previous: number | undefined;
+        let previous: number | null | undefined;
         const prevRange = kind === "kpi" ? previousPeriod(filters?.dateFrom, filters?.dateTo) : null;
         if (prevRange) {
           // Si la comparación falla, el reporte sigue sin ella en vez de caerse.
@@ -359,7 +373,7 @@ async function buildReportTool(input: unknown, tenantId: string, ctx: ToolContex
             const prev = (await runWidgetQueryTool({ ...section, filters: { ...filters, ...prevRange } }, tenantId, ctx)) as {
               data: ReportSection["data"];
             };
-            previous = prev.data[0]?.value ?? 0;
+            previous = prev.data[0]?.value ?? null;
           } catch (err) {
             console.error("[assistant] fallo la comparación con el periodo anterior:", err);
           }
@@ -532,7 +546,7 @@ function logQa(entry: {
 }
 
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
-  const tenantId = resolveTenantIdFromEvent(event);
+  const tenantId = await resolveActiveTenantIdFromEvent(event);
   if (!tenantId) {
     return jsonResponse(403, { error: "no autenticado" });
   }

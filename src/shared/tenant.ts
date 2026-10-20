@@ -24,9 +24,12 @@ export async function resolveTenantByApiKeyId(apiKeyId: string): Promise<TenantR
   return result.Items?.[0] as TenantRecord | undefined;
 }
 
-export async function getTenant(tenantId: string): Promise<TenantRecord | undefined> {
+export async function getTenant(
+  tenantId: string,
+  options: { consistentRead?: boolean } = {},
+): Promise<TenantRecord | undefined> {
   const result = await ddb.send(
-    new GetCommand({ TableName: TENANTS_TABLE, Key: tenantKey(tenantId) }),
+    new GetCommand({ TableName: TENANTS_TABLE, Key: tenantKey(tenantId), ConsistentRead: options.consistentRead }),
   );
   return result.Item as TenantRecord | undefined;
 }

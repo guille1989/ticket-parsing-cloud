@@ -1,5 +1,32 @@
 # ticket-parsing-cloud
 
+## Reglas de métricas y validación local
+
+Las consultas de venta usan `status = parsed` por defecto. Un filtro de estado
+explícito o una agrupación de diagnóstico por `status/parsedBy` permite revisar
+otros estados. Las métricas por ítem y los conteos por producto excluyen líneas
+anuladas; el total y el conteo global conservan el nivel de ticket.
+
+La respuesta de Athena conserva `value: null` cuando no hay observaciones.
+Un campo opcional ausente (descuento, propina o impuesto) equivale a cero
+dentro de un ticket observado. Los promedios añaden `sampleCount` para permitir
+reagrupación ponderada sin contar varias veces los ítems de una venta.
+
+Los filtros validan fechas reales y rangos ordenados. Si se proporcionan ambos
+extremos deben ser dos fechas o dos instantes; no se mezclan días locales y UTC.
+La selección de particiones incluye los años UTC que puede ocupar un día local.
+
+Para desarrollo y pruebas se usa Node.js 24. Las regresiones de métricas usan
+`node:sqlite` solo en tests para ejecutar el SQL generado sobre fixtures;
+ningún módulo de producción depende de SQLite. `npm run build` comprueba tipos
+y `npm test -- --runInBand` ejecuta las pruebas. En Windows, si CDK falla al
+empaquetar bajo una ruta temporal larga, usar `TEMP/TMP` en una carpeta corta
+del workspace antes de ejecutar las pruebas.
+
+Publicar el backend y su infraestructura antes de la web que consume estos
+contratos. La comprobación de tenant activo necesita la variable
+`TENANTS_TABLE` y permiso `dynamodb:GetItem` en todas las rutas humanas.
+
 El backend AWS que recibe los tickets crudos de cada
 [print-capture-agent](../print-capture-agent) instalado, los parsea y
 guarda el resultado estructurado. Multi-tenant desde el diseño: varios
@@ -62,6 +89,21 @@ escritura en DynamoDB, no un paso aparte.
 
 ## Aislamiento multi-tenant
 
+- Las rutas humanas del dashboard validan el JWT con Cognito y verifican
+  después el estado actual del negocio con una lectura consistente de
+  `Tenants`, sin caché (`shared/auth.ts`). Un negocio bloqueado o eliminado
+  recibe `403`, aunque conserve un token emitido antes del cambio. Sin el
+  claim de tenant no se consulta DynamoDB.
+- La verificación del negocio deniega acceso también si DynamoDB falla:
+  devuelve `403` y registra `No se pudo verificar el acceso al negocio`,
+  sin incluir identificadores ni errores del proveedor. Por tanto, ese
+  `403` por sí solo no demuestra que la cuenta esté bloqueada ni debe
+  provocar un cierre de sesión automático. Cada petición autenticada
+  incorpora una lectura adicional; una operación que ya fue autorizada
+  puede terminar si el bloqueo ocurre mientras está en curso.
+- El stack asigna `TENANTS_TABLE` y permiso `dynamodb:GetItem` a todas las
+  Lambdas con rutas Cognito. Los cambios locales requieren desplegar tanto
+  el código como la infraestructura para aplicar el control en producción.
 - Cada negocio tiene su propia **API key** de API Gateway (`onboard-tenant`
   la crea) asociada a un **usage plan** compartido (throttling por tenant
   sin código extra).

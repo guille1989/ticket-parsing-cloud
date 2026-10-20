@@ -1,7 +1,7 @@
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
-import { resolveTenantIdFromEvent } from "../shared/auth.js";
+import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { agentKey, AGENTS_TABLE, ddb } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 
@@ -27,7 +27,7 @@ function parseLocation(raw: string | null): AgentLocation | undefined {
 }
 
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
-  const tenantId = resolveTenantIdFromEvent(event);
+  const tenantId = await resolveActiveTenantIdFromEvent(event);
   if (!tenantId) return jsonResponse(403, { error: "no autenticado" });
 
   const agentId = event.pathParameters?.agentId;

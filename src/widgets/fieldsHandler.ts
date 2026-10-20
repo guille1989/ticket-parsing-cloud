@@ -1,6 +1,6 @@
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
-import { resolveTenantIdFromEvent } from "../shared/auth.js";
+import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { jsonResponse } from "../shared/http.js";
 import { AGGREGATIONS, CATEGORICAL_FIELDS, EVENT_COUNT_FIELD, NUMERIC_FIELDS } from "./fields.js";
 
@@ -10,7 +10,7 @@ import { AGGREGATIONS, CATEGORICAL_FIELDS, EVENT_COUNT_FIELD, NUMERIC_FIELDS } f
  * además tendría que mantenerse a mano en sincro con `fields.ts`).
  */
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
-  const tenantId = resolveTenantIdFromEvent(event);
+  const tenantId = await resolveActiveTenantIdFromEvent(event);
   if (!tenantId) {
     return jsonResponse(403, { error: "no autenticado" });
   }

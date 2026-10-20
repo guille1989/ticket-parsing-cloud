@@ -27,7 +27,7 @@ test("KPI sin groupBy, campo por ítem: una sola fila, agregación directa sin s
     widget({ visualization: "kpi", groupBy: undefined, metric: { field: "subtotal", aggregation: "sum" } }),
   );
 
-  expect(sql).toBe("SELECT SUM(subtotal) AS value FROM ticket_analytics.ticket_items WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR)");
+  expect(sql).toBe("SELECT SUM(subtotal) AS value FROM ticket_analytics.ticket_items WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND status = 'parsed' AND COALESCE(voided, false) = false");
   expect(params).toEqual(["t1", DEFAULT_FROM_YEAR, DEFAULT_TO_YEAR]);
 });
 
@@ -42,7 +42,7 @@ test("KPI sin groupBy, campo de TICKET (total/discount/tip): colapsa por ticketi
 
   expect(sql).toBe(
     "SELECT SUM(total) AS value FROM (SELECT ticketid, MAX(total) AS total FROM ticket_analytics.ticket_items " +
-      "WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) GROUP BY ticketid)",
+      "WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND status = 'parsed' GROUP BY ticketid)",
   );
   expect(params).toEqual(["t1", DEFAULT_FROM_YEAR, DEFAULT_TO_YEAR]);
 });
@@ -54,7 +54,7 @@ test("bar/donut con groupBy y campo de TICKET: colapsa por (ticketid, groupBy) a
 
   expect(sql).toBe(
     "SELECT port AS label, SUM(total) AS value FROM (SELECT ticketid, port, MAX(total) AS total " +
-      "FROM ticket_analytics.ticket_items WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) GROUP BY ticketid, port) " +
+      "FROM ticket_analytics.ticket_items WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND status = 'parsed' GROUP BY ticketid, port) " +
       "GROUP BY port ORDER BY value DESC LIMIT 200",
   );
 });
@@ -147,7 +147,8 @@ test("descriptionContains con un campo del ticket (total) se rechaza: sumaría t
 test("sin filtros explícitos, igual acota por año (para no barrer toda la proyección de Athena)", () => {
   const { sql, params } = buildWidgetQuery(widget({ filters: undefined }));
   expect(sql).toContain("WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR)");
-  expect(sql).not.toMatch(/capturedat|port =|status =/);
+  expect(sql).not.toMatch(/capturedat|port =/);
+  expect(sql).toContain("status = 'parsed'");
   expect(params).toEqual(["t1", DEFAULT_FROM_YEAR, DEFAULT_TO_YEAR]);
 });
 

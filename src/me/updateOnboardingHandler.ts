@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
-import { resolveTenantIdFromEvent } from "../shared/auth.js";
+import { resolveActiveTenantFromEvent } from "../shared/auth.js";
 import { AGENTS_TABLE, ddb, TENANTS_TABLE, tenantKey, widgetKey, WIDGETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import { getTenant } from "../shared/tenant.js";
@@ -30,8 +30,9 @@ async function hasActivatedAgent(tenantId: string): Promise<boolean> {
 }
 
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
-  const tenantId = resolveTenantIdFromEvent(event);
-  if (!tenantId) return jsonResponse(403, { error: "no autenticado" });
+  const tenant = await resolveActiveTenantFromEvent(event);
+  if (!tenant) return jsonResponse(403, { error: "no autenticado" });
+  const tenantId = tenant.tenantId;
 
   let body: unknown;
   try {
@@ -43,9 +44,6 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   if (typeof action !== "string" || !ACTIONS.includes(action as Action)) {
     return jsonResponse(400, { error: `action inválida, se esperaba una de: ${ACTIONS.join(", ")}` });
   }
-
-  const tenant = await getTenant(tenantId);
-  if (!tenant) return jsonResponse(404, { error: "negocio no encontrado" });
 
   const now = new Date().toISOString();
   const current: OnboardingState = tenant.onboarding ?? { version: 1 };

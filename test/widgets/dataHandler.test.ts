@@ -1,5 +1,11 @@
 import type { APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
+// La guardia de tenant activo tiene cobertura de integración independiente.
+jest.mock("../../src/shared/auth", () => ({
+  resolveActiveTenantIdFromEvent: async (event: APIGatewayProxyWithCognitoAuthorizerEvent) =>
+    event.requestContext?.authorizer?.claims?.["custom:tenantId"] || undefined,
+}));
+
 const mockDdbSend = jest.fn();
 const mockRunWidgetQuery = jest.fn();
 
@@ -122,5 +128,13 @@ test("fechas inválidas o invertidas: 400 y nunca llega a Athena", async () => {
   expect((await handler(eventWith("w1", { dateFrom: "ayer" }))).statusCode).toBe(400);
   expect((await handler(eventWith("w1", { dateFrom: "2026-10-19", dateTo: "2026-10-01" }))).statusCode).toBe(400);
   expect((await handler(eventWith("w1", { dateTo: "2026-02-31x" }))).statusCode).toBe(400);
+  expect((await handler(eventWith("w1", { dateTo: "2026-02-31" }))).statusCode).toBe(400);
+  expect(mockRunWidgetQuery).not.toHaveBeenCalled();
+});
+
+test("rechaza un rango invertido después de combinarlo con filtros guardados", async () => {
+  mockDdbSend.mockResolvedValue({ Item: { ...validWidget, filters: { dateFrom: "2026-10-20" } } });
+  const result = await handler(eventWith("w1", { dateTo: "2026-10-19" }));
+  expect(result.statusCode).toBe(400);
   expect(mockRunWidgetQuery).not.toHaveBeenCalled();
 });

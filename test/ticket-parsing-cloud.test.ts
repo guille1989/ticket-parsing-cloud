@@ -74,3 +74,35 @@ test("ningún método GET del dashboard quedó con auth por api-key en vez de Co
     expect(m.Properties?.ApiKeyRequired).not.toBe(true);
   });
 });
+
+test("cada ruta Cognito puede verificar el estado actual del tenant con GetItem", () => {
+  const stack = new TicketParsingCloudStack(new cdk.App(), "TenantAccessStack");
+  const template = Template.fromStack(stack);
+  const resources = template.toJSON().Resources as Record<string, any>;
+  const tenantTableId = Object.keys(resources).find((id) => id.startsWith("TenantsTable") && resources[id].Type === "AWS::DynamoDB::GlobalTable");
+  expect(tenantTableId).toBeDefined();
+
+  const humanMethods = Object.values(resources).filter((resource) =>
+    resource.Type === "AWS::ApiGateway::Method" && resource.Properties?.AuthorizationType === "COGNITO_USER_POOLS",
+  );
+  expect(humanMethods).toHaveLength(17);
+  for (const method of humanMethods) {
+    const uriParts = method.Properties.Integration.Uri["Fn::Join"][1];
+    const functionId = uriParts.find((part: any) => part?.["Fn::GetAtt"]?.[1] === "Arn")?.["Fn::GetAtt"][0];
+    expect(functionId).toBeDefined();
+    const fn = resources[functionId];
+    expect(fn.Properties.Environment.Variables.TENANTS_TABLE).toEqual({ Ref: tenantTableId });
+
+    const roleId = fn.Properties.Role["Fn::GetAtt"][0];
+    const policies = Object.values(resources).filter((resource) =>
+      resource.Type === "AWS::IAM::Policy" && resource.Properties.Roles?.some((role: any) => role.Ref === roleId),
+    );
+    const canReadTenant = policies.some((policy) => policy.Properties.PolicyDocument.Statement.some((statement: any) => {
+      const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      const targets = Array.isArray(statement.Resource) ? statement.Resource : [statement.Resource];
+      return statement.Effect === "Allow" && actions.includes("dynamodb:GetItem") &&
+        targets.some((target: any) => target?.["Fn::GetAtt"]?.[0] === tenantTableId && target["Fn::GetAtt"][1] === "Arn");
+    }));
+    expect({ functionId, canReadTenant }).toEqual({ functionId, canReadTenant: true });
+  }
+});

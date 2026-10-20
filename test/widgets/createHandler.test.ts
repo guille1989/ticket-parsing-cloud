@@ -1,5 +1,11 @@
 import type { APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
+// La guardia de tenant activo tiene cobertura de integración independiente.
+jest.mock("../../src/shared/auth", () => ({
+  resolveActiveTenantIdFromEvent: async (event: APIGatewayProxyWithCognitoAuthorizerEvent) =>
+    event.requestContext?.authorizer?.claims?.["custom:tenantId"] || undefined,
+}));
+
 const mockDdbSend = jest.fn();
 
 jest.mock("../../src/shared/dynamo", () => {
@@ -165,4 +171,15 @@ test("body no es JSON válido: 400", async () => {
     body: "esto no es json",
   } as unknown as APIGatewayProxyWithCognitoAuthorizerEvent);
   expect(result.statusCode).toBe(400);
+});
+
+test.each([
+  { dateFrom: "2026-02-31" },
+  { dateTo: "2026-10-20T25:00:00Z" },
+  { dateFrom: "2026-10-20", dateTo: "2026-10-19" },
+  { dateFrom: 123 },
+])("rechaza fechas imposibles e intervalos invertidos antes de guardar: %j", async (filters) => {
+  const result = await handler(eventWith({ name: "Ventas", visualization: "kpi", metric: { field: "total", aggregation: "sum" }, filters }));
+  expect(result.statusCode).toBe(400);
+  expect(mockDdbSend).not.toHaveBeenCalled();
 });

@@ -2,13 +2,13 @@ import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 import type { StoredReportItem } from "../assistant/reportStore.js";
-import { resolveTenantIdFromEvent } from "../shared/auth.js";
+import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, REPORTS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 
 /** Lista los reportes del negocio (solo metadata, sin el contenido), del más nuevo al más viejo. */
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
-  const tenantId = resolveTenantIdFromEvent(event);
+  const tenantId = await resolveActiveTenantIdFromEvent(event);
   if (!tenantId) {
     return jsonResponse(403, { error: "no autenticado" });
   }

@@ -12,7 +12,9 @@ const MAX_POLL_ATTEMPTS = 40; // ~20s — a este volumen de datos, Athena suele 
 
 export interface WidgetDataPoint {
   label?: string;
-  value: number;
+  value: number | null;
+  /** Número de observaciones del promedio; permite reagrupar sin promediar promedios. */
+  sampleCount?: number;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -78,13 +80,32 @@ async function fetchResults(queryExecutionId: string): Promise<WidgetDataPoint[]
 
   // La primera fila es el encabezado con los nombres de columna, no un dato.
   const [, ...dataRows] = rows;
-  const hasLabel = (results.ResultSet?.ResultSetMetadata?.ColumnInfo?.length ?? 0) > 1;
+  const columns = results.ResultSet?.ResultSetMetadata?.ColumnInfo ?? [];
+  const names = columns.map((column, index) => (column.Name ?? rows[0].Data?.[index]?.VarCharValue ?? "").toLowerCase());
+  const namedValue = names.indexOf("value");
+  // La posición se conserva como compatibilidad para metadatos antiguos.
+  const hasLabel = names.includes("label") || (namedValue < 0 && columns.length > 1);
+  const labelIndex = Math.max(0, names.indexOf("label"));
+  const valueIndex = namedValue >= 0 ? namedValue : hasLabel ? 1 : 0;
+  const sampleCountIndex = names.indexOf("sample_count");
+  const numericValue = (value: string | undefined): number | null => {
+    if (value === undefined || value.trim() === "") return null;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) throw new Error("Athena devolvió un valor numérico inválido");
+    return numeric;
+  };
 
   return dataRows.map((row) => {
     const values = (row.Data ?? []).map((cell) => cell.VarCharValue);
-    if (hasLabel) {
-      return { label: values[0] ?? "(sin dato)", value: Number(values[1]) || 0 };
+    const point: WidgetDataPoint = { value: numericValue(values[valueIndex]) };
+    if (hasLabel) point.label = values[labelIndex] ?? "(sin dato)";
+    if (sampleCountIndex >= 0) {
+      const sampleCount = numericValue(values[sampleCountIndex]);
+      if (sampleCount === null || !Number.isSafeInteger(sampleCount) || sampleCount < 0) {
+        throw new Error("Athena devolvió un número de observaciones inválido");
+      }
+      point.sampleCount = sampleCount;
     }
-    return { value: Number(values[0]) || 0 };
+    return point;
   });
 }

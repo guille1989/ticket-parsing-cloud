@@ -1,15 +1,14 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
-import { resolveTenantIdFromEvent } from "../shared/auth.js";
+import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { ATHENA_WORKGROUP, ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import type { WidgetRecord } from "../shared/types.js";
 import { runWidgetQuery } from "./athenaQuery.js";
 import { isValidTimeZone } from "./fields.js";
 import { buildWidgetQuery } from "./queryBuilder.js";
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+import { dateFilterError } from "./dateFilters.js";
 
 /**
  * Rango opcional (`?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD`) que el dashboard manda
@@ -21,15 +20,15 @@ function parseDateRange(event: APIGatewayProxyWithCognitoAuthorizerEvent): { dat
   for (const key of ["dateFrom", "dateTo"] as const) {
     const value = event.queryStringParameters?.[key];
     if (value === undefined) continue;
-    if (!ISO_DATE.test(value) || Number.isNaN(Date.parse(value))) return { error: `${key} inválida, se esperaba YYYY-MM-DD` };
     range[key] = value;
   }
-  if (range.dateFrom && range.dateTo && range.dateFrom > range.dateTo) return { error: "dateFrom no puede ser posterior a dateTo" };
+  const error = dateFilterError(range, true);
+  if (error) return { error };
   return range;
 }
 
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
-  const tenantId = resolveTenantIdFromEvent(event);
+  const tenantId = await resolveActiveTenantIdFromEvent(event);
   if (!tenantId) {
     return jsonResponse(403, { error: "no autenticado" });
   }
@@ -49,13 +48,16 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   if (!widget) {
     return jsonResponse(404, { error: "widget no encontrado" });
   }
+  const mergedFilters = { ...widget.filters, ...range };
+  const mergedDateError = dateFilterError(mergedFilters);
+  if (mergedDateError) return jsonResponse(400, { error: mergedDateError });
 
   let query;
   try {
     // `?tz=America/Bogota` (zona del navegador): agrupa y filtra por día/hora local. Inválida o ausente → UTC.
     const tzParam = event.queryStringParameters?.tz;
     const timeZone = tzParam && isValidTimeZone(tzParam) ? tzParam : undefined;
-    query = buildWidgetQuery({ ...widget, filters: { ...widget.filters, ...range } }, undefined, timeZone);
+    query = buildWidgetQuery({ ...widget, filters: mergedFilters }, undefined, timeZone);
   } catch (err) {
     // No debería pasar nunca si createHandler validó bien al guardar, pero
     // si un registro corrupto llegó hasta acá, mejor un 500 claro que

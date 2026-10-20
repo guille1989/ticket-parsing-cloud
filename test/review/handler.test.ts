@@ -1,5 +1,11 @@
 import type { APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
+// La autorización se verifica con el helper real en shared/humanAuthorization.test.ts.
+jest.mock("../../src/shared/auth", () => ({
+  resolveActiveTenantIdFromEvent: jest.fn(async (event: APIGatewayProxyWithCognitoAuthorizerEvent) =>
+    event.requestContext?.authorizer?.claims?.["custom:tenantId"]),
+}));
+
 const mockDdbSend = jest.fn();
 const mockS3Send = jest.fn();
 const mockWriteAnalyticsRows = jest.fn();

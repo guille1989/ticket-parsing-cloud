@@ -1,5 +1,11 @@
 import type { APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
+// La guardia de tenant activo tiene cobertura de integración independiente.
+jest.mock("../../src/shared/auth", () => ({
+  resolveActiveTenantIdFromEvent: async (event: APIGatewayProxyWithCognitoAuthorizerEvent) =>
+    event.requestContext?.authorizer?.claims?.["custom:tenantId"] || undefined,
+}));
+
 import { handler } from "../../src/widgets/fieldsHandler";
 import { AGGREGATIONS, CATEGORICAL_FIELDS, EVENT_COUNT_FIELD, NUMERIC_FIELDS } from "../../src/widgets/fields";
 

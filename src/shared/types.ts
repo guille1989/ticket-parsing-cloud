@@ -42,9 +42,9 @@ export interface TenantRecord {
   apiKeyId?: string;
   createdAt: string;
   /**
-   * Ausente o "active" = normal. "blocked" corta el acceso en los dos
-   * lugares que importan: el login del dashboard (Cognito Pre-Authentication
-   * trigger, `tenants/preAuthHandler.ts`) y la subida de tickets del agente
+   * Ausente o "active" = normal. "blocked" corta el login del dashboard
+   * (Cognito Pre-Authentication trigger, `tenants/preAuthHandler.ts`), cada
+   * petición humana autenticada (`shared/auth.ts`) y la subida de tickets del agente
    * (`ingest/handler.ts`) — bloquear en un solo lugar no alcanza, un tenant
    * bloqueado no debería poder seguir mandando datos aunque no pueda ver el
    * dashboard. Se cambia con `scripts/set-tenant-status.ts`.

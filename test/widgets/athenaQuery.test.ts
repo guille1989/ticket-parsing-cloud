@@ -16,10 +16,10 @@ import {
 
 import { runWidgetQuery } from "../../src/widgets/athenaQuery";
 
-function resultSet(columnCount: number, rows: string[][]) {
+function resultSet(columnCount: number, rows: (string | undefined)[][], names?: string[]) {
   return {
     ResultSet: {
-      ResultSetMetadata: { ColumnInfo: Array.from({ length: columnCount }, () => ({})) },
+      ResultSetMetadata: { ColumnInfo: Array.from({ length: columnCount }, (_, index) => names ? { Name: names[index] } : {}) },
       Rows: [
         { Data: Array.from({ length: columnCount }, () => ({ VarCharValue: "header" })) }, // fila de encabezados
         ...rows.map((row) => ({ Data: row.map((value) => ({ VarCharValue: value })) })),
@@ -143,4 +143,20 @@ test("sin filas de datos (solo encabezado o vacío): devuelve array vacío", asy
 
   const data = await runWidgetQuery("SELECT 1", [], "wg");
   expect(data).toEqual([]);
+});
+
+test.each([
+  { names: ["value"], rows: [[undefined]], expected: [{ value: null }] },
+  { names: ["value"], rows: [["0"]], expected: [{ value: 0 }] },
+  { names: ["value", "sample_count"], rows: [["10.9", "100"]], expected: [{ value: 10.9, sampleCount: 100 }] },
+  { names: ["value", "sample_count"], rows: [[undefined, "0"]], expected: [{ value: null, sampleCount: 0 }] },
+  { names: ["label", "value", "sample_count"], rows: [["2026-10-20", "100", "1"]], expected: [{ label: "2026-10-20", value: 100, sampleCount: 1 }] },
+])("preserva ausencia y cero, e identifica columnas AVG por alias: $names / $rows", async ({ names, rows, expected }) => {
+  mockAthenaSend.mockImplementation((command) => {
+    if (command instanceof StartQueryExecutionCommand) return Promise.resolve({ QueryExecutionId: "q1" });
+    if (command instanceof GetQueryExecutionCommand) return Promise.resolve({ QueryExecution: { Status: { State: "SUCCEEDED" } } });
+    if (command instanceof GetQueryResultsCommand) return Promise.resolve(resultSet(names.length, rows, names));
+    throw new Error("comando inesperado");
+  });
+  expect(await runWidgetQuery("SELECT ...", [], "wg")).toEqual(expected);
 });

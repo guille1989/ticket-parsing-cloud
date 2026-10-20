@@ -3,7 +3,7 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 import { extractRasterPng, looksRasterDominant, readEscpos } from "../parsing/escpos.js";
-import { resolveTenantIdFromEvent } from "../shared/auth.js";
+import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, RAW_BUCKET, ticketKey, TICKETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import { TicketRecord } from "../shared/types.js";
@@ -24,7 +24,7 @@ const s3 = new S3Client({});
  * acá y el resto de la API ya sigue este mismo patrón de `jsonResponse`.
  */
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
-  const tenantId = resolveTenantIdFromEvent(event);
+  const tenantId = await resolveActiveTenantIdFromEvent(event);
   if (!tenantId) return jsonResponse(403, { error: "no autenticado" });
 
   const ticketId = event.pathParameters?.ticketId;

@@ -3,7 +3,7 @@ import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 import { analyticsRowKey, writeAnalyticsRows } from "../analytics/writeAnalyticsRows.js";
-import { resolveTenantIdFromEvent } from "../shared/auth.js";
+import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { ANALYTICS_BUCKET, ddb, ticketStatusGsiKey, ticketKey, TICKETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import { TicketRecord } from "../shared/types.js";
@@ -47,7 +47,7 @@ function parseBody(raw: string | null): ReviewBody | undefined {
  * real, no debe seguir sumando en ningún reporte.
  */
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
-  const tenantId = resolveTenantIdFromEvent(event);
+  const tenantId = await resolveActiveTenantIdFromEvent(event);
   if (!tenantId) return jsonResponse(403, { error: "no autenticado" });
 
   const ticketId = event.pathParameters?.ticketId;

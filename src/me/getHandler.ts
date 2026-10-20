@@ -1,15 +1,11 @@
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
-import { resolveTenantIdFromEvent } from "../shared/auth.js";
+import { resolveActiveTenantFromEvent } from "../shared/auth.js";
 import { jsonResponse } from "../shared/http.js";
-import { getTenant } from "../shared/tenant.js";
 
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
-  const tenantId = resolveTenantIdFromEvent(event);
-  if (!tenantId) return jsonResponse(403, { error: "no autenticado" });
-
-  const tenant = await getTenant(tenantId);
-  if (!tenant) return jsonResponse(404, { error: "negocio no encontrado" });
+  const tenant = await resolveActiveTenantFromEvent(event);
+  if (!tenant) return jsonResponse(403, { error: "no autenticado" });
 
   return jsonResponse(200, {
     tenantId: tenant.tenantId,

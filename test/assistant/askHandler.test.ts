@@ -5,6 +5,10 @@ const mockBedrockSend = jest.fn();
 const mockDdbSend = jest.fn();
 const mockRunAthenaQuery = jest.fn();
 
+jest.mock("../../src/shared/auth", () => ({
+  resolveActiveTenantIdFromEvent: async (event: APIGatewayProxyWithCognitoAuthorizerEvent) => event.requestContext.authorizer.claims["custom:tenantId"],
+}));
+
 jest.mock("@aws-sdk/client-bedrock-runtime", () => {
   const actual = jest.requireActual("@aws-sdk/client-bedrock-runtime");
   return {
@@ -531,6 +535,33 @@ test("build_report: deduce el tipo de sección y compara el KPI con el periodo a
   expect(report.sections[0].previous).toBe(800);
   expect(report.sections[1].previous).toBeUndefined();
   expect(mockRunAthenaQuery).toHaveBeenCalledTimes(4);
+});
+
+test("build_report conserva ausencia del periodo anterior sin inventar cero", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "build_report", {
+      title: "Sin base",
+      sections: [{ heading: "Ticket medio", field: "total", aggregation: "avg", filters: { dateFrom: "2026-10-01", dateTo: "2026-10-31" } }],
+    }))
+    .mockResolvedValueOnce(textResponse("No hay base anterior."));
+  mockRunAthenaQuery.mockResolvedValueOnce([{ value: 10.9, sampleCount: 100 }]).mockResolvedValueOnce([{ value: null, sampleCount: 0 }]);
+  const result = await handler(eventWith({ question: "reporte octubre" }));
+  const section = JSON.parse(result.body).report.sections[0];
+  expect(section.data).toEqual([{ value: 10.9, sampleCount: 100 }]);
+  expect(section.previous).toBeNull();
+});
+
+test.each([
+  null, [], "hoy", { dateFrom: "2026-02-31" },
+  { dateFrom: "2026-10-31", dateTo: "2026-10-01" }, { port: 12 }, { status: "inexistente" }, { descriptionContains: 12 },
+])("run_widget_query rechaza filtros ambiguos o inválidos: %j", async (filters) => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", filters }))
+    .mockResolvedValueOnce(textResponse("Debo corregir los filtros."));
+  await handler(eventWith({ question: "ventas" }));
+  expect(mockRunAthenaQuery).not.toHaveBeenCalled();
+  const messages = mockBedrockSend.mock.calls[1][0].input.messages;
+  expect(messages[2].content[0].toolResult.status).toBe("error");
 });
 
 test("run_widget_query por agent: traduce los agentId al nombre de la sucursal (etiqueta de ubicación)", async () => {
