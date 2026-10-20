@@ -25,6 +25,30 @@ Después de reparar, vaciar la DLQ. El mapping empieza en `LATEST`: tras el prim
 despliegue conviene correr el diagnóstico por cada negocio por si algún cambio
 cayó entre el despliegue del parser y el del consumidor.
 
+## Registro y activación recuperables
+
+Ni `POST /signup` ni `POST /agents/activate` pueden ser atómicos (Cognito y API
+Gateway no participan en una transacción de DynamoDB), así que se diseñaron para
+poder reintentarse tras un corte sin crear de más ni dejar huérfanos.
+
+**Activación** (`agents/activateHandler.ts`): el código pasa por
+`unused → activating → used`. Al reclamarlo se reserva el `agentId` y un lease de
+30 s. Un reintento con el mismo código reanuda con ese mismo agente: la API key se
+busca por nombre (`agent-<agentId>`), vincularla al usage plan tolera el conflicto
+y el agente se guarda con escritura condicional. Un reintento dentro del lease
+recibe 409. Si la respuesta 201 se perdió, el mismo código devuelve el mismo
+agente y la misma key mientras el agente no haya enviado su primer heartbeat y
+hayan pasado menos de 15 min; después el código vuelve a ser inútil. Un código
+nunca produce un segundo agente.
+
+**Registro** (`signup/handler.ts`): el negocio nace con `signupState: "provisioning"`
+y la marca se quita al final, tras crear los 5 códigos. Un reintento con el mismo
+email reanuda el registro interrumpido (mismo `tenantId`, solo crea los códigos
+que faltan) en lugar de responder 409. Solo se reanuda durante los primeros 15 min:
+pasado ese tiempo un negocio que quedó `provisioning` responde 409 y lo resuelve un
+operador, para que nadie pueda tomar un email cambiando la contraseña de una cuenta
+que ya funciona.
+
 ## Reglas de métricas y validación local
 
 Las consultas de venta cuentan `parsed` y `needs_review` por defecto (los

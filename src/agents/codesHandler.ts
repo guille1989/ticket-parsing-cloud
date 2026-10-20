@@ -11,7 +11,9 @@ const TENANT_INDEX = "tenantId-index";
 function toPublicCode(item: ActivationCodeRecord) {
   return {
     code: item.code,
-    status: item.status,
+    // `activating` (canje en curso o interrumpido) es un detalle interno: el
+    // código ya está comprometido con un agente, así que el dashboard lo ve como usado.
+    status: item.status === "activating" ? "used" : item.status,
     createdAt: item.createdAt,
     usedAt: item.usedAt,
     agentId: item.agentId,

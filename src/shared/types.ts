@@ -23,6 +23,13 @@ export interface OnboardingState {
 export interface TenantRecord {
   tenantId: string;
   businessName: string;
+  /**
+   * `"provisioning"` mientras `POST /signup` no terminó de crear todo (usuario,
+   * negocio y los 5 códigos); se borra al final. Permite que un reintento con el
+   * mismo email reanude un registro interrumpido. Ausente = completo (también
+   * los negocios dados de alta antes de este campo o con `onboard-tenant.ts`).
+   */
+  signupState?: "provisioning";
   /** Parser a usar cuando el puerto de origen no tiene una asignación puntual en `portParsers`. */
   parserId: string;
   /**
@@ -158,10 +165,13 @@ export interface AgentRecord {
 export interface ActivationCodeRecord {
   tenantId: string;
   code: string;
-  status: "unused" | "used";
+  /** `activating`: canje en curso o interrumpido (con `agentId` ya reservado); ver `agents/activateHandler.ts`. */
+  status: "unused" | "activating" | "used";
   createdAt: string;
   usedAt?: string;
   agentId?: string;
+  /** Epoch ms hasta el que una activación en curso es exclusiva; vencido, un reintento puede reanudarla. */
+  activatingUntil?: number;
 }
 
 export type WidgetVisualization = "kpi" | "bar" | "line" | "donut";

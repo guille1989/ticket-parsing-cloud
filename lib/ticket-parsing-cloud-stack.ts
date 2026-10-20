@@ -755,6 +755,14 @@ export class TicketParsingCloudStack extends cdk.Stack {
         resources: [`arn:aws:apigateway:${this.region}::/usageplans`],
       }),
     );
+    // Reanudar o recuperar una activación busca la key del agente por nombre
+    // (`agent-<agentId>`), con su valor, en vez de crear otra.
+    activateFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["apigateway:GET"],
+        resources: [`arn:aws:apigateway:${this.region}::/apikeys`, `arn:aws:apigateway:${this.region}::/apikeys/*`],
+      }),
+    );
     activateFn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["apigateway:POST"],
@@ -787,12 +795,14 @@ export class TicketParsingCloudStack extends cdk.Stack {
         SIGNUP_USAGE_TABLE: signupUsageTable.tableName,
       },
     });
-    tenantsTable.grantWriteData(signupFn);
-    activationCodesTable.grantWriteData(signupFn);
+    // Lectura además de escritura: un reintento reanuda un registro interrumpido
+    // (lee el negocio y cuenta los códigos que ya existen, ver signup/handler.ts).
+    tenantsTable.grantReadWriteData(signupFn);
+    activationCodesTable.grantReadWriteData(signupFn);
     signupUsageTable.grantReadWriteData(signupFn);
     signupFn.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["cognito-idp:AdminCreateUser", "cognito-idp:AdminSetUserPassword", "cognito-idp:AdminDeleteUser"],
+        actions: ["cognito-idp:AdminCreateUser", "cognito-idp:AdminGetUser", "cognito-idp:AdminSetUserPassword", "cognito-idp:AdminDeleteUser"],
         resources: [userPool.userPoolArn],
       }),
     );
