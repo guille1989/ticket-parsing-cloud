@@ -1,6 +1,7 @@
 import * as cdk from "aws-cdk-lib/core";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as athena from "aws-cdk-lib/aws-athena";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as glue from "aws-cdk-lib/aws-glue";
@@ -261,6 +262,24 @@ export class TicketParsingCloudStack extends cdk.Stack {
       retentionPeriod: cdk.Duration.days(14),
     });
 
+    // DLQ de la sincronización analítica: acá caen los registros del Stream que
+    // el consumidor no logró aplicar a S3 tras agotar reintentos. Es la lista de
+    // "pendiente de recuperación": la alarma de abajo avisa y se repara con
+    // `npm run reconcile-analytics -- <tenantId> --apply`.
+    const analyticsSyncDlq = new sqs.Queue(this, "AnalyticsSyncDeadLetterQueue", {
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
+    new cloudwatch.Alarm(this, "AnalyticsSyncPendingRecovery", {
+      alarmDescription:
+        "Hay cambios de tickets que no se pudieron reflejar en la analítica (S3/Athena). Las estadísticas pueden estar incompletas: correr reconcile-analytics.",
+      metric: analyticsSyncDlq.metricApproximateNumberOfMessagesVisible({ period: cdk.Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
     // ---- Cognito: login real del negocio para el dashboard -------------
     //
     // Hasta acá, `innoapp-web-user-client` iba a tener que leer con la
@@ -490,6 +509,18 @@ export class TicketParsingCloudStack extends cdk.Stack {
         TENANTS_TABLE: tenantsTable.tableName,
         RAW_BUCKET: rawTicketsBucket.bucketName,
         BEDROCK_MODEL_ID: bedrockModelId,
+      },
+    });
+
+    // Único escritor de la copia analítica: sigue el mismo Stream que el parser
+    // y deja S3 igual al estado vigente de cada ticket (ver analytics/syncHandler.ts).
+    const analyticsSyncFn = new nodejs.NodejsFunction(this, "AnalyticsSyncFunction", {
+      entry: "src/analytics/syncHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        TICKETS_TABLE: ticketsTable.tableName,
         ANALYTICS_BUCKET: analyticsBucket.bucketName,
       },
     });
@@ -506,14 +537,14 @@ export class TicketParsingCloudStack extends cdk.Stack {
 
     // Confirma/descarta un ticket needs_review (ver review/handler.ts) — el
     // único mecanismo para sacarlo de ese estado. Necesita escribir en
-    // Tickets (cambiar status) y en el bucket de analítica (sincronizar o
-    // borrar la fila correspondiente), a diferencia de readFn que solo lee.
+    // Tickets (cambiar status). La analítica NO la toca: el cambio de estado
+    // dispara el Stream y `analyticsSyncFn` la reescribe o la borra.
     const reviewFn = new nodejs.NodejsFunction(this, "ReviewFunction", {
       entry: "src/review/handler.ts",
       runtime: nodeRuntime,
       bundling: sharedBundling,
       timeout: cdk.Duration.seconds(10),
-      environment: { TICKETS_TABLE: ticketsTable.tableName, ANALYTICS_BUCKET: analyticsBucket.bucketName },
+      environment: { TICKETS_TABLE: ticketsTable.tableName },
     });
 
     // Reconstruye a PNG el ticket-imagen de un `needs_review` para que el
@@ -595,6 +626,13 @@ export class TicketParsingCloudStack extends cdk.Stack {
       }),
     );
 
+    analyticsSyncFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:GetShardIterator", "dynamodb:ListStreams"],
+        resources: [ticketsTable.tableStreamArn!],
+      }),
+    );
+
     grantBedrockInvoke(parserFn);
 
     new lambda.EventSourceMapping(this, "ParserStreamSource", {
@@ -610,14 +648,34 @@ export class TicketParsingCloudStack extends cdk.Stack {
       reportBatchItemFailures: true,
     });
 
+    // Segundo consumidor del mismo Stream (un Stream admite hasta 2 sin
+    // throttling; no sumar un tercero). Filtra en el origen para no invocar
+    // el Lambda con los marcadores DEDUP#. Cada intento relee el estado vigente,
+    // así que reintentar es seguro; agotados los intentos va a la DLQ + alarma.
+    new lambda.EventSourceMapping(this, "AnalyticsSyncStreamSource", {
+      target: analyticsSyncFn,
+      eventSourceArn: ticketsTable.tableStreamArn!,
+      startingPosition: lambda.StartingPosition.LATEST,
+      batchSize: 25,
+      retryAttempts: 10,
+      maxRecordAge: cdk.Duration.hours(6),
+      filters: [
+        lambda.FilterCriteria.filter({
+          dynamodb: { Keys: { sk: { S: lambda.FilterRule.beginsWith("TICKET#") } } },
+        }),
+      ],
+      onFailure: new destinations.SqsDestination(analyticsSyncDlq),
+      reportBatchItemFailures: true,
+    });
+
     rawTicketsBucket.grantWrite(ingestFn);
     rawTicketsBucket.grantRead(parserFn);
-    analyticsBucket.grantWrite(parserFn);
+    analyticsBucket.grantReadWrite(analyticsSyncFn); // escribe y borra el objeto de cada ticket
     ticketsTable.grantWriteData(ingestFn);
     ticketsTable.grantReadWriteData(parserFn);
+    ticketsTable.grantReadData(analyticsSyncFn); // relee el estado vigente del ticket
     ticketsTable.grantReadData(readFn);
     ticketsTable.grantReadWriteData(reviewFn);
-    analyticsBucket.grantReadWrite(reviewFn); // reescribe la fila al confirmar, la borra al descartar
     ticketsTable.grantReadData(ticketImageFn);
     rawTicketsBucket.grantRead(ticketImageFn);
     // Solo ingest y parser siguen resolviendo tenant por api-key (agente

@@ -7,22 +7,10 @@ jest.mock("../../src/shared/auth", () => ({
 }));
 
 const mockDdbSend = jest.fn();
-const mockS3Send = jest.fn();
-const mockWriteAnalyticsRows = jest.fn();
 
 jest.mock("../../src/shared/dynamo", () => {
   const actual = jest.requireActual("../../src/shared/dynamo");
-  return { ...actual, ddb: { send: (...args: unknown[]) => mockDdbSend(...args) }, TICKETS_TABLE: "TestTickets", ANALYTICS_BUCKET: "test-analytics" };
-});
-
-jest.mock("@aws-sdk/client-s3", () => {
-  const actual = jest.requireActual("@aws-sdk/client-s3");
-  return { ...actual, S3Client: jest.fn().mockImplementation(() => ({ send: (...args: unknown[]) => mockS3Send(...args) })) };
-});
-
-jest.mock("../../src/analytics/writeAnalyticsRows", () => {
-  const actual = jest.requireActual("../../src/analytics/writeAnalyticsRows");
-  return { ...actual, writeAnalyticsRows: (...args: unknown[]) => mockWriteAnalyticsRows(...args) };
+  return { ...actual, ddb: { send: (...args: unknown[]) => mockDdbSend(...args) }, TICKETS_TABLE: "TestTickets" };
 });
 
 import { handler } from "../../src/review/handler";
@@ -51,11 +39,9 @@ const NEEDS_REVIEW_TICKET = {
 
 beforeEach(() => {
   mockDdbSend.mockReset();
-  mockS3Send.mockReset();
-  mockWriteAnalyticsRows.mockReset();
 });
 
-test("sin API — sin claim de tenant: 403, no toca DynamoDB ni S3", async () => {
+test("sin API — sin claim de tenant: 403, no toca DynamoDB", async () => {
   const result = await handler(event({ action: "confirm", capturedAt: CAPTURED_AT }, ""));
   expect(result.statusCode).toBe(403);
   expect(mockDdbSend).not.toHaveBeenCalled();
@@ -79,7 +65,7 @@ test.each([
   expect(mockDdbSend).not.toHaveBeenCalled();
 });
 
-test("confirm: promueve needs_review a parsed y reescribe la fila de analítica", async () => {
+test("confirm: promueve needs_review a parsed (la analítica la reescribe el consumidor del Stream)", async () => {
   mockDdbSend.mockResolvedValue({ Attributes: NEEDS_REVIEW_TICKET });
 
   const result = await handler(event({ action: "confirm", capturedAt: CAPTURED_AT }));
@@ -87,57 +73,34 @@ test("confirm: promueve needs_review a parsed y reescribe la fila de analítica"
   expect(result.statusCode).toBe(200);
   expect(JSON.parse(result.body)).toEqual({ ticketId: TICKET_ID, status: "parsed" });
 
+  expect(mockDdbSend).toHaveBeenCalledTimes(1);
   const updateInput = mockDdbSend.mock.calls[0][0].input;
   expect(updateInput.Key).toEqual({ pk: "TENANT#t1", sk: `TICKET#${CAPTURED_AT}#${TICKET_ID}` });
   expect(updateInput.ConditionExpression).toBe("#status = :needsReview");
   expect(updateInput.ExpressionAttributeValues[":newStatus"]).toBe("parsed");
-
-  expect(mockWriteAnalyticsRows).toHaveBeenCalledTimes(1);
-  const [bucket, ctx, parsed] = mockWriteAnalyticsRows.mock.calls[0];
-  expect(bucket).toBe("test-analytics");
-  expect(ctx).toMatchObject({ tenantId: "t1", ticketId: TICKET_ID, status: "parsed", parsedBy: "bedrock-vision" });
-  expect(parsed.items).toEqual(NEEDS_REVIEW_TICKET.items);
-  expect(mockS3Send).not.toHaveBeenCalled();
 });
 
-test("discard: manda a discarded y borra la fila de analítica (no la reescribe)", async () => {
+test("discard: manda a discarded con una sola escritura a DynamoDB; el borrado de la analítica lo hace el consumidor", async () => {
   mockDdbSend.mockResolvedValue({ Attributes: { ...NEEDS_REVIEW_TICKET, status: "discarded" } });
-  mockS3Send.mockResolvedValue({});
 
   const result = await handler(event({ action: "discard", capturedAt: CAPTURED_AT }));
 
   expect(result.statusCode).toBe(200);
   expect(JSON.parse(result.body)).toEqual({ ticketId: TICKET_ID, status: "discarded" });
-
+  expect(mockDdbSend).toHaveBeenCalledTimes(1);
   const updateInput = mockDdbSend.mock.calls[0][0].input;
   expect(updateInput.ExpressionAttributeValues[":newStatus"]).toBe("discarded");
-
-  expect(mockS3Send).toHaveBeenCalledTimes(1);
-  const deleteInput = mockS3Send.mock.calls[0][0].input;
-  expect(deleteInput.Bucket).toBe("test-analytics");
-  expect(deleteInput.Key).toBe(`tenant=t1/year=2026/month=09/${TICKET_ID}.jsonl`);
-  expect(mockWriteAnalyticsRows).not.toHaveBeenCalled();
-});
-
-test("confirm de un ticket needs_review sin items: no explota, no llama writeAnalyticsRows", async () => {
-  mockDdbSend.mockResolvedValue({ Attributes: { ...NEEDS_REVIEW_TICKET, items: undefined } });
-
-  const result = await handler(event({ action: "confirm", capturedAt: CAPTURED_AT }));
-
-  expect(result.statusCode).toBe(200);
-  expect(mockWriteAnalyticsRows).not.toHaveBeenCalled();
+  expect(updateInput.ExpressionAttributeValues[":gsi1pk"]).toBe("TENANT#t1#STATUS#discarded");
 });
 
 // El caso central: un ticket que no está en needs_review (ya se revisó, o
 // nunca existió) no se puede confirmar/descartar de nuevo.
-test("ticket que no está en needs_review (ConditionalCheckFailedException): 409, no toca S3", async () => {
+test("ticket que no está en needs_review (ConditionalCheckFailedException): 409", async () => {
   mockDdbSend.mockRejectedValue({ name: "ConditionalCheckFailedException" });
 
   const result = await handler(event({ action: "confirm", capturedAt: CAPTURED_AT }));
 
   expect(result.statusCode).toBe(409);
-  expect(mockS3Send).not.toHaveBeenCalled();
-  expect(mockWriteAnalyticsRows).not.toHaveBeenCalled();
 });
 
 test("un error de DynamoDB que NO es de condición se propaga", async () => {

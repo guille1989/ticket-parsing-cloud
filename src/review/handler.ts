@@ -1,14 +1,10 @@
-import { DeleteObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
-import { analyticsRowKey, writeAnalyticsRows } from "../analytics/writeAnalyticsRows.js";
 import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
-import { ANALYTICS_BUCKET, ddb, ticketStatusGsiKey, ticketKey, TICKETS_TABLE } from "../shared/dynamo.js";
+import { ddb, ticketStatusGsiKey, ticketKey, TICKETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import { TicketRecord } from "../shared/types.js";
-
-const s3 = new S3Client({});
 
 type Action = "confirm" | "discard";
 
@@ -41,10 +37,11 @@ function parseBody(raw: string | null): ReviewBody | undefined {
  * dashboard, mirando lo que se extrajo (no la imagen del ticket todavía —
  * eso queda para una iteración futura si hace falta).
  *
- * "confirm" lo promueve a `parsed` y actualiza la fila de analítica en S3
- * (estaba con `status: "needs_review"`, ahora cuenta como confiable).
- * "discard" lo manda a `discarded` y BORRA esa fila — no era una venta
- * real, no debe seguir sumando en ningún reporte.
+ * "confirm" lo promueve a `parsed`; "discard" lo manda a `discarded`. La copia
+ * analítica en S3 NO se toca acá: el cambio de estado dispara el Stream y
+ * `analytics/syncHandler` deja la analítica igual al estado vigente (reescribe
+ * la fila al confirmar, la borra al descartar), con reintentos y DLQ. Un
+ * descartado que siguiera sumando por un fallo de S3 era el riesgo del código anterior.
  */
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
   const tenantId = await resolveActiveTenantIdFromEvent(event);
@@ -87,35 +84,6 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
       return jsonResponse(409, { error: "el ticket no está en needs_review (ya fue revisado, o no existe)" });
     }
     throw err;
-  }
-
-  if (body.action === "discard") {
-    await s3
-      .send(new DeleteObjectCommand({ Bucket: ANALYTICS_BUCKET, Key: analyticsRowKey(tenantId, body.capturedAt, ticketId) }))
-      .catch(() => {
-        // Best-effort: un ticket needs_review sin items nunca tuvo fila que borrar.
-      });
-  } else if (updated.items && updated.items.length > 0 && updated.parsedBy) {
-    await writeAnalyticsRows(
-      ANALYTICS_BUCKET,
-      {
-        tenantId,
-        ticketId,
-        capturedAt: body.capturedAt,
-        port: updated.port,
-        agentId: updated.agentId,
-        parsedBy: updated.parsedBy,
-        status: "parsed",
-      },
-      {
-        items: updated.items,
-        total: updated.total ?? 0,
-        tax: updated.tax,
-        discount: updated.discount,
-        tip: updated.tip,
-        timestamp: body.capturedAt,
-      },
-    );
   }
 
   return jsonResponse(200, { ticketId, status: newStatus });

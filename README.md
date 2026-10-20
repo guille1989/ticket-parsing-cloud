@@ -1,5 +1,30 @@
 # ticket-parsing-cloud
 
+## Sincronización de la analítica (DynamoDB → S3/Athena)
+
+DynamoDB es la fuente de verdad; S3 guarda una copia por ticket
+(`tenant=/year=/month=/<ticketId>.jsonl`) para Athena. **Un único escritor**:
+`AnalyticsSyncFunction` (`src/analytics/syncHandler.ts`), suscrita al Stream de
+la tabla Tickets. Por cada cambio relee el estado vigente del ticket y deja la
+copia igual a él: escribe el objeto si cuenta (`parsed`/`needs_review`, con
+ítems) y lo borra si no (descartado, fallido, pendiente o inexistente). Ambas
+operaciones son idempotentes, así que un evento repetido no duplica ventas y
+uno viejo no restaura datos desactualizados. El parser y la revisión ya no
+escriben en S3.
+
+Si S3 falla, el mapping reintenta (10 veces, hasta 6 h). Lo que no se logra
+aplicar cae en `AnalyticsSyncDeadLetterQueue` y dispara la alarma
+`AnalyticsSyncPendingRecovery`. Recuperar:
+
+```
+npm run reconcile-analytics -- <tenantId>            # diagnóstico, no modifica nada
+npm run reconcile-analytics -- <tenantId> --apply    # repara desde el ticket guardado
+```
+
+Después de reparar, vaciar la DLQ. El mapping empieza en `LATEST`: tras el primer
+despliegue conviene correr el diagnóstico por cada negocio por si algún cambio
+cayó entre el despliegue del parser y el del consumidor.
+
 ## Reglas de métricas y validación local
 
 Las consultas de venta cuentan `parsed` y `needs_review` por defecto (los

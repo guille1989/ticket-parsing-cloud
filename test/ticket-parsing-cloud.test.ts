@@ -9,9 +9,9 @@ test("el stack sintetiza con las piezas clave del pipeline multi-tenant", () => 
   const template = Template.fromStack(stack);
 
   template.resourceCountIs("AWS::DynamoDB::GlobalTable", 8); // Tickets + Tenants + Widgets + Agents + ActivationCodes + Reports + AssistantUsage + SignupUsage
-  template.resourceCountIs("AWS::SQS::Queue", 1); // solo la DLQ del parseo — el trigger es el Stream, no una cola
-  template.resourceCountIs("AWS::Lambda::Function", 23); // pipeline + reportes guardados (3) + + dashboard + agentes + auth + perfil/onboarding + revisión de tickets + imagen de ticket
-  template.resourceCountIs("AWS::Lambda::EventSourceMapping", 1); // parser suscripto al Stream de Tickets
+  template.resourceCountIs("AWS::SQS::Queue", 2); // DLQ del parseo + DLQ de la sincronización analítica — el trigger es el Stream, no una cola
+  template.resourceCountIs("AWS::Lambda::Function", 24); // pipeline + reportes guardados (3) + + dashboard + agentes + auth + perfil/onboarding + revisión de tickets + imagen de ticket
+  template.resourceCountIs("AWS::Lambda::EventSourceMapping", 2); // parser + sincronización analítica, ambos suscriptos al Stream de Tickets
   template.resourceCountIs("AWS::Cognito::UserPool", 1);
   template.resourceCountIs("AWS::Cognito::UserPoolClient", 1);
 
@@ -105,4 +105,45 @@ test("cada ruta Cognito puede verificar el estado actual del tenant con GetItem"
     }));
     expect({ functionId, canReadTenant }).toEqual({ functionId, canReadTenant: true });
   }
+});
+
+// La analítica tiene un único escritor recuperable: el consumidor del Stream.
+test("la sincronización analítica sigue el Stream con filtro de tickets, reintentos y DLQ con alarma", () => {
+  const template = Template.fromStack(new TicketParsingCloudStack(new cdk.App(), "TestStack"));
+
+  const mappings = Object.values(template.findResources("AWS::Lambda::EventSourceMapping")) as any[];
+  const sync = mappings.find((m) => m.Properties.FilterCriteria);
+  expect(sync).toBeDefined();
+  expect(sync.Properties.FilterCriteria.Filters).toEqual([
+    { Pattern: JSON.stringify({ dynamodb: { Keys: { sk: { S: [{ prefix: "TICKET#" }] } } } }) },
+  ]);
+  expect(sync.Properties).toMatchObject({
+    FunctionResponseTypes: ["ReportBatchItemFailures"],
+    MaximumRetryAttempts: 10,
+    MaximumRecordAgeInSeconds: 21600,
+    StartingPosition: "LATEST",
+  });
+  expect(sync.Properties.DestinationConfig.OnFailure.Destination).toBeDefined();
+
+  // Alarma: cualquier mensaje en la DLQ significa estadísticas pendientes de recuperar.
+  template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+    MetricName: "ApproximateNumberOfMessagesVisible",
+    Namespace: "AWS/SQS",
+    Threshold: 1,
+    ComparisonOperator: "GreaterThanOrEqualToThreshold",
+  });
+});
+
+test("solo el consumidor de sincronización escribe en el bucket de analítica (ni el parser ni la revisión)", () => {
+  const template = Template.fromStack(new TicketParsingCloudStack(new cdk.App(), "TestStack"));
+  const functions = template.findResources("AWS::Lambda::Function");
+  const withAnalyticsEnv = Object.entries(functions)
+    .filter(([, fn]: [string, any]) => fn.Properties?.Environment?.Variables?.ANALYTICS_BUCKET)
+    .map(([id]) => id);
+
+  // Lectura para Athena (widgets/asistente) también inyecta el bucket; lo que no puede
+  // tener es el parser ni la revisión.
+  expect(withAnalyticsEnv.some((id) => id.startsWith("ParserFunction"))).toBe(false);
+  expect(withAnalyticsEnv.some((id) => id.startsWith("ReviewFunction"))).toBe(false);
+  expect(withAnalyticsEnv.some((id) => id.startsWith("AnalyticsSyncFunction"))).toBe(true);
 });

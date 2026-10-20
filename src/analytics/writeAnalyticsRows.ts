@@ -1,4 +1,4 @@
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 import type { ParsedTicket } from "../parsing/types.js";
 import type { TicketRecord } from "../shared/types.js";
@@ -86,4 +86,12 @@ export async function writeAnalyticsRows(
       ContentType: "application/x-ndjson",
     }),
   );
+}
+
+/**
+ * Borra el objeto de analítica de un ticket. Idempotente: S3 responde éxito si
+ * la clave no existe, así que repetirlo o borrar algo que nunca se escribió no falla.
+ */
+export async function deleteAnalyticsRows(bucket: string, tenantId: string, capturedAt: string, ticketId: string): Promise<void> {
+  await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: analyticsRowKey(tenantId, capturedAt, ticketId) }));
 }
