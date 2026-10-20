@@ -79,6 +79,27 @@ describe("GET /reports", () => {
     expect(query.ScanIndexForward).toBe(false);
   });
 
+  test("devuelve nextCursor y acepta cursor/limit para pedir la página siguiente", async () => {
+    const lastKey = { pk: "TENANT#t1", sk: "REPORT#2026-10-01" };
+    mockDdbSend.mockResolvedValue({ Items: [], LastEvaluatedKey: lastKey });
+    const cursor = Buffer.from(JSON.stringify({ pk: "TENANT#t1", sk: "REPORT#2026-10-10" }), "utf-8").toString("base64url");
+    const event = { ...eventWith(), queryStringParameters: { cursor, limit: "20" } } as unknown as APIGatewayProxyWithCognitoAuthorizerEvent;
+
+    const result = await listHandler(event);
+
+    const query = mockDdbSend.mock.calls[0][0].input;
+    expect(query.Limit).toBe(20);
+    expect(query.ExclusiveStartKey).toEqual({ pk: "TENANT#t1", sk: "REPORT#2026-10-10" });
+    const body = JSON.parse(result.body);
+    expect(JSON.parse(Buffer.from(body.nextCursor, "base64url").toString("utf-8"))).toEqual(lastKey);
+  });
+
+  test("sin más páginas no hay nextCursor", async () => {
+    mockDdbSend.mockResolvedValue({ Items: [] });
+    const result = await listHandler(eventWith());
+    expect(JSON.parse(result.body).nextCursor).toBeUndefined();
+  });
+
   test("sin sesión: 403 y no toca DynamoDB", async () => {
     const result = await listHandler(eventWith(undefined, null));
     expect(result.statusCode).toBe(403);

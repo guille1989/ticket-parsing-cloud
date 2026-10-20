@@ -1,9 +1,9 @@
-import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
-import { ddb, WIDGETS_TABLE } from "../shared/dynamo.js";
+import { WIDGETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
+import { queryAllPages } from "../shared/pagination.js";
 import type { WidgetRecord } from "../shared/types.js";
 
 function toPublicWidget(item: WidgetRecord) {
@@ -24,14 +24,12 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
     return jsonResponse(403, { error: "no autenticado" });
   }
 
-  const result = await ddb.send(
-    new QueryCommand({
-      TableName: WIDGETS_TABLE,
-      KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
-      ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":prefix": "WIDGET#" },
-    }),
-  );
+  const items = await queryAllPages<WidgetRecord>({
+    TableName: WIDGETS_TABLE,
+    KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+    ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":prefix": "WIDGET#" },
+  });
 
-  const widgets = (result.Items as WidgetRecord[] | undefined)?.map(toPublicWidget) ?? [];
+  const widgets = items.map(toPublicWidget);
   return jsonResponse(200, { widgets });
 }

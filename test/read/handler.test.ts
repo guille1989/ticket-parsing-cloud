@@ -146,3 +146,25 @@ test("paginación: nextCursor viaja codificado y limit se acota al máximo", asy
   const decoded = JSON.parse(Buffer.from(body.nextCursor, "base64url").toString("utf-8"));
   expect(decoded).toEqual({ pk: "TENANT#t1", sk: "TICKET#x" });
 });
+
+test("sin filtro: la condición de clave exige el prefijo TICKET# (los marcadores DEDUP# no cuentan ni gastan cupo)", async () => {
+  mockDdbSend.mockResolvedValue({ Items: [] });
+
+  await handler(eventWith("t1"));
+
+  const query = mockDdbSend.mock.calls[0][0].input;
+  expect(query.KeyConditionExpression).toBe("pk = :pk AND begins_with(sk, :prefix)");
+  expect(query.ExpressionAttributeValues[":prefix"]).toBe("TICKET#");
+  // Debe ir en la condición de clave: un FilterExpression se aplica después de Limit.
+  expect(query.FilterExpression).toBeUndefined();
+});
+
+test("el cursor recibido se pasa como ExclusiveStartKey", async () => {
+  mockDdbSend.mockResolvedValue({ Items: [] });
+  const key = { pk: "TENANT#t1", sk: "TICKET#2026-07-27T12:00:00.000Z#tk1" };
+  const cursor = Buffer.from(JSON.stringify(key), "utf-8").toString("base64url");
+
+  await handler(eventWith("t1", { cursor }));
+
+  expect(mockDdbSend.mock.calls[0][0].input.ExclusiveStartKey).toEqual(key);
+});

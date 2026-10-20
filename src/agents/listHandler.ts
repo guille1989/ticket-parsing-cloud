@@ -1,9 +1,9 @@
-import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
-import { AGENTS_TABLE, ddb } from "../shared/dynamo.js";
+import { AGENTS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
+import { queryAllPages } from "../shared/pagination.js";
 import type { AgentRecord } from "../shared/types.js";
 
 function toPublicAgent(item: AgentRecord) {
@@ -23,14 +23,12 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
     return jsonResponse(403, { error: "no autenticado" });
   }
 
-  const result = await ddb.send(
-    new QueryCommand({
-      TableName: AGENTS_TABLE,
-      KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
-      ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":prefix": "AGENT#" },
-    }),
-  );
+  const items = await queryAllPages<AgentRecord>({
+    TableName: AGENTS_TABLE,
+    KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+    ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":prefix": "AGENT#" },
+  });
 
-  const agents = (result.Items as AgentRecord[] | undefined)?.map(toPublicAgent) ?? [];
+  const agents = items.map(toPublicAgent);
   return jsonResponse(200, { agents });
 }

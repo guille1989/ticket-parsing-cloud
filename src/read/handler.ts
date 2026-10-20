@@ -4,31 +4,10 @@ import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent }
 import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, TICKETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
+import { decodeCursor, encodeCursor, parseLimit } from "../shared/pagination.js";
 import { TicketRecord, TicketStatus } from "../shared/types.js";
 
-const MAX_LIMIT = 100;
-const DEFAULT_LIMIT = 50;
 const VALID_STATUSES: TicketStatus[] = ["pending", "parsed", "needs_review", "failed", "discarded"];
-
-function parseLimit(raw: string | undefined): number {
-  const parsed = raw ? Number(raw) : DEFAULT_LIMIT;
-  if (!Number.isInteger(parsed) || parsed < 1) return DEFAULT_LIMIT;
-  return Math.min(parsed, MAX_LIMIT);
-}
-
-function decodeCursor(raw: string | undefined): Record<string, unknown> | undefined {
-  if (!raw) return undefined;
-  try {
-    return JSON.parse(Buffer.from(raw, "base64url").toString("utf-8"));
-  } catch {
-    return undefined;
-  }
-}
-
-function encodeCursor(key: Record<string, unknown> | undefined): string | undefined {
-  if (!key) return undefined;
-  return Buffer.from(JSON.stringify(key), "utf-8").toString("base64url");
-}
 
 /** Solo lo que le interesa a un negocio ver — sin claves internas de DynamoDB. */
 function toPublicTicket(item: TicketRecord) {
@@ -81,8 +60,11 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
     : await ddb.send(
         new QueryCommand({
           TableName: TICKETS_TABLE,
-          KeyConditionExpression: "pk = :pk",
-          ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}` },
+          // El prefijo va en la condición de clave (no en un filtro): el filtro
+          // se aplica después de `Limit` y los marcadores `DEDUP#` (mismo `pk`)
+          // gastarían cupo de la página y saldrían como tickets vacíos.
+          KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+          ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":prefix": "TICKET#" },
           ScanIndexForward: false,
           Limit: limit,
           ExclusiveStartKey: exclusiveStartKey,

@@ -62,3 +62,20 @@ test("tenant sin agentes: lista vacía, no undefined", async () => {
 
   expect(JSON.parse(result.body)).toEqual({ agents: [] });
 });
+
+test("recorre todas las páginas de DynamoDB, no solo la primera", async () => {
+  mockDdbSend
+    .mockResolvedValueOnce({
+      Items: [{ tenantId: "t1", agentId: "a1", name: "Caja 1", createdAt: "2026-01-01T00:00:00.000Z" }],
+      LastEvaluatedKey: { pk: "TENANT#t1", sk: "AGENT#a1" },
+    })
+    .mockResolvedValueOnce({
+      Items: [{ tenantId: "t1", agentId: "a2", name: "Caja 2", createdAt: "2026-01-02T00:00:00.000Z" }],
+    });
+
+  const result = await handler(eventWith("t1"));
+
+  expect(JSON.parse(result.body).agents.map((a: { agentId: string }) => a.agentId)).toEqual(["a1", "a2"]);
+  expect(mockDdbSend).toHaveBeenCalledTimes(2);
+  expect(mockDdbSend.mock.calls[1][0].input.ExclusiveStartKey).toEqual({ pk: "TENANT#t1", sk: "AGENT#a1" });
+});

@@ -58,3 +58,15 @@ test("sin sesión de Cognito (sin claim de tenantId): 403", async () => {
   expect(result.statusCode).toBe(403);
   expect(mockDdbSend).not.toHaveBeenCalled();
 });
+
+test("recorre todas las páginas de DynamoDB, no solo la primera", async () => {
+  const widget = (id: string) => ({ tenantId: "t1", widgetId: id, name: id, visualization: "kpi", metric: { field: "total", aggregation: "sum" }, createdAt: "2026-07-29T20:00:00.000Z" });
+  mockDdbSend
+    .mockResolvedValueOnce({ Items: [widget("w1")], LastEvaluatedKey: { pk: "TENANT#t1", sk: "WIDGET#w1" } })
+    .mockResolvedValueOnce({ Items: [widget("w2")] });
+
+  const result = await handler(eventWith("t1"));
+
+  expect(JSON.parse(result.body).widgets.map((w: { widgetId: string }) => w.widgetId)).toEqual(["w1", "w2"]);
+  expect(mockDdbSend.mock.calls[1][0].input.ExclusiveStartKey).toEqual({ pk: "TENANT#t1", sk: "WIDGET#w1" });
+});
