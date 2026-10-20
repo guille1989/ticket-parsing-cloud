@@ -804,6 +804,8 @@ export class TicketParsingCloudStack extends cdk.Stack {
       environment: {
         BEDROCK_MODEL_ID: bedrockModelId,
         TICKETS_TABLE: ticketsTable.tableName,
+        // Para nombrar las sucursales (agentId -> etiqueta de ubicación) en las respuestas.
+        AGENTS_TABLE: agentsTable.tableName,
         ATHENA_WORKGROUP: athenaWorkGroupName,
         ASSISTANT_USAGE_TABLE: assistantUsageTable.tableName,
         REPORTS_TABLE: reportsTable.tableName,
@@ -813,6 +815,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
     grantBedrockInvoke(assistantAskFn);
     grantAnalyticsQueryAccess(assistantAskFn);
     ticketsTable.grantReadData(assistantAskFn);
+    agentsTable.grantReadData(assistantAskFn);
     assistantUsageTable.grantReadWriteData(assistantAskFn);
     reportsTable.grantWriteData(assistantAskFn);
 

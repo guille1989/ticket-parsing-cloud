@@ -5,9 +5,9 @@ import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent }
 import { checkAssistantRateLimit } from "./rateLimit.js";
 import { saveReport } from "./reportStore.js";
 import { resolveTenantIdFromEvent } from "../shared/auth.js";
-import { ddb, TICKETS_TABLE } from "../shared/dynamo.js";
+import { AGENTS_TABLE, ddb, TICKETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
-import type { TicketRecord, TicketStatus, WidgetAggregation, WidgetFilters, WidgetRecord } from "../shared/types.js";
+import type { AgentRecord, TicketRecord, TicketStatus, WidgetAggregation, WidgetFilters, WidgetRecord } from "../shared/types.js";
 import { runWidgetQuery as runAthenaQuery } from "../widgets/athenaQuery.js";
 import {
   AGGREGATIONS,
@@ -45,10 +45,14 @@ const REPORT_MAX_TITLE_LENGTH = 100;
 const SYSTEM_PROMPT = `Sos el asistente de datos del dashboard de un negocio que usa InnoApp para capturar y analizar tickets de venta. Contestá siempre en español, en pocas oraciones, directo al grano.
 
 Tenés tres herramientas para consultar los datos REALES del negocio — nunca inventes números:
-- "run_widget_query": totales/promedios/conteos, opcionalmente agrupados por robot/estado/producto o por día. Usala para preguntas de agregados ("¿cuánto vendí?", "¿qué producto vendió más?", "comparame las sucursales", "¿qué día vendí más?").
+- "run_widget_query": totales/promedios/conteos, opcionalmente agrupados por sucursal/estado/producto o por día. Usala para preguntas de agregados ("¿cuánto vendí?", "¿qué producto vendió más?", "comparame las sucursales", "¿qué día vendí más?").
 - "list_tickets": los tickets más recientes, opcionalmente filtrados por estado. Usala para preguntas puntuales sobre ventas concretas, no para totales.
 
 - "build_report": arma un reporte descargable (varias secciones, cada una con su consulta). Usala SOLO cuando el usuario pida un reporte, informe o resumen para descargar. Las tablas las calcula la herramienta con datos reales; vos no transcribas números. Después de llamarla, contestá en pocas oraciones con los hallazgos principales y decí que el reporte está listo para descargar.
+
+Sucursales: cada robot ("agent") es una sucursal/local del negocio. Para "¿qué sucursal/local/sede…?", "comparame las sucursales" o "ventas por sucursal" agrupá por "agent": el resultado ya trae el nombre de cada sucursal, usalo tal cual en la respuesta. NO uses "port" para eso: "port" es el puerto/periférico (por ejemplo una caja registradora, TPV-CAJA1) y un mismo local puede tener varios; solo agrupá por "port" si piden explícitamente comparar cajas o puertos.
+
+Formato de la respuesta: texto plano. Podés resaltar con **negrita** lo más importante (el nombre de la sucursal o producto y la cifra clave), pero ningún otro markdown (nada de #, tablas ni viñetas con asteriscos). No pongas símbolo de moneda ($, €…) porque no sabés la moneda del negocio: escribí solo el número (con separador de miles y hasta 2 decimales).
 
 No pidas aclaraciones si la pregunta se puede contestar con una suposición razonable: consultá, contestá y decí en una frase qué supusiste. Supuestos por defecto:
 - "Ventas" es plata: "subtotal" si es por producto, "total" si es del negocio entero.
@@ -90,14 +94,14 @@ function widgetQueryProperties() {
         // (isValidGroupByField), solo faltaba ofrecerlo.
         enum: [...CATEGORICAL_FIELDS, ...TEMPORAL_FIELDS],
         description:
-          "Campo para desglosar el resultado (opcional, omitir para un solo total). 'day' agrupa por fecha (YYYY-MM-DD) y 'hour' por hora (YYYY-MM-DD HH, 24h), ordenados de lo más viejo a lo más nuevo.",
+          "Campo para desglosar el resultado (opcional, omitir para un solo total). 'agent' desglosa por sucursal/local (devuelve el nombre de cada una). 'port' desglosa por puerto/periférico (caja), NO por sucursal. 'day' agrupa por fecha (YYYY-MM-DD) y 'hour' por hora (YYYY-MM-DD HH, 24h), ordenados de lo más viejo a lo más nuevo.",
       },
       filters: {
         type: "object",
         properties: {
           dateFrom: { type: "string", description: "Fecha desde, YYYY-MM-DD (opcional)." },
           dateTo: { type: "string", description: "Fecha hasta, YYYY-MM-DD, incluye ese día entero (opcional)." },
-          port: { type: "string", description: "Filtrar por un robot/puerto puntual (opcional)." },
+          port: { type: "string", description: "Filtrar por un puerto/periférico puntual, p. ej. TPV-CAJA1 (opcional). No sirve para filtrar por sucursal." },
           status: { type: "string", enum: TICKET_STATUSES, description: "Filtrar por estado del ticket (opcional)." },
           descriptionContains: {
             type: "string",
@@ -182,7 +186,7 @@ function buildTools(): Tool[] {
  * un usuario, pero el mismo principio aplica: nunca confiar un nombre de
  * campo directo, siempre revalidar antes de generar SQL.
  */
-async function runWidgetQueryTool(input: unknown, tenantId: string, timeZone?: string): Promise<unknown> {
+async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolContext): Promise<unknown> {
   const raw = (input ?? {}) as Record<string, unknown>;
 
   const field = typeof raw.field === "string" ? raw.field : "";
@@ -230,13 +234,22 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, timeZone?: s
     filters,
   };
 
-  const query = buildWidgetQuery(widget, ASSISTANT_MAX_GROUPS, timeZone);
+  const query = buildWidgetQuery(widget, ASSISTANT_MAX_GROUPS, ctx.timeZone);
   const data = await runAthenaQuery(query.sql, query.params, process.env.ATHENA_WORKGROUP!);
-  return { data };
+  if (groupBy !== "agent") return { data };
+
+  // Por sucursal: Athena devuelve el agentId (UUID) — se traduce al nombre del local.
+  const names = await branchNames(tenantId, ctx);
+  return {
+    data: data.map((row) => ({
+      ...row,
+      label: !row.label || row.label === "(sin dato)" ? "Sin sucursal asignada" : (names.get(row.label) ?? row.label),
+    })),
+  };
 }
 
 /** Mismo query que `read/handler.ts`, recortado a lo que le sirve al modelo (sin items, para no inflar tokens). */
-async function listTicketsTool(input: unknown, tenantId: string): Promise<unknown> {
+async function listTicketsTool(input: unknown, tenantId: string, ctx: ToolContext): Promise<unknown> {
   const raw = (input ?? {}) as Record<string, unknown>;
 
   const status = typeof raw.status === "string" && TICKET_STATUSES.includes(raw.status as TicketStatus) ? (raw.status as TicketStatus) : undefined;
@@ -266,10 +279,12 @@ async function listTicketsTool(input: unknown, tenantId: string): Promise<unknow
         }),
       );
 
+  const names = await branchNames(tenantId, ctx);
   const tickets = ((result.Items as TicketRecord[] | undefined) ?? []).map((t) => ({
     ticketId: t.ticketId,
     capturedAt: t.capturedAt,
     status: t.status,
+    branch: t.agentId ? names.get(t.agentId) : undefined,
     port: t.port,
     total: t.total,
   }));
@@ -331,7 +346,7 @@ async function buildReportTool(input: unknown, tenantId: string, ctx: ToolContex
       const heading = typeof section.heading === "string" ? section.heading.trim().slice(0, REPORT_MAX_TITLE_LENGTH) : "";
       if (!heading) throw new Error(`sections[${i}].heading inválido`);
       try {
-        const { data } = (await runWidgetQueryTool(section, tenantId, ctx.timeZone)) as { data: ReportSection["data"] };
+        const { data } = (await runWidgetQueryTool(section, tenantId, ctx)) as { data: ReportSection["data"] };
         const groupBy = typeof section.groupBy === "string" ? section.groupBy : undefined;
         const filters = section.filters && typeof section.filters === "object" ? (section.filters as Record<string, unknown>) : undefined;
         const kind: ReportSectionKind = !groupBy ? "kpi" : groupBy === "day" || groupBy === "hour" ? "trend" : "ranking";
@@ -341,7 +356,7 @@ async function buildReportTool(input: unknown, tenantId: string, ctx: ToolContex
         if (prevRange) {
           // Si la comparación falla, el reporte sigue sin ella en vez de caerse.
           try {
-            const prev = (await runWidgetQueryTool({ ...section, filters: { ...filters, ...prevRange } }, tenantId, ctx.timeZone)) as {
+            const prev = (await runWidgetQueryTool({ ...section, filters: { ...filters, ...prevRange } }, tenantId, ctx)) as {
               data: ReportSection["data"];
             };
             previous = prev.data[0]?.value ?? 0;
@@ -370,12 +385,52 @@ async function buildReportTool(input: unknown, tenantId: string, ctx: ToolContex
   return { ok: true, title, sections: sections.map((s) => ({ heading: s.heading, data: s.data, previous: s.previous })) };
 }
 
-type ToolContext = { report?: Report; timeZone?: string };
+type ToolContext = { report?: Report; timeZone?: string; branches?: Promise<Map<string, string>> };
+
+/**
+ * agentId -> nombre de la sucursal. El dashboard traduce los UUID de
+ * `groupBy: "agent"` en el navegador, pero el asistente solo ve lo que
+ * devuelve Athena: sin esto el modelo no tenía forma de nombrar una sucursal
+ * y terminaba agrupando por `port` ("TPV-CAJA1"). Usa la etiqueta de la
+ * ubicación del robot (el local) y, si no tiene, el nombre del robot; si dos
+ * robots comparten etiqueta se desambigua con el nombre del robot.
+ * Si la lectura falla, el asistente sigue andando (con los ids crudos).
+ */
+async function loadBranchNames(tenantId: string): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  try {
+    const result = await ddb.send(
+      new QueryCommand({
+        TableName: AGENTS_TABLE,
+        KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":prefix": "AGENT#" },
+      }),
+    );
+    const agents = ((result.Items as Array<Partial<AgentRecord>> | undefined) ?? []).filter(
+      (agent): agent is AgentRecord => typeof agent.agentId === "string",
+    );
+    const labelOf = (agent: AgentRecord) => agent.location?.label?.trim() || agent.name;
+    const labelCount = new Map<string, number>();
+    for (const agent of agents) labelCount.set(labelOf(agent), (labelCount.get(labelOf(agent)) ?? 0) + 1);
+    for (const agent of agents) {
+      const label = labelOf(agent);
+      names.set(agent.agentId, (labelCount.get(label) ?? 0) > 1 && label !== agent.name ? `${label} (${agent.name})` : label);
+    }
+  } catch (err) {
+    console.error("[assistant] no se pudieron leer las sucursales:", err);
+  }
+  return names;
+}
+
+function branchNames(tenantId: string, ctx: ToolContext): Promise<Map<string, string>> {
+  ctx.branches ??= loadBranchNames(tenantId);
+  return ctx.branches;
+}
 
 async function callTool(name: string, input: unknown, tenantId: string, ctx: ToolContext): Promise<unknown> {
   if (name === "build_report") return buildReportTool(input, tenantId, ctx);
-  if (name === "run_widget_query") return runWidgetQueryTool(input, tenantId, ctx.timeZone);
-  if (name === "list_tickets") return listTicketsTool(input, tenantId);
+  if (name === "run_widget_query") return runWidgetQueryTool(input, tenantId, ctx);
+  if (name === "list_tickets") return listTicketsTool(input, tenantId, ctx);
   throw new Error(`herramienta desconocida: "${name}"`);
 }
 

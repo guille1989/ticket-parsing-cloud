@@ -14,7 +14,7 @@ jest.mock("@aws-sdk/client-bedrock-runtime", () => {
 });
 jest.mock("../../src/shared/dynamo", () => {
   const actual = jest.requireActual("../../src/shared/dynamo");
-  return { ...actual, ddb: { send: (...args: unknown[]) => mockDdbSend(...args) }, TICKETS_TABLE: "TestTickets" };
+  return { ...actual, ddb: { send: (...args: unknown[]) => mockDdbSend(...args) }, TICKETS_TABLE: "TestTickets", AGENTS_TABLE: "TestAgents" };
 });
 jest.mock("../../src/widgets/athenaQuery", () => ({
   runWidgetQuery: (...args: unknown[]) => mockRunAthenaQuery(...args),
@@ -531,4 +531,66 @@ test("build_report: deduce el tipo de sección y compara el KPI con el periodo a
   expect(report.sections[0].previous).toBe(800);
   expect(report.sections[1].previous).toBeUndefined();
   expect(mockRunAthenaQuery).toHaveBeenCalledTimes(4);
+});
+
+test("run_widget_query por agent: traduce los agentId al nombre de la sucursal (etiqueta de ubicación)", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", groupBy: "agent" }))
+    .mockResolvedValueOnce(textResponse("Vendió más Sol."));
+  mockRunAthenaQuery.mockResolvedValue([
+    { label: "agent-sol", value: 3426.94 },
+    { label: "agent-sin-ubicacion", value: 900 },
+    { label: "(sin dato)", value: 12 },
+  ]);
+  mockDdbSend.mockImplementation(async (cmd: { input: { TableName?: string } }) =>
+    cmd.input.TableName === "TestAgents"
+      ? {
+          Items: [
+            { agentId: "agent-sol", name: "TPV Sol", location: { label: "Horno Castizo · Sol" } },
+            { agentId: "agent-sin-ubicacion", name: "TPV Nuevo" },
+          ],
+        }
+      : {},
+  );
+
+  const result = await handler(eventWith({ question: "¿qué sucursal vendió más?" }, "tenant-x"));
+
+  expect(result.statusCode).toBe(200);
+  const agentsQuery = mockDdbSend.mock.calls.map(([cmd]) => cmd.input).find((input) => input.ExpressionAttributeValues?.[":prefix"] === "AGENT#");
+  expect(agentsQuery.ExpressionAttributeValues[":pk"]).toBe("TENANT#tenant-x");
+  const toolResultMsg = mockBedrockSend.mock.calls[1][0].input.messages[2];
+  expect(toolResultMsg.content[0].toolResult.content[0].json.data).toEqual([
+    { label: "Horno Castizo · Sol", value: 3426.94 },
+    { label: "TPV Nuevo", value: 900 },
+    { label: "Sin sucursal asignada", value: 12 },
+  ]);
+});
+
+test("run_widget_query por agent: si no se pueden leer las sucursales, sigue funcionando con los ids", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", groupBy: "agent" }))
+    .mockResolvedValueOnce(textResponse("ok"));
+  mockRunAthenaQuery.mockResolvedValue([{ label: "agent-sol", value: 10 }]);
+  const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  mockDdbSend.mockImplementation(async (cmd: { input: { ExpressionAttributeValues?: Record<string, unknown> } }) => {
+    if (cmd.input.ExpressionAttributeValues?.[":prefix"] === "AGENT#") throw new Error("boom");
+    return {};
+  });
+
+  const result = await handler(eventWith({ question: "¿qué sucursal vendió más?" }, "tenant-x"));
+
+  expect(result.statusCode).toBe(200);
+  const toolResultMsg = mockBedrockSend.mock.calls[1][0].input.messages[2];
+  expect(toolResultMsg.content[0].toolResult.content[0].json.data).toEqual([{ label: "agent-sol", value: 10 }]);
+  errorSpy.mockRestore();
+});
+
+test("el prompt manda agrupar por agent para 'sucursal' y no por port, sin símbolo de moneda y con solo negrita como markdown", async () => {
+  mockBedrockSend.mockResolvedValueOnce(textResponse("hola"));
+  await handler(eventWith({ question: "hola" }));
+  const system = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+  expect(system).toContain('agrupá por "agent"');
+  expect(system).toContain('NO uses "port"');
+  expect(system).toContain("**negrita**");
+  expect(system).toContain("No pongas símbolo de moneda");
 });
