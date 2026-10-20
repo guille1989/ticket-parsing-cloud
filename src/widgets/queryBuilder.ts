@@ -178,9 +178,13 @@ function buildWhere(widget: WidgetRecord, timeZone?: string): { whereClause: str
     conditions.push("status = ?");
     params.push(widget.filters.status);
   } else if (widget.groupBy !== "status" && widget.groupBy !== "parsedBy") {
-    // Las métricas de negocio usan ventas confirmadas. Las agrupaciones
-    // de diagnóstico conservan todos los estados para poder revisarlos.
-    conditions.push("status = 'parsed'");
+    // Las métricas de negocio cuentan las ventas que ya tienen filas de
+    // analítica y no fueron descartadas: `parsed` y `needs_review`. Los
+    // tickets-imagen (POS que imprimen la factura como bitmap) entran
+    // siempre como `needs_review` porque los lee un modelo de visión, y
+    // excluirlos dejaba al negocio sin cifras. `discarded` y `failed` no
+    // tienen filas. Las agrupaciones de diagnóstico conservan todos los estados.
+    conditions.push("status IN ('parsed', 'needs_review')");
   }
   if (!isTicketLevelField(widget.metric.field) &&
       (widget.metric.field !== EVENT_COUNT_FIELD || widget.groupBy === "description" || widget.filters?.descriptionContains)) {

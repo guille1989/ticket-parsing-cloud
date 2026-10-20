@@ -2,9 +2,10 @@
 
 ## Reglas de métricas y validación local
 
-Las consultas de venta usan `status = parsed` por defecto. Un filtro de estado
-explícito o una agrupación de diagnóstico por `status/parsedBy` permite revisar
-otros estados. Las métricas por ítem y los conteos por producto excluyen líneas
+Las consultas de venta cuentan `parsed` y `needs_review` por defecto (los
+tickets-imagen leídos por visión entran siempre como `needs_review`; `discarded`
+y `failed` no tienen filas de analítica). Un filtro de estado explícito o una
+agrupación de diagnóstico por `status/parsedBy` permite separarlos. Las métricas por ítem y los conteos por producto excluyen líneas
 anuladas; el total y el conteo global conservan el nivel de ticket.
 
 La respuesta de Athena conserva `value: null` cuando no hay observaciones.

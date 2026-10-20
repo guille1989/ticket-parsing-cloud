@@ -44,7 +44,6 @@ function query(field: string, aggregation: "sum" | "avg" | "count" = "sum", extr
 test("fixture con anulación: ventas 5250, tres unidades y ningún comprador de la hamburguesa anulada", () => {
   const parsed = example38ColParser.parse(readFileSync(join(process.cwd(), "fixtures/sample-tickets/05-item-anulado.txt"), "utf8"))!;
   addTicket("confirmado", parsed);
-  addTicket("por-revisar", parsed, "needs_review");
 
   expect(query("subtotal")).toEqual([{ value: 5250 }]);
   expect(query("quantity")).toEqual([{ value: 3 }]);
@@ -54,13 +53,14 @@ test("fixture con anulación: ventas 5250, tres unidades y ningún comprador de 
   expect(query("event_count", "count", { groupBy: "description" }).map((row) => row.label)).not.toContain("Hamburguesa Compl.");
 });
 
-test("las consultas de revisión son explícitas y los diagnósticos conservan ambos estados", () => {
+test("las métricas por defecto cuentan parsed y needs_review; el filtro de estado y los diagnósticos los separan", () => {
   const ticket: ParsedTicket = { total: 10, timestamp: "2026-07-01T12:00:00.000Z", items: [{ description: "Café", quantity: 1, unitPrice: 10, subtotal: 10 }] };
   addTicket("confirmado", ticket);
   addTicket("revisar", { ...ticket, total: 100 }, "needs_review");
 
-  expect(query("total")).toEqual([{ value: 10 }]);
+  expect(query("total")).toEqual([{ value: 110 }]);
   expect(query("total", "sum", { filters: { status: "needs_review" } })).toEqual([{ value: 100 }]);
+  expect(query("total", "sum", { filters: { status: "parsed" } })).toEqual([{ value: 10 }]);
   expect(query("event_count", "count", { groupBy: "status" })).toHaveLength(2);
   expect(query("event_count", "count", { groupBy: "parsedBy" })).toEqual([{ label: "deterministic", value: 2 }]);
 });
@@ -99,4 +99,13 @@ test("fechas inclusivas y filtro histórico: un límite único antiguo no genera
   addTicket("ultimo-segundo", ticket, "parsed", "2024-01-31T23:59:59.999Z");
   addTicket("dia-siguiente", ticket, "parsed", "2024-02-01T00:00:00.000Z");
   expect(query("total", "sum", { filters: { dateTo: "2024-01-31" } })).toEqual([{ value: 10 }]);
+});
+
+test("un ticket descartado o fallido nunca cuenta en las métricas por defecto", () => {
+  const ticket: ParsedTicket = { total: 10, timestamp: "2026-07-01T12:00:00.000Z", items: [{ description: "Café", quantity: 1, unitPrice: 10, subtotal: 10 }] };
+  addTicket("ok", ticket);
+  addTicket("descartado", { ...ticket, total: 999 }, "discarded");
+  addTicket("fallido", { ...ticket, total: 888 }, "failed");
+
+  expect(query("total")).toEqual([{ value: 10 }]);
 });
