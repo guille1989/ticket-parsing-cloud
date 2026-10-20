@@ -27,6 +27,10 @@ function toPublicTicket(item: TicketRecord) {
     // vino del fallback de Bedrock, no del parser determinístico, para no
     // confiar en el monto de la misma forma hasta que se revise a mano.
     parsedBy: item.parsedBy,
+    // Quién revisó el ticket y qué decidió (ver `review/handler.ts`).
+    reviewedBy: item.reviewedBy,
+    reviewedAt: item.reviewedAt,
+    reviewDecision: item.reviewDecision,
   };
 }
 

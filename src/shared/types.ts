@@ -93,6 +93,17 @@ export interface TicketRecord {
    * tickets resueltos por ese camino en vez de confiar en todos por igual.
    */
   parsedBy?: "deterministic" | "bedrock-fallback" | "bedrock-vision";
+  /**
+   * Auditoría de la revisión humana (`review/handler.ts`): quién confirmó o
+   * descartó el ticket, cuándo y qué decidió. Se escriben en el mismo
+   * UpdateItem que cambia `status`, así que nunca hay una decisión sin autor ni
+   * un autor sin decisión. `reviewedBy` es el email del usuario de Cognito (o su
+   * `sub` si el token no lo trae). Ausentes en tickets que nadie revisó. Un
+   * reproceso posterior del ticket no los borra: miran la última revisión humana.
+   */
+  reviewedBy?: string;
+  reviewedAt?: string;
+  reviewDecision?: "confirmed" | "discarded";
 }
 
 /**

@@ -168,3 +168,19 @@ test("el cursor recibido se pasa como ExclusiveStartKey", async () => {
 
   expect(mockDdbSend.mock.calls[0][0].input.ExclusiveStartKey).toEqual(key);
 });
+
+test("un ticket revisado expone quién, cuándo y qué decidió", async () => {
+  mockDdbSend.mockResolvedValue({
+    Items: [
+      {
+        pk: "TENANT#t1", sk: "TICKET#2026-07-29T12:00:00.000Z#tk3", tenantId: "t1", ticketId: "tk3", port: "COM3",
+        capturedAt: "2026-07-29T12:00:00.000Z", status: "discarded", rawS3Key: "k",
+        reviewedBy: "dueno@negocio.com", reviewedAt: "2026-07-30T09:00:00.000Z", reviewDecision: "discarded",
+      },
+    ],
+  });
+
+  const body = JSON.parse((await handler(eventWith("t1"))).body);
+
+  expect(body.tickets[0]).toMatchObject({ reviewedBy: "dueno@negocio.com", reviewedAt: "2026-07-30T09:00:00.000Z", reviewDecision: "discarded" });
+});

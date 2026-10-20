@@ -22,7 +22,7 @@ function event(body: unknown, tenantId = "t1", ticketId = TICKET_ID): APIGateway
   return {
     body: body === undefined ? null : JSON.stringify(body),
     pathParameters: { ticketId },
-    requestContext: { authorizer: { claims: { "custom:tenantId": tenantId } } },
+    requestContext: { authorizer: { claims: { "custom:tenantId": tenantId, sub: "sub-123", email: "dueno@negocio.com" } } },
   } as unknown as APIGatewayProxyWithCognitoAuthorizerEvent;
 }
 
@@ -106,4 +106,57 @@ test("ticket que no está en needs_review (ConditionalCheckFailedException): 409
 test("un error de DynamoDB que NO es de condición se propaga", async () => {
   mockDdbSend.mockRejectedValue(new Error("DynamoDB no disponible"));
   await expect(handler(event({ action: "confirm", capturedAt: CAPTURED_AT }))).rejects.toThrow("DynamoDB no disponible");
+});
+
+describe("auditoría de la revisión", () => {
+  test("confirm: guarda quién, cuándo y la decisión en el mismo UpdateItem que cambia el estado", async () => {
+    mockDdbSend.mockResolvedValue({ Attributes: NEEDS_REVIEW_TICKET });
+    const before = Date.now();
+
+    await handler(event({ action: "confirm", capturedAt: CAPTURED_AT }));
+
+    expect(mockDdbSend).toHaveBeenCalledTimes(1); // una sola escritura: estado y auditoría juntos
+    const input = mockDdbSend.mock.calls[0][0].input;
+    expect(input.UpdateExpression).toContain("reviewedBy = :reviewedBy");
+    expect(input.UpdateExpression).toContain("reviewDecision = :reviewDecision");
+    expect(input.ExpressionAttributeValues[":newStatus"]).toBe("parsed");
+    expect(input.ExpressionAttributeValues[":reviewedBy"]).toBe("dueno@negocio.com");
+    expect(input.ExpressionAttributeValues[":reviewDecision"]).toBe("confirmed");
+    const reviewedAt = Date.parse(input.ExpressionAttributeValues[":reviewedAt"]);
+    expect(reviewedAt).toBeGreaterThanOrEqual(before);
+    expect(reviewedAt).toBeLessThanOrEqual(Date.now());
+  });
+
+  test("discard: la decisión queda como discarded junto al autor", async () => {
+    mockDdbSend.mockResolvedValue({ Attributes: { ...NEEDS_REVIEW_TICKET, status: "discarded" } });
+
+    await handler(event({ action: "discard", capturedAt: CAPTURED_AT }));
+
+    const values = mockDdbSend.mock.calls[0][0].input.ExpressionAttributeValues;
+    expect(values[":newStatus"]).toBe("discarded");
+    expect(values[":reviewDecision"]).toBe("discarded");
+    expect(values[":reviewedBy"]).toBe("dueno@negocio.com");
+  });
+
+  test("sin email en el token usa el sub; sin ninguno de los dos no revisa", async () => {
+    mockDdbSend.mockResolvedValue({ Attributes: NEEDS_REVIEW_TICKET });
+    const onlySub = event({ action: "confirm", capturedAt: CAPTURED_AT });
+    (onlySub.requestContext.authorizer as any).claims = { "custom:tenantId": "t1", sub: "sub-123" };
+    await handler(onlySub);
+    expect(mockDdbSend.mock.calls[0][0].input.ExpressionAttributeValues[":reviewedBy"]).toBe("sub-123");
+
+    mockDdbSend.mockReset();
+    const anonymous = event({ action: "confirm", capturedAt: CAPTURED_AT });
+    (anonymous.requestContext.authorizer as any).claims = { "custom:tenantId": "t1" };
+    const result = await handler(anonymous);
+    expect(result.statusCode).toBe(403);
+    expect(mockDdbSend).not.toHaveBeenCalled(); // una revisión sin autor no se registra
+  });
+
+  test("una revisión rechazada por condición (409) no deja auditoría", async () => {
+    mockDdbSend.mockRejectedValue({ name: "ConditionalCheckFailedException" });
+    const result = await handler(event({ action: "discard", capturedAt: CAPTURED_AT }));
+    expect(result.statusCode).toBe(409);
+    expect(mockDdbSend).toHaveBeenCalledTimes(1);
+  });
 });

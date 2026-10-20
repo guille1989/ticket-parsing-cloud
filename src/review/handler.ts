@@ -30,6 +30,16 @@ function parseBody(raw: string | null): ReviewBody | undefined {
   }
 }
 
+/** Email del usuario de Cognito (o su `sub`); `undefined` si el token no trae ninguno. */
+function reviewerFromEvent(event: APIGatewayProxyWithCognitoAuthorizerEvent): string | undefined {
+  const claims = event.requestContext?.authorizer?.claims ?? {};
+  for (const claim of ["email", "sub"]) {
+    const value = claims[claim];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
+}
+
 /**
  * Confirma o descarta un ticket en `needs_review` — la única forma en que
  * un ticket sale de ese estado hoy (antes no existía ningún mecanismo, se
@@ -55,7 +65,11 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
     return jsonResponse(400, { error: 'body inválido, se esperaba {"action":"confirm"|"discard","capturedAt":"<ISO-8601>"}' });
   }
 
+  const reviewer = reviewerFromEvent(event);
+  if (!reviewer) return jsonResponse(403, { error: "no se pudo identificar al usuario que revisa" });
+
   const newStatus = body.action === "confirm" ? "parsed" : "discarded";
+  const reviewDecision = body.action === "confirm" ? "confirmed" : "discarded";
   const gsiKeys = ticketStatusGsiKey(tenantId, newStatus, body.capturedAt);
 
   let updated: TicketRecord;
@@ -67,13 +81,19 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
         // Solo se puede confirmar/descartar algo que está en needs_review
         // — ni un ticket ya revisado (doble click), ni uno pending/failed.
         ConditionExpression: "#status = :needsReview",
-        UpdateExpression: "SET #status = :newStatus, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        // El estado y su auditoría (quién, cuándo, qué decidió) van en la misma
+        // escritura: o quedan los dos o ninguno.
+        UpdateExpression:
+          "SET #status = :newStatus, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk, reviewedBy = :reviewedBy, reviewedAt = :reviewedAt, reviewDecision = :reviewDecision",
         ExpressionAttributeNames: { "#status": "status" },
         ExpressionAttributeValues: {
           ":needsReview": "needs_review",
           ":newStatus": newStatus,
           ":gsi1pk": gsiKeys.gsi1pk,
           ":gsi1sk": gsiKeys.gsi1sk,
+          ":reviewedBy": reviewer,
+          ":reviewedAt": new Date().toISOString(),
+          ":reviewDecision": reviewDecision,
         },
         ReturnValues: "ALL_NEW",
       }),

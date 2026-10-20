@@ -41,6 +41,7 @@ async function main(): Promise<void> {
       console.log(`  items: ${JSON.stringify(t.items)}`);
     }
     if (t.failReason) console.log(`  failReason: ${t.failReason}`);
+    if (t.reviewedAt) console.log(`  revisado: ${t.reviewDecision} por ${t.reviewedBy} el ${t.reviewedAt}`);
     console.log();
   }
 }
