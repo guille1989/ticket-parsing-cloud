@@ -4,26 +4,14 @@ import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent }
 import { resolveActiveTenantIdFromEvent, resolveUserIdFromEvent } from "../shared/auth.js";
 import { CONVERSATIONS_TABLE, conversationKey, ddb } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
+import { conversationIdFromEvent } from "./conversationIdParam.js";
 import {
   CONVERSATION_RETENTION_DAYS,
+  deriveTitle,
   isValidConversationId,
   MAX_BODY_BYTES,
   validateConversationBody,
 } from "./conversationStore.js";
-
-/**
- * El id lleva `:` (ISO) y llegan codificados (`%3A`), igual que el reportId: API Gateway REST
- * entrega los path parameters sin decodificar.
- */
-function conversationIdFromEvent(event: APIGatewayProxyWithCognitoAuthorizerEvent): string | undefined {
-  const raw = event.pathParameters?.conversationId;
-  if (!raw) return undefined;
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
 
 /** Crea o reemplaza la conversación (idempotente: el cliente manda el hilo completo cada vez). */
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
@@ -60,10 +48,12 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
       TableName: CONVERSATIONS_TABLE,
       Key: conversationKey(tenantId, userId, conversationId),
       UpdateExpression:
-        "SET conversationId = :id, messages = :messages, history = :history, updatedAt = :now, createdAt = if_not_exists(createdAt, :now), #ttl = :ttl",
+        "SET conversationId = :id, title = if_not_exists(title, :title), messages = :messages, history = :history, updatedAt = :now, createdAt = if_not_exists(createdAt, :now), #ttl = :ttl",
       ExpressionAttributeNames: { "#ttl": "ttl" },
       ExpressionAttributeValues: {
         ":id": conversationId,
+        // Se fija con el primer guardado: aunque el cliente recorte mensajes viejos, el título no cambia.
+        ":title": deriveTitle(validation.messages),
         ":messages": validation.messages,
         ":history": validation.history,
         ":now": nowIso,

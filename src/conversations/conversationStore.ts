@@ -30,12 +30,23 @@ export interface StoredConversationItem {
   pk: string;
   sk: string;
   conversationId: string;
+  /** Primer mensaje del usuario, cortado: es lo que muestra el historial. */
+  title: string;
   messages: StoredMessage[];
   history: StoredHistoryTurn[];
   createdAt: string;
   updatedAt: string;
   /** Epoch en segundos: atributo TTL de DynamoDB. */
   ttl: number;
+}
+
+export const MAX_TITLE_LENGTH = 60;
+
+/** Título del historial: el primer mensaje del usuario, con espacios colapsados y cortado. */
+export function deriveTitle(messages: StoredMessage[]): string {
+  const first = messages.find((m) => m.role === "user")?.text ?? "";
+  const text = first.replace(/\s+/g, " ").trim();
+  return text.length > MAX_TITLE_LENGTH ? `${text.slice(0, MAX_TITLE_LENGTH).trimEnd()}…` : text || "Conversación";
 }
 
 export function isValidConversationId(value: unknown): value is string {

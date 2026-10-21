@@ -921,24 +921,24 @@ export class TicketParsingCloudStack extends cdk.Stack {
     reportsTable.grantReadData(reportsGetFn);
     reportsTable.grantWriteData(reportsDeleteFn);
 
-    // ---- Conversación del asistente: leer la actual / guardar ----
+    // ---- Conversaciones del asistente: historial (listar / abrir / guardar / borrar) ----
     const conversationsEnv = { CONVERSATIONS_TABLE: conversationsTable.tableName };
-    const conversationGetFn = new nodejs.NodejsFunction(this, "ConversationGetFunction", {
-      entry: "src/conversations/getCurrentHandler.ts",
-      runtime: nodeRuntime,
-      bundling: sharedBundling,
-      timeout: cdk.Duration.seconds(10),
-      environment: conversationsEnv,
-    });
-    const conversationSaveFn = new nodejs.NodejsFunction(this, "ConversationSaveFunction", {
-      entry: "src/conversations/saveHandler.ts",
-      runtime: nodeRuntime,
-      bundling: sharedBundling,
-      timeout: cdk.Duration.seconds(10),
-      environment: conversationsEnv,
-    });
+    const conversationFn = (id: string, entry: string) =>
+      new nodejs.NodejsFunction(this, id, {
+        entry,
+        runtime: nodeRuntime,
+        bundling: sharedBundling,
+        timeout: cdk.Duration.seconds(10),
+        environment: conversationsEnv,
+      });
+    const conversationsListFn = conversationFn("ConversationsListFunction", "src/conversations/listHandler.ts");
+    const conversationGetFn = conversationFn("ConversationGetFunction", "src/conversations/getHandler.ts");
+    const conversationSaveFn = conversationFn("ConversationSaveFunction", "src/conversations/saveHandler.ts");
+    const conversationDeleteFn = conversationFn("ConversationDeleteFunction", "src/conversations/deleteHandler.ts");
+    conversationsTable.grantReadData(conversationsListFn);
     conversationsTable.grantReadData(conversationGetFn);
     conversationsTable.grantWriteData(conversationSaveFn);
+    conversationsTable.grantWriteData(conversationDeleteFn);
 
     agentsTable.grantReadData(ingestFn);
     agentsTable.grantReadWriteData(activateFn);
@@ -957,7 +957,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
       agentsListFn, agentsCodesFn, agentsUpdateLocationFn,
       meGetFn, onboardingUpdateFn, assistantAskFn,
       reportsListFn, reportsGetFn, reportsDeleteFn,
-      conversationGetFn, conversationSaveFn,
+      conversationsListFn, conversationGetFn, conversationSaveFn, conversationDeleteFn,
     ]) {
       fn.addEnvironment("TENANTS_TABLE", tenantsTable.tableName);
       tenantsTable.grant(fn, "dynamodb:GetItem");
@@ -1030,9 +1030,12 @@ export class TicketParsingCloudStack extends cdk.Stack {
     // /tickets GET y /widgets). Ver "Asistente de datos (chat)" más arriba.
     const assistant = api.root.addResource("assistant");
     assistant.addResource("ask").addMethod("POST", new apigateway.LambdaIntegration(assistantAskFn), dashboardAuth);
-    const conversation = assistant.addResource("conversation");
-    conversation.addMethod("GET", new apigateway.LambdaIntegration(conversationGetFn), dashboardAuth);
-    conversation.addResource("{conversationId}").addMethod("PUT", new apigateway.LambdaIntegration(conversationSaveFn), dashboardAuth);
+    const conversations = assistant.addResource("conversations");
+    conversations.addMethod("GET", new apigateway.LambdaIntegration(conversationsListFn), dashboardAuth);
+    const conversationById = conversations.addResource("{conversationId}");
+    conversationById.addMethod("GET", new apigateway.LambdaIntegration(conversationGetFn), dashboardAuth);
+    conversationById.addMethod("PUT", new apigateway.LambdaIntegration(conversationSaveFn), dashboardAuth);
+    conversationById.addMethod("DELETE", new apigateway.LambdaIntegration(conversationDeleteFn), dashboardAuth);
 
     const reports = api.root.addResource("reports");
     reports.addMethod("GET", new apigateway.LambdaIntegration(reportsListFn), dashboardAuth);
