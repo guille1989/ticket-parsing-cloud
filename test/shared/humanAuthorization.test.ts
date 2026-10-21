@@ -23,6 +23,8 @@ import { handler as assistant } from "../../src/assistant/askHandler";
 import { handler as reportsList } from "../../src/reports/listHandler";
 import { handler as reportsGet } from "../../src/reports/getHandler";
 import { handler as reportsDelete } from "../../src/reports/deleteHandler";
+import { handler as conversationGet } from "../../src/conversations/getCurrentHandler";
+import { handler as conversationSave } from "../../src/conversations/saveHandler";
 
 type HumanHandler = (event: APIGatewayProxyWithCognitoAuthorizerEvent) => Promise<APIGatewayProxyResult>;
 const routes: Array<[string, HumanHandler]> = [
@@ -32,6 +34,7 @@ const routes: Array<[string, HumanHandler]> = [
   ["GET /agents", agentsList], ["GET /activation-codes", agentsCodes], ["PATCH /agents/{agentId}/location", agentsLocation],
   ["GET /me", me], ["PATCH /me/onboarding", onboarding], ["POST /assistant/ask", assistant],
   ["GET /reports", reportsList], ["GET /reports/{reportId}", reportsGet], ["DELETE /reports/{reportId}", reportsDelete],
+  ["GET /assistant/conversation", conversationGet], ["PUT /assistant/conversation/{conversationId}", conversationSave],
 ];
 
 function eventWith(tenantId?: string): APIGatewayProxyWithCognitoAuthorizerEvent {

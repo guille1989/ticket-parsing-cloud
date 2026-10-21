@@ -135,6 +135,15 @@ export class TicketParsingCloudStack extends cdk.Stack {
       timeToLiveAttribute: "ttl",
     });
 
+    // Conversations: el hilo del asistente de datos (vista IA) para sobrevivir a un refresh
+    // o cambiar de dispositivo. PK = TENANT#<id>, SK = CONV#<userId>#<conversationId>; se
+    // borran solas a los 30 días con TTL (ver `conversations/conversationStore.ts`).
+    const conversationsTable = new dynamodb.TableV2(this, "ConversationsTable", {
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: "ttl",
+    });
+
     // SignupUsage: rate limit por IP para POST /signup (público, sin
     // api-key ni Cognito) — mismo patrón que AssistantUsage, PK =
     // IP#<ip>#WINDOW#HOUR#<bucket>. Ver `signup/rateLimit.ts`.
@@ -912,6 +921,25 @@ export class TicketParsingCloudStack extends cdk.Stack {
     reportsTable.grantReadData(reportsGetFn);
     reportsTable.grantWriteData(reportsDeleteFn);
 
+    // ---- Conversación del asistente: leer la actual / guardar ----
+    const conversationsEnv = { CONVERSATIONS_TABLE: conversationsTable.tableName };
+    const conversationGetFn = new nodejs.NodejsFunction(this, "ConversationGetFunction", {
+      entry: "src/conversations/getCurrentHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: conversationsEnv,
+    });
+    const conversationSaveFn = new nodejs.NodejsFunction(this, "ConversationSaveFunction", {
+      entry: "src/conversations/saveHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: conversationsEnv,
+    });
+    conversationsTable.grantReadData(conversationGetFn);
+    conversationsTable.grantWriteData(conversationSaveFn);
+
     agentsTable.grantReadData(ingestFn);
     agentsTable.grantReadWriteData(activateFn);
     activationCodesTable.grantReadWriteData(activateFn);
@@ -929,6 +957,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
       agentsListFn, agentsCodesFn, agentsUpdateLocationFn,
       meGetFn, onboardingUpdateFn, assistantAskFn,
       reportsListFn, reportsGetFn, reportsDeleteFn,
+      conversationGetFn, conversationSaveFn,
     ]) {
       fn.addEnvironment("TENANTS_TABLE", tenantsTable.tableName);
       tenantsTable.grant(fn, "dynamodb:GetItem");
@@ -1001,6 +1030,9 @@ export class TicketParsingCloudStack extends cdk.Stack {
     // /tickets GET y /widgets). Ver "Asistente de datos (chat)" más arriba.
     const assistant = api.root.addResource("assistant");
     assistant.addResource("ask").addMethod("POST", new apigateway.LambdaIntegration(assistantAskFn), dashboardAuth);
+    const conversation = assistant.addResource("conversation");
+    conversation.addMethod("GET", new apigateway.LambdaIntegration(conversationGetFn), dashboardAuth);
+    conversation.addResource("{conversationId}").addMethod("PUT", new apigateway.LambdaIntegration(conversationSaveFn), dashboardAuth);
 
     const reports = api.root.addResource("reports");
     reports.addMethod("GET", new apigateway.LambdaIntegration(reportsListFn), dashboardAuth);
@@ -1020,6 +1052,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
     new cdk.CfnOutput(this, "AgentsTableName", { value: agentsTable.tableName });
     new cdk.CfnOutput(this, "ActivationCodesTableName", { value: activationCodesTable.tableName });
     new cdk.CfnOutput(this, "ReportsTableName", { value: reportsTable.tableName });
+    new cdk.CfnOutput(this, "ConversationsTableName", { value: conversationsTable.tableName });
     new cdk.CfnOutput(this, "AssistantUsageTableName", { value: assistantUsageTable.tableName });
     new cdk.CfnOutput(this, "RawTicketsBucketName", { value: rawTicketsBucket.bucketName });
     new cdk.CfnOutput(this, "AnalyticsBucketName", { value: analyticsBucket.bucketName });

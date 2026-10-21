@@ -8,9 +8,9 @@ test("el stack sintetiza con las piezas clave del pipeline multi-tenant", () => 
   const stack = new TicketParsingCloudStack(app, "TestStack");
   const template = Template.fromStack(stack);
 
-  template.resourceCountIs("AWS::DynamoDB::GlobalTable", 8); // Tickets + Tenants + Widgets + Agents + ActivationCodes + Reports + AssistantUsage + SignupUsage
+  template.resourceCountIs("AWS::DynamoDB::GlobalTable", 9); // Tickets + Tenants + Widgets + Agents + ActivationCodes + Reports + Conversations + AssistantUsage + SignupUsage
   template.resourceCountIs("AWS::SQS::Queue", 2); // DLQ del parseo + DLQ de la sincronización analítica — el trigger es el Stream, no una cola
-  template.resourceCountIs("AWS::Lambda::Function", 24); // pipeline + reportes guardados (3) + + dashboard + agentes + auth + perfil/onboarding + revisión de tickets + imagen de ticket
+  template.resourceCountIs("AWS::Lambda::Function", 26); // pipeline + reportes guardados (3) + conversación del asistente (2) + dashboard + agentes + auth + perfil/onboarding + revisión de tickets + imagen de ticket
   template.resourceCountIs("AWS::Lambda::EventSourceMapping", 2); // parser + sincronización analítica, ambos suscriptos al Stream de Tickets
   template.resourceCountIs("AWS::Cognito::UserPool", 1);
   template.resourceCountIs("AWS::Cognito::UserPoolClient", 1);
@@ -85,7 +85,7 @@ test("cada ruta Cognito puede verificar el estado actual del tenant con GetItem"
   const humanMethods = Object.values(resources).filter((resource) =>
     resource.Type === "AWS::ApiGateway::Method" && resource.Properties?.AuthorizationType === "COGNITO_USER_POOLS",
   );
-  expect(humanMethods).toHaveLength(17);
+  expect(humanMethods).toHaveLength(19);
   for (const method of humanMethods) {
     const uriParts = method.Properties.Integration.Uri["Fn::Join"][1];
     const functionId = uriParts.find((part: any) => part?.["Fn::GetAtt"]?.[1] === "Arn")?.["Fn::GetAtt"][0];

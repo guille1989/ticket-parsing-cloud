@@ -9,6 +9,7 @@ export const WIDGETS_TABLE = process.env.WIDGETS_TABLE ?? "";
 export const AGENTS_TABLE = process.env.AGENTS_TABLE ?? "";
 export const ACTIVATION_CODES_TABLE = process.env.ACTIVATION_CODES_TABLE ?? "";
 export const REPORTS_TABLE = process.env.REPORTS_TABLE ?? "";
+export const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE ?? "";
 export const ASSISTANT_USAGE_TABLE = process.env.ASSISTANT_USAGE_TABLE ?? "";
 export const SIGNUP_USAGE_TABLE = process.env.SIGNUP_USAGE_TABLE ?? "";
 export const RAW_BUCKET = process.env.RAW_BUCKET ?? "";
@@ -61,6 +62,22 @@ export function reportKey(tenantId: string, reportId: string) {
     pk: `TENANT#${tenantId}`,
     sk: `REPORT#${reportId}`,
   };
+}
+
+/**
+ * Clave de la tabla Conversations: PK = TENANT#<tenantId>, SK = CONV#<userId>#<conversationId>.
+ * El userId (sub de Cognito) separa las conversaciones de cada persona del negocio; el
+ * conversationId lleva el ISO de creación + sufijo, así que la última creada es la última por SK.
+ */
+export function conversationKey(tenantId: string, userId: string, conversationId: string) {
+  return {
+    pk: `TENANT#${tenantId}`,
+    sk: `${conversationSkPrefix(userId)}${conversationId}`,
+  };
+}
+
+export function conversationSkPrefix(userId: string) {
+  return `CONV#${userId}#`;
 }
 
 /** Clave de la tabla Widgets: PK = TENANT#<tenantId>, SK = WIDGET#<widgetId>. */

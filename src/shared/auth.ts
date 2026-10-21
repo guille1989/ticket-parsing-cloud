@@ -46,6 +46,12 @@ export async function resolveActiveTenantFromEvent(
   }
 }
 
+/** Identidad de la persona logueada (claim `sub` del JWT, ya validado por el authorizer de Cognito). */
+export function resolveUserIdFromEvent(event: APIGatewayProxyWithCognitoAuthorizerEvent): string | undefined {
+  const sub = event.requestContext?.authorizer?.claims?.sub;
+  return typeof sub === "string" && sub.trim() ? sub : undefined;
+}
+
 export async function resolveActiveTenantIdFromEvent(
   event: APIGatewayProxyWithCognitoAuthorizerEvent,
 ): Promise<string | undefined> {
