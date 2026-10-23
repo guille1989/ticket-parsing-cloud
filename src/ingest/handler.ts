@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand } from "@aws-sdk/lib-dynamodb";
+import { unmarshall } from "@aws-sdk/util-dynamodb";
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 
 import { decodeXmlBytes, readUblIdentity, SALE_TYPE_CODES } from "../parsing/ubl.js";
@@ -108,13 +109,6 @@ const DEDUP_WINDOW_SECONDS = 5 * 60;
  * se reutiliza, así que el marcador se conserva mucho más.
  */
 const DEDUP_UBL_WINDOW_SECONDS = 400 * 24 * 60 * 60;
-
-async function dedupMarkerBelongsTo(tenantId: string, hash: string, ticketId: string): Promise<boolean> {
-  const { Item } = await ddb.send(
-    new GetCommand({ TableName: TICKETS_TABLE, Key: dedupKey(tenantId, hash), ConsistentRead: true }),
-  );
-  return Item?.ticketId === ticketId;
-}
 
 type BodyValidation ={ ok: true; value: RawTicketBody } | { ok: false; error: string };
 
@@ -261,6 +255,10 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
           ttl: Math.floor(Date.now() / 1000) + dedupTtlSeconds,
         },
         ConditionExpression: "attribute_not_exists(pk)",
+        // Si el marcador ya existe, DynamoDB devuelve su contenido dentro del propio
+        // error: así se sabe de quién es sin una lectura aparte (este Lambda solo
+        // tiene permiso de escritura sobre la tabla).
+        ReturnValuesOnConditionCheckFailure: "ALL_OLD",
       }),
     );
   } catch (err) {
@@ -272,7 +270,8 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // ticketId) chocaría con su propio marcador. Si el marcador es de este mismo
     // ticketId es un reintento, no un duplicado, y se sigue — S3 y el ticket
     // son idempotentes.
-    const isOwnRetry = rawKind === "ubl" && (await dedupMarkerBelongsTo(tenantId, dedupHash, ticketId));
+    const existing = err.Item ? (unmarshall(err.Item) as { ticketId?: string }) : undefined;
+    const isOwnRetry = rawKind === "ubl" && existing?.ticketId === ticketId;
     if (!isOwnRetry) {
       console.log(
         `[ingest] ticket duplicado descartado (mismo contenido en los últimos ${dedupTtlSeconds}s): ` +

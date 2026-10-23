@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
+import { marshall } from "@aws-sdk/util-dynamodb";
 import type { APIGatewayProxyEvent } from "aws-lambda";
 
 const mockDdbSend = jest.fn();
@@ -256,6 +257,15 @@ test("tenant bloqueado (resuelto por api-key compartida del tenant): 403", async
   expect(mockS3Send).not.toHaveBeenCalled();
 });
 
+// Como lo devuelve DynamoDB ante una escritura condicional fallida con ALL_OLD: el ítem existente va en el error.
+function markerConflict(existingTicketId: string): ConditionalCheckFailedException {
+  return new ConditionalCheckFailedException({
+    message: "ya existe",
+    $metadata: {},
+    Item: marshall({ pk: "TENANT#t1", sk: "DEDUP#x", ticketId: existingTicketId }) as never,
+  });
+}
+
 describe("factura electrónica (rawEncoding ubl)", () => {
   const FIXTURES = join(process.cwd(), "fixtures", "ubl");
   const xmlBody = (file: string) => {
@@ -301,13 +311,48 @@ describe("factura electrónica (rawEncoding ubl)", () => {
 
   test("la misma factura por segunda vez (otra copia): 202 duplicate, sin tocar S3", async () => {
     mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
-    mockDdbSend
-      .mockRejectedValueOnce(new ConditionalCheckFailedException({ message: "ya existe", $metadata: {} }))
-      .mockResolvedValueOnce({ Item: { ticketId: "otro-ticket-id" } });
+    mockDdbSend.mockRejectedValueOnce(markerConflict("otro-ticket-id"));
 
     const result = await handler(eventWith("key1", xmlBody("fe-firmada-38267.xml")));
 
     expect(result.statusCode).toBe(202);
+    expect(JSON.parse(result.body)).toEqual({ ticketId: VALID_BODY.ticketId, duplicate: true });
+    expect(mockS3Send).not.toHaveBeenCalled();
+    // Una sola llamada a DynamoDB, y es una escritura: este Lambda no puede leer la tabla.
+    expect(mockDdbSend).toHaveBeenCalledTimes(1);
+  });
+
+  test("regresión: nunca lee la tabla de tickets (el rol de ingest solo puede escribir)", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend.mockRejectedValueOnce(markerConflict("otro-ticket-id")).mockResolvedValue({});
+
+    await handler(eventWith("key1", xmlBody("fe-firmada-38267.xml")));
+    mockDdbSend.mockClear();
+    mockDdbSend.mockRejectedValueOnce(markerConflict(VALID_BODY.ticketId)).mockResolvedValue({});
+    await handler(eventWith("key1", xmlBody("fe-erp-38267.xml")));
+
+    for (const call of mockDdbSend.mock.calls) {
+      expect(call[0].constructor.name).toBe("PutCommand");
+    }
+  });
+
+  test("el marcador se escribe pidiendo el ítem existente si hay conflicto", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend.mockResolvedValue({});
+
+    await handler(eventWith("key1", xmlBody("fe-erp-38267.xml")));
+
+    expect(mockDdbSend.mock.calls[0][0].input.ReturnValuesOnConditionCheckFailure).toBe("ALL_OLD");
+  });
+
+  test("conflicto sin ítem en el error: se trata como duplicado, no como reintento propio", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockDdbSend.mockRejectedValueOnce(new ConditionalCheckFailedException({ message: "ya existe", $metadata: {} }));
+
+    const result = await handler(eventWith("key1", xmlBody("fe-erp-38267.xml")));
+
     expect(JSON.parse(result.body)).toEqual({ ticketId: VALID_BODY.ticketId, duplicate: true });
     expect(mockS3Send).not.toHaveBeenCalled();
   });
@@ -315,10 +360,7 @@ describe("factura electrónica (rawEncoding ubl)", () => {
   test("reintento del agente (mismo ticketId) tras un fallo de S3: no lo toma por duplicado", async () => {
     mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
     mockS3Send.mockResolvedValue({});
-    mockDdbSend
-      .mockRejectedValueOnce(new ConditionalCheckFailedException({ message: "ya existe", $metadata: {} }))
-      .mockResolvedValueOnce({ Item: { ticketId: VALID_BODY.ticketId } })
-      .mockResolvedValueOnce({});
+    mockDdbSend.mockRejectedValueOnce(markerConflict(VALID_BODY.ticketId)).mockResolvedValueOnce({});
 
     const result = await handler(eventWith("key1", xmlBody("fe-erp-38267.xml")));
 
