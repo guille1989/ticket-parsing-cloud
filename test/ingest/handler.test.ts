@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import type { APIGatewayProxyEvent } from "aws-lambda";
 
@@ -251,4 +254,99 @@ test("tenant bloqueado (resuelto por api-key compartida del tenant): 403", async
   expect(result.statusCode).toBe(403);
   expect(JSON.parse(result.body).error).toContain("bloqueado");
   expect(mockS3Send).not.toHaveBeenCalled();
+});
+
+describe("factura electrónica (rawEncoding ubl)", () => {
+  const FIXTURES = join(process.cwd(), "fixtures", "ubl");
+  const xmlBody = (file: string) => {
+    const { rawText: _drop, ...bodyNoText } = VALID_BODY;
+    return {
+      ...bodyNoText,
+      port: "Carpeta UNFE",
+      rawBase64: readFileSync(join(FIXTURES, file)).toString("base64"),
+      rawEncoding: "ubl",
+    };
+  };
+
+  test("venta: guarda el XML como .xml, marca rawKind ubl y deduplica por número + emisor", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend.mockResolvedValue({});
+
+    const result = await handler(eventWith("key1", xmlBody("fe-erp-38267.xml")));
+
+    expect(result.statusCode).toBe(202);
+    const s3Call = mockS3Send.mock.calls[0][0].input;
+    expect(s3Call.Key).toBe(`tenants/t1/${VALID_BODY.ticketId}.xml`);
+    expect(s3Call.ContentType).toBe("application/xml");
+    expect(mockDdbSend.mock.calls[1][0].input.Item.rawKind).toBe("ubl");
+
+    // El marcador no depende de los bytes: la copia firmada es la misma factura.
+    const hashErp = mockDdbSend.mock.calls[0][0].input.Item.sk;
+    mockDdbSend.mockClear();
+    await handler(eventWith("key1", xmlBody("fe-firmada-38267.xml")));
+    expect(mockDdbSend.mock.calls[0][0].input.Item.sk).toBe(hashErp);
+  });
+
+  test("el marcador de una factura dura mucho más que los 5 minutos de un ticket de impresora", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend.mockResolvedValue({});
+
+    await handler(eventWith("key1", xmlBody("fe-erp-38267.xml")));
+
+    const ttl = mockDdbSend.mock.calls[0][0].input.Item.ttl as number;
+    expect(ttl - Math.floor(Date.now() / 1000)).toBeGreaterThan(300 * 24 * 60 * 60);
+  });
+
+  test("la misma factura por segunda vez (otra copia): 202 duplicate, sin tocar S3", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockDdbSend
+      .mockRejectedValueOnce(new ConditionalCheckFailedException({ message: "ya existe", $metadata: {} }))
+      .mockResolvedValueOnce({ Item: { ticketId: "otro-ticket-id" } });
+
+    const result = await handler(eventWith("key1", xmlBody("fe-firmada-38267.xml")));
+
+    expect(result.statusCode).toBe(202);
+    expect(JSON.parse(result.body)).toEqual({ ticketId: VALID_BODY.ticketId, duplicate: true });
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
+
+  test("reintento del agente (mismo ticketId) tras un fallo de S3: no lo toma por duplicado", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend
+      .mockRejectedValueOnce(new ConditionalCheckFailedException({ message: "ya existe", $metadata: {} }))
+      .mockResolvedValueOnce({ Item: { ticketId: VALID_BODY.ticketId } })
+      .mockResolvedValueOnce({});
+
+    const result = await handler(eventWith("key1", xmlBody("fe-erp-38267.xml")));
+
+    expect(result.statusCode).toBe(202);
+    expect(JSON.parse(result.body)).toEqual({ ticketId: VALID_BODY.ticketId });
+    expect(mockS3Send).toHaveBeenCalledTimes(1);
+  });
+
+  test("documento soporte (una compra): se ignora con 202, no crea ticket ni toca S3", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+
+    const result = await handler(eventWith("key1", xmlBody("documento-soporte-DECS1.xml")));
+
+    expect(result.statusCode).toBe(202);
+    expect(JSON.parse(result.body)).toEqual({ ticketId: VALID_BODY.ticketId, ignored: true });
+    expect(mockS3Send).not.toHaveBeenCalled();
+    expect(mockDdbSend).not.toHaveBeenCalled();
+  });
+
+  test("XML que no se puede leer: 400", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    const { rawText: _drop, ...bodyNoText } = VALID_BODY;
+
+    const result = await handler(
+      eventWith("key1", { ...bodyNoText, rawBase64: Buffer.from("<Invoice><ID>").toString("base64"), rawEncoding: "ubl" }),
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
 });

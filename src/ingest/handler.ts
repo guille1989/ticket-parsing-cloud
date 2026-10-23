@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { PutCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 
+import { decodeXmlBytes, readUblIdentity, SALE_TYPE_CODES } from "../parsing/ubl.js";
 import { resolveAgentByApiKeyId } from "../shared/agent.js";
 import { ddb, dedupKey, RAW_BUCKET, ticketKey, ticketStatusGsiKey, TICKETS_TABLE } from "../shared/dynamo.js";
 import { getTenant, resolveTenantByApiKeyId } from "../shared/tenant.js";
@@ -45,7 +46,14 @@ const s3 = new S3Client({});
  */
 type RawTicketBody =
   | { ticketId: string; port: string; capturedAt: string; rawKind: "text"; rawContent: string }
-  | { ticketId: string; port: string; capturedAt: string; rawKind: "escpos"; rawContent: Buffer };
+  | { ticketId: string; port: string; capturedAt: string; rawKind: "escpos" | "ubl"; rawContent: Buffer };
+
+const RAW_EXTENSION = { text: "txt", escpos: "escpos", ubl: "xml" } as const;
+const RAW_CONTENT_TYPE = {
+  text: "text/plain; charset=utf-8",
+  escpos: "application/octet-stream",
+  ubl: "application/xml",
+} as const;
 
 // `ticketId` termina siendo parte de la key de S3 (`tenants/<id>/<ticketId>.<ext>`)
 // y del sort key de DynamoDB — exigir forma de UUID (lo que ya genera el
@@ -74,6 +82,9 @@ const MAX_RAW_TEXT_BYTES = 64 * 1024;
 // margen cualquier ticket real y queda por debajo del límite de payload de
 // API Gateway (10 MB). Va alineado con `SPOOL_MAX_JOB_BYTES` del agente.
 const MAX_RAW_ESCPOS_BYTES = 6 * 1024 * 1024;
+// El XML de una factura electrónica ronda los 10-20 KB (con firma digital); 1 MB
+// deja margen para una con muchas líneas sin aceptar cualquier cosa.
+const MAX_RAW_UBL_BYTES = 1024 * 1024;
 const MAX_RAW_BASE64_CHARS = Math.ceil(MAX_RAW_ESCPOS_BYTES / 3) * 4 + 4;
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 
@@ -89,7 +100,23 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
  */
 const DEDUP_WINDOW_SECONDS = 5 * 60;
 
-type BodyValidation = { ok: true; value: RawTicketBody } | { ok: false; error: string };
+/**
+ * Una factura electrónica se identifica por su número y su emisor, no por sus
+ * bytes: el ERP deja dos copias del mismo documento (la exportada y la
+ * firmada, con bytes distintos) que pueden aparecer con horas de diferencia, y
+ * la ventana de 5 minutos de arriba no las alcanzaría. Un número de factura no
+ * se reutiliza, así que el marcador se conserva mucho más.
+ */
+const DEDUP_UBL_WINDOW_SECONDS = 400 * 24 * 60 * 60;
+
+async function dedupMarkerBelongsTo(tenantId: string, hash: string, ticketId: string): Promise<boolean> {
+  const { Item } = await ddb.send(
+    new GetCommand({ TableName: TICKETS_TABLE, Key: dedupKey(tenantId, hash), ConsistentRead: true }),
+  );
+  return Item?.ticketId === ticketId;
+}
+
+type BodyValidation ={ ok: true; value: RawTicketBody } | { ok: false; error: string };
 
 export function validateBody(body: unknown): BodyValidation {
   if (!body || typeof body !== "object") {
@@ -124,9 +151,11 @@ export function validateBody(body: unknown): BodyValidation {
   const common = { ticketId: b.ticketId, port: b.port, capturedAt: b.capturedAt };
 
   if (hasBase64) {
-    if (b.rawEncoding !== "escpos") {
-      return { ok: false, error: 'rawEncoding inválido: con rawBase64 se espera "escpos"' };
+    if (b.rawEncoding !== "escpos" && b.rawEncoding !== "ubl") {
+      return { ok: false, error: 'rawEncoding inválido: con rawBase64 se espera "escpos" o "ubl"' };
     }
+    const rawKind = b.rawEncoding;
+    const maxBytes = rawKind === "ubl" ? MAX_RAW_UBL_BYTES : MAX_RAW_ESCPOS_BYTES;
     if (typeof b.rawBase64 !== "string" || b.rawBase64.length === 0) {
       return { ok: false, error: "rawBase64 inválido, se esperaba base64 no vacío" };
     }
@@ -137,10 +166,10 @@ export function validateBody(body: unknown): BodyValidation {
     if (rawContent.length === 0) {
       return { ok: false, error: "rawBase64 no decodifica a ningún byte" };
     }
-    if (rawContent.length > MAX_RAW_ESCPOS_BYTES) {
-      return { ok: false, error: `contenido demasiado grande (máx ${MAX_RAW_ESCPOS_BYTES} bytes, recibidos ${rawContent.length})` };
+    if (rawContent.length > maxBytes) {
+      return { ok: false, error: `contenido demasiado grande (máx ${maxBytes} bytes, recibidos ${rawContent.length})` };
     }
-    return { ok: true, value: { ...common, rawKind: "escpos", rawContent } };
+    return { ok: true, value: { ...common, rawKind, rawContent } };
   }
 
   if (typeof b.rawText !== "string" || b.rawText.length === 0) {
@@ -186,28 +215,50 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   // procesara el pedido) manda el mismo id, y la escritura condicional de
   // abajo lo detecta como duplicado en vez de crear un ticket nuevo.
   const { ticketId, rawKind } = validBody;
-  const rawS3Key =
-    rawKind === "escpos" ? `tenants/${tenantId}/${ticketId}.escpos` : `tenants/${tenantId}/${ticketId}.txt`;
+  const rawS3Key = `tenants/${tenantId}/${ticketId}.${RAW_EXTENSION[rawKind]}`;
 
-  // Hash sobre puerto + contenido crudo: dos tickets de un mismo puerto con
-  // bytes idénticos dentro de la ventana son, en la práctica, el mismo
-  // envío duplicado (ver comentario de DEDUP_WINDOW_SECONDS), no dos ventas
-  // que coincidieron. Escritura condicional = "primero en llegar gana";
-  // quien pierde la carrera se descarta sin tocar S3 ni la tabla de tickets.
-  const contentHash = createHash("sha256")
-    .update(validBody.port, "utf-8")
-    .update(rawKind === "escpos" ? (validBody.rawContent as Buffer) : Buffer.from(validBody.rawContent as string, "utf-8"))
-    .digest("hex");
+  // Una factura electrónica se identifica por número + emisor (ver
+  // DEDUP_UBL_WINDOW_SECONDS). Se lee acá, antes de escribir nada, para
+  // devolver un 400 claro si el XML no sirve y para no crear tickets de
+  // documentos que no son ventas (compras / documentos soporte, notas).
+  let dedupHash: string;
+  let dedupTtlSeconds = DEDUP_WINDOW_SECONDS;
+  if (rawKind === "ubl") {
+    const identity = readUblIdentity(decodeXmlBytes(validBody.rawContent as Buffer));
+    if ("error" in identity) {
+      return { statusCode: 400, body: JSON.stringify({ error: `XML de factura inválido: ${identity.error}` }) };
+    }
+    if (!identity.typeCode || !SALE_TYPE_CODES.has(identity.typeCode)) {
+      console.log(
+        `[ingest] documento ignorado, no es una venta: tenant=${tenantId} port=${validBody.port} ` +
+          `documento=${identity.documentNumber} tipo=${identity.typeCode ?? "ausente"}`,
+      );
+      return { statusCode: 202, body: JSON.stringify({ ticketId, ignored: true }) };
+    }
+    dedupHash = createHash("sha256").update(`ubl\n${identity.issuerId}\n${identity.documentNumber}`, "utf-8").digest("hex");
+    dedupTtlSeconds = DEDUP_UBL_WINDOW_SECONDS;
+  } else {
+    // Hash sobre puerto + contenido crudo: dos tickets de un mismo puerto con
+    // bytes idénticos dentro de la ventana son, en la práctica, el mismo
+    // envío duplicado (ver comentario de DEDUP_WINDOW_SECONDS), no dos ventas
+    // que coincidieron.
+    dedupHash = createHash("sha256")
+      .update(validBody.port, "utf-8")
+      .update(rawKind === "escpos" ? (validBody.rawContent as Buffer) : Buffer.from(validBody.rawContent as string, "utf-8"))
+      .digest("hex");
+  }
 
+  // Escritura condicional = "primero en llegar gana"; quien pierde la carrera
+  // se descarta sin tocar S3 ni la tabla de tickets.
   try {
     await ddb.send(
       new PutCommand({
         TableName: TICKETS_TABLE,
         Item: {
-          ...dedupKey(tenantId, contentHash),
+          ...dedupKey(tenantId, dedupHash),
           ticketId,
           createdAt: new Date().toISOString(),
-          ttl: Math.floor(Date.now() / 1000) + DEDUP_WINDOW_SECONDS,
+          ttl: Math.floor(Date.now() / 1000) + dedupTtlSeconds,
         },
         ConditionExpression: "attribute_not_exists(pk)",
       }),
@@ -216,11 +267,19 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (!(err instanceof ConditionalCheckFailedException)) {
       throw err;
     }
-    console.log(
-      `[ingest] ticket duplicado descartado (mismo contenido en los últimos ${DEDUP_WINDOW_SECONDS}s): ` +
-        `tenant=${tenantId} port=${validBody.port} ticketId=${ticketId}`,
-    );
-    return { statusCode: 202, body: JSON.stringify({ ticketId, duplicate: true }) };
+    // Con el marcador de 400 días, un fallo transitorio de S3 más abajo dejaría
+    // la factura bloqueada para siempre: el reintento del agente (mismo
+    // ticketId) chocaría con su propio marcador. Si el marcador es de este mismo
+    // ticketId es un reintento, no un duplicado, y se sigue — S3 y el ticket
+    // son idempotentes.
+    const isOwnRetry = rawKind === "ubl" && (await dedupMarkerBelongsTo(tenantId, dedupHash, ticketId));
+    if (!isOwnRetry) {
+      console.log(
+        `[ingest] ticket duplicado descartado (mismo contenido en los últimos ${dedupTtlSeconds}s): ` +
+          `tenant=${tenantId} port=${validBody.port} ticketId=${ticketId}`,
+      );
+      return { statusCode: 202, body: JSON.stringify({ ticketId, duplicate: true }) };
+    }
   }
 
   // Re-subir el mismo contenido a la misma key en un reintento es
@@ -231,7 +290,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
       Bucket: RAW_BUCKET,
       Key: rawS3Key,
       Body: validBody.rawContent,
-      ContentType: rawKind === "escpos" ? "application/octet-stream" : "text/plain; charset=utf-8",
+      ContentType: RAW_CONTENT_TYPE[rawKind],
     }),
   );
 

@@ -10,6 +10,7 @@ import { tryBedrockVision } from "../parsing/bedrockVision.js";
 import { checkEconomicCoherence } from "../parsing/economicCoherence.js";
 import { extractRasterTiles, looksRasterDominant, readEscpos } from "../parsing/escpos.js";
 import { getParser } from "../parsing/registry.js";
+import { decodeXmlBytes, parseUblInvoice } from "../parsing/ubl.js";
 import type { ParsedTicket } from "../parsing/types.js";
 import { ddb, RAW_BUCKET, ticketKey, ticketStatusGsiKey, TICKETS_TABLE } from "../shared/dynamo.js";
 import { getTenant } from "../shared/tenant.js";
@@ -89,6 +90,13 @@ export async function reprocessTicket(message: ParseJobMessage): Promise<void> {
     // corrompido). Reintentar no lo va a arreglar — se marca fallido y se
     // consume el mensaje.
     await markFailed(message, "tenant no encontrado");
+    return;
+  }
+
+  // Una factura electrónica (XML UBL) se lee de forma determinística y no usa
+  // el parser por puerto del tenant, así que se resuelve antes de buscarlo.
+  if (message.rawKind === "ubl") {
+    await reprocessUblInvoice(message);
     return;
   }
 
@@ -191,6 +199,23 @@ export async function reprocessTicket(message: ParseJobMessage): Promise<void> {
   await markParsed(message, parsed, parsedBy, status);
 }
 
+/**
+ * A diferencia de un ticket de impresora, el XML de una factura trae los
+ * montos exactos y ya validados por su emisor, así que sin LLM de por medio
+ * llega directo a `parsed`. Lo que no es una venta (o no cierra) queda
+ * `failed` con el motivo a la vista.
+ */
+async function reprocessUblInvoice(message: ParseJobMessage): Promise<void> {
+  const raw = await s3.send(new GetObjectCommand({ Bucket: RAW_BUCKET, Key: message.rawS3Key }));
+  const bytes = Buffer.from((await raw.Body?.transformToByteArray()) ?? new Uint8Array());
+  const result = parseUblInvoice(decodeXmlBytes(bytes));
+  if (result.kind !== "sale") {
+    await markFailed(message, result.reason);
+    return;
+  }
+  await markParsed(message, result.ticket, "deterministic", "parsed");
+}
+
 function coherentOrNull(candidate: ParsedTicket | null): { ticket: ParsedTicket | null; incoherenceReason?: string } {
   if (!candidate) return { ticket: null };
   const coherence = checkEconomicCoherence(candidate);
@@ -208,7 +233,8 @@ async function markParsed(
       TableName: TICKETS_TABLE,
       Key: ticketKey(message.tenantId, message.capturedAt, message.ticketId),
       UpdateExpression:
-        "SET #status = :status, parsedAt = :parsedAt, #items = :items, #total = :total, #tax = :tax, discount = :discount, tip = :tip, parsedBy = :parsedBy, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+        "SET #status = :status, parsedAt = :parsedAt, #items = :items, #total = :total, #tax = :tax, discount = :discount, tip = :tip, parsedBy = :parsedBy, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk" +
+        (parsed.documentNumber !== undefined ? ", documentNumber = :documentNumber" : ""),
       ExpressionAttributeNames: { "#status": "status", "#total": "total", "#items": "items", "#tax": "tax" },
       ExpressionAttributeValues: {
         ":status": status,
@@ -219,6 +245,7 @@ async function markParsed(
         ":discount": parsed.discount ?? null,
         ":tip": parsed.tip ?? null,
         ":parsedBy": parsedBy,
+        ...(parsed.documentNumber !== undefined ? { ":documentNumber": parsed.documentNumber } : {}),
         ...prefixed(ticketStatusGsiKey(message.tenantId, status, message.capturedAt)),
       },
     }),

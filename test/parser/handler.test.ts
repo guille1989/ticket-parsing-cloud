@@ -517,3 +517,62 @@ test("el parser no escribe analítica: de eso se encarga el consumidor del Strea
   const update = mockDdbSend.mock.calls[0][0].input;
   expect(update.ExpressionAttributeValues[":status"]).toBe("parsed");
 });
+
+describe("factura electrónica — rawKind ubl", () => {
+  const xmlRecord = () => pendingTicket({ rawKind: "ubl", rawS3Key: "tenants/t1/tk1.xml" });
+  const s3Xml = (file: string) => {
+    const bytes = readFileSync(join(process.cwd(), "fixtures", "ubl", file));
+    mockS3Send.mockResolvedValue({ Body: { transformToByteArray: async () => new Uint8Array(bytes) } });
+  };
+
+  test("una venta llega directo a parsed, sin Bedrock, con el número de factura", async () => {
+    process.env.BEDROCK_MODEL_ID = "test-model";
+    mockGetTenant.mockResolvedValue(validTenant);
+    s3Xml("fe-firmada-38266.xml");
+    mockDdbSend.mockResolvedValue({});
+
+    const result = await handler({ Records: [streamRecord("INSERT", xmlRecord())] });
+
+    expect(result.batchItemFailures).toEqual([]);
+    expect(mockBedrockSend).not.toHaveBeenCalled();
+    const update = mockDdbSend.mock.calls[0][0].input;
+    expect(update.ExpressionAttributeValues[":status"]).toBe("parsed");
+    expect(update.ExpressionAttributeValues[":parsedBy"]).toBe("deterministic");
+    expect(update.ExpressionAttributeValues[":total"]).toBe(364000);
+    expect(update.ExpressionAttributeValues[":items"]).toHaveLength(2);
+    expect(update.ExpressionAttributeValues[":documentNumber"]).toBe("FVA38266");
+    expect(update.UpdateExpression).toContain("documentNumber = :documentNumber");
+  });
+
+  test("no depende del parser por puerto del tenant", async () => {
+    mockGetTenant.mockResolvedValue({ ...validTenant, parserId: "no-existe" });
+    s3Xml("fe-erp-38267.xml");
+    mockDdbSend.mockResolvedValue({});
+
+    await handler({ Records: [streamRecord("INSERT", xmlRecord())] });
+
+    expect(mockDdbSend.mock.calls[0][0].input.ExpressionAttributeValues[":status"]).toBe("parsed");
+  });
+
+  test("un documento soporte (compra) que llegara hasta acá queda failed con el motivo", async () => {
+    mockGetTenant.mockResolvedValue(validTenant);
+    s3Xml("documento-soporte-DECS1.xml");
+    mockDdbSend.mockResolvedValue({});
+
+    await handler({ Records: [streamRecord("INSERT", xmlRecord())] });
+
+    const update = mockDdbSend.mock.calls[0][0].input;
+    expect(update.ExpressionAttributeValues[":status"]).toBe("failed");
+    expect(update.ExpressionAttributeValues[":reason"]).toMatch(/documento soporte/);
+  });
+
+  test("los tickets que no son facturas no llevan documentNumber en el update", async () => {
+    mockGetTenant.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({ Body: { transformToString: async () => VALID_TICKET_TEXT } });
+    mockDdbSend.mockResolvedValue({});
+
+    await handler({ Records: [streamRecord("INSERT", pendingTicket())] });
+
+    expect(mockDdbSend.mock.calls[0][0].input.UpdateExpression).not.toContain("documentNumber");
+  });
+});

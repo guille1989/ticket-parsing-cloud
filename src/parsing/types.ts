@@ -28,6 +28,8 @@ export interface ParsedTicket {
   taxBase?: number;
   total: number;
   timestamp: string; // ISO 8601
+  /** Solo facturas electrónicas (UBL): el número de documento, ej. "FVA38267". */
+  documentNumber?: string;
 }
 
 export interface TicketParser {

@@ -109,3 +109,22 @@ test("rechaza rawBase64 que decodifica por encima del límite de 6 MB", () => {
   const tooBig = Buffer.alloc(6 * 1024 * 1024 + 3).toString("base64");
   expect(validateBody({ ...BASE_NO_RAW, rawBase64: tooBig, rawEncoding: "escpos" }).ok).toBe(false);
 });
+
+describe("rawEncoding ubl (factura electrónica)", () => {
+  const xml = Buffer.from('<Invoice><ID>FV1</ID></Invoice>', "utf-8");
+
+  test("acepta rawBase64 + rawEncoding ubl y lo marca como rawKind ubl", () => {
+    const result = validateBody({ ...BASE_NO_RAW, rawBase64: xml.toString("base64"), rawEncoding: "ubl" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.rawKind).toBe("ubl");
+      expect((result.value.rawContent as Buffer).equals(xml)).toBe(true);
+    }
+  });
+
+  test("rechaza un XML de más de 1 MB (el tope de ubl es menor que el de escpos)", () => {
+    const tooBig = Buffer.alloc(1024 * 1024 + 1, 0x61).toString("base64");
+    expect(validateBody({ ...BASE_NO_RAW, rawBase64: tooBig, rawEncoding: "ubl" }).ok).toBe(false);
+    expect(validateBody({ ...BASE_NO_RAW, rawBase64: tooBig, rawEncoding: "escpos" }).ok).toBe(true);
+  });
+});
