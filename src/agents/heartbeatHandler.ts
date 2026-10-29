@@ -1,8 +1,11 @@
-import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 
 import { resolveAgentByApiKeyId } from "../shared/agent.js";
-import { agentKey, AGENTS_TABLE, ddb } from "../shared/dynamo.js";
+import { agentKey, AGENTS_TABLE, commandKey, commandSkPrefix, ddb } from "../shared/dynamo.js";
+import { jsonResponse } from "../shared/http.js";
+import type { AgentCommandRecord } from "../shared/types.js";
+import { COMMAND_MAX_AGE_MS } from "./commandCatalog.js";
 
 interface HeartbeatBody {
   name?: string;
@@ -28,6 +31,51 @@ function parseBody(raw: string | null): HeartbeatBody | undefined {
   } catch {
     return undefined;
   }
+}
+
+interface PendingCommand {
+  commandId: string;
+  scriptId: string;
+}
+
+const MAX_COMMANDS_PER_HEARTBEAT = 3;
+
+/**
+ * Marca como `delivered` (condicional, así cada comando se entrega una sola
+ * vez aunque lleguen dos heartbeats juntos) y devuelve los pendientes. Los
+ * pedidos los crea el operador directo en la tabla; ver `commandCatalog.ts`.
+ */
+async function claimPendingCommands(tenantId: string, agentId: string): Promise<PendingCommand[]> {
+  const recent = await ddb.send(new QueryCommand({
+    TableName: AGENTS_TABLE,
+    KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+    ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":prefix": commandSkPrefix(agentId) },
+    ScanIndexForward: false,
+    Limit: 20,
+  }));
+  const cutoff = new Date(Date.now() - COMMAND_MAX_AGE_MS).toISOString();
+  const pending = ((recent.Items ?? []) as AgentCommandRecord[])
+    .filter((c) => c.status === "pending" && c.createdAt >= cutoff)
+    .reverse() // el más viejo primero
+    .slice(0, MAX_COMMANDS_PER_HEARTBEAT);
+
+  const claimed: PendingCommand[] = [];
+  for (const command of pending) {
+    try {
+      await ddb.send(new UpdateCommand({
+        TableName: AGENTS_TABLE,
+        Key: commandKey(tenantId, agentId, command.commandId),
+        UpdateExpression: "SET #status = :delivered, deliveredAt = :now",
+        ConditionExpression: "#status = :pending",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":delivered": "delivered", ":pending": "pending", ":now": new Date().toISOString() },
+      }));
+      claimed.push({ commandId: command.commandId, scriptId: command.scriptId });
+    } catch (err) {
+      if ((err as { name?: string }).name !== "ConditionalCheckFailedException") throw err;
+    }
+  }
+  return claimed;
 }
 
 export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
@@ -60,5 +108,14 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     ExpressionAttributeValues: values,
   }));
 
-  return { statusCode: 204, body: "" };
+  // Pedir los comandos es secundario: si falla, el heartbeat (lo importante)
+  // ya quedó registrado y el agente reintenta en el próximo.
+  let commands: PendingCommand[] = [];
+  try {
+    commands = await claimPendingCommands(agent.tenantId, agent.agentId);
+  } catch (err) {
+    console.error("No se pudieron consultar los comandos pendientes del agente", err);
+  }
+  if (commands.length === 0) return { statusCode: 204, body: "" };
+  return jsonResponse(200, { commands });
 }

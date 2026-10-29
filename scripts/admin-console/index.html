@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Consola de operador · InnoApp</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b2330; --muted: #667085; --line: #e3e7ee;
+    --accent: #2f5bea; --accent-text: #ffffff; --ok: #15803d; --warn: #b45309; --bad: #b91c1c;
+    --ok-bg: #dcfce7; --warn-bg: #fef3c7; --bad-bg: #fee2e2; --info-bg: #e0e7ff; --code-bg: #0f172a; --code-text: #e2e8f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --panel: #161b22; --text: #e6edf3; --muted: #8b95a3; --line: #262d38;
+      --accent: #5b8cff; --accent-text: #0b1020; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+      --ok-bg: #12301e; --warn-bg: #3a2c0c; --bad-bg: #3b1515; --info-bg: #1c2447; --code-bg: #0a0d12; --code-text: #d5dde6;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; align-items: baseline; gap: 12px; }
+  header h1 { font-size: 16px; margin: 0; }
+  header span { color: var(--muted); font-size: 12px; }
+  .layout { display: grid; grid-template-columns: 260px 1fr; min-height: calc(100vh - 50px); }
+  aside { border-right: 1px solid var(--line); background: var(--panel); padding: 12px; overflow-y: auto; }
+  main { padding: 18px 20px; min-width: 0; }
+  input[type=search] { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); margin-bottom: 10px; }
+  .tenant { display: block; width: 100%; text-align: left; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; font: inherit; }
+  .tenant:hover { background: var(--bg); }
+  .tenant.active { background: var(--info-bg); font-weight: 600; }
+  .tenant small { display: block; color: var(--muted); font-weight: 400; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 16px; }
+  .agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+  .agent { text-align: left; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text); cursor: pointer; font: inherit; }
+  .agent:hover { border-color: var(--accent); }
+  .agent.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .agent b { display: block; }
+  .agent small { color: var(--muted); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
+  .dot.on { background: var(--ok); }
+  .scripts { display: flex; flex-wrap: wrap; gap: 8px; }
+  button.script { padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); cursor: pointer; font: inherit; }
+  button.script:hover:not(:disabled) { border-color: var(--accent); }
+  button.script:disabled { opacity: .5; cursor: not-allowed; }
+  .banner { padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; background: var(--warn-bg); color: var(--warn); }
+  .banner.bad { background: var(--bad-bg); color: var(--bad); }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--info-bg); }
+  .pill.done { background: var(--ok-bg); color: var(--ok); }
+  .pill.failed { background: var(--bad-bg); color: var(--bad); }
+  .pill.wait { background: var(--warn-bg); color: var(--warn); }
+  .cmd { border-top: 1px solid var(--line); }
+  .cmd:first-child { border-top: 0; }
+  .cmd summary { cursor: pointer; padding: 9px 2px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .cmd summary .when { color: var(--muted); font-size: 12px; margin-left: auto; }
+  pre { margin: 0 0 10px; padding: 12px; border-radius: 8px; background: var(--code-bg); color: var(--code-text); overflow: auto; max-height: 460px; font: 12px/1.4 Consolas, "Cascadia Mono", monospace; white-space: pre; }
+  pre.err { color: #fca5a5; }
+  .tools { display: flex; gap: 8px; margin-bottom: 8px; }
+  .tools button { padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); cursor: pointer; font: inherit; font-size: 12px; }
+  .muted { color: var(--muted); }
+  @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<header><h1>Consola de operador</h1><span>Diagnósticos remotos de solo lectura · solo en esta PC</span></header>
+<div class="layout">
+  <aside>
+    <input id="search" type="search" placeholder="Buscar negocio…" autocomplete="off">
+    <div id="tenants" class="muted">Cargando…</div>
+  </aside>
+  <main id="main"><p class="muted">Elige un negocio de la izquierda.</p></main>
+</div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { tenants: [], catalog: {}, tenantId: null, agentId: null, agents: [], commands: [], open: new Set() };
+let pollTimer = null;
+
+const api = async (path, options) => {
+  const res = await fetch(path, options);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return body;
+};
+
+const el = (tag, props = {}, ...children) => {
+  const node = Object.assign(document.createElement(tag), props);
+  for (const child of children) node.append(child);
+  return node;
+};
+
+const ago = (iso) => {
+  if (!iso) return "nunca";
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  if (s < 90) return `hace ${s} s`;
+  if (s < 5400) return `hace ${Math.round(s / 60)} min`;
+  if (s < 129600) return `hace ${Math.round(s / 3600)} h`;
+  return `hace ${Math.round(s / 86400)} d`;
+};
+
+const STATUS = {
+  pending: ["pendiente", "wait"], delivered: ["en el agente…", "wait"], done: ["OK", "done"], failed: ["falló", "failed"],
+};
+
+function renderTenants() {
+  const q = $("search").value.trim().toLowerCase();
+  const box = $("tenants");
+  box.replaceChildren();
+  const list = state.tenants.filter((t) => !q || t.businessName.toLowerCase().includes(q) || t.tenantId.startsWith(q));
+  if (!list.length) box.append(el("span", { className: "muted", textContent: "Sin resultados" }));
+  for (const t of list) {
+    const b = el("button", { className: "tenant" + (t.tenantId === state.tenantId ? " active" : "") }, t.businessName,
+      el("small", { textContent: t.status === "active" ? t.tenantId.slice(0, 8) + "…" : `${t.status} · ${t.tenantId.slice(0, 8)}…` }));
+    b.onclick = () => selectTenant(t.tenantId);
+    box.append(b);
+  }
+}
+
+function renderMain() {
+  const main = $("main");
+  main.replaceChildren();
+  const tenant = state.tenants.find((t) => t.tenantId === state.tenantId);
+  if (!tenant) return main.append(el("p", { className: "muted", textContent: "Elige un negocio de la izquierda." }));
+
+  const agentsCard = el("div", { className: "card" }, el("h2", { textContent: `Agentes de ${tenant.businessName}` }));
+  const grid = el("div", { className: "agents" });
+  if (!state.agents.length) grid.append(el("span", { className: "muted", textContent: "Este negocio no tiene agentes activados." }));
+  for (const a of state.agents) {
+    const card = el("button", { className: "agent" + (a.agentId === state.agentId ? " active" : "") },
+      el("b", {}, el("span", { className: "dot" + (a.online ? " on" : "") }), a.name),
+      el("small", { textContent: `v${a.version ?? "?"} · ${a.online ? "en línea" : "visto " + ago(a.lastSeenAt)}` }),
+      el("br"),
+      el("small", { textContent: a.location?.label ? `${a.location.label}${a.location.city ? ", " + a.location.city : ""}` : "sin ubicación" }));
+    card.onclick = () => selectAgent(a.agentId);
+    grid.append(card);
+  }
+  agentsCard.append(grid);
+  main.append(agentsCard);
+
+  const agent = state.agents.find((a) => a.agentId === state.agentId);
+  if (!agent) return;
+
+  const diag = el("div", { className: "card" }, el("h2", { textContent: `Diagnosticar “${agent.name}”` }));
+  if (!agent.canDiagnose) diag.append(el("div", { className: "banner bad", textContent: `Este agente es v${agent.version ?? "?"}: aún no entiende diagnósticos (hace falta v0.5.0 o superior).` }));
+  else if (!agent.online) diag.append(el("div", { className: "banner", textContent: `Sin contacto ${ago(agent.lastSeenAt)}. El pedido espera al próximo heartbeat y caduca a los 15 min.` }));
+  const scripts = el("div", { className: "scripts" });
+  for (const [id, description] of Object.entries(state.catalog)) {
+    const btn = el("button", { className: "script", textContent: LABELS[id] ?? id, title: description, disabled: !agent.canDiagnose });
+    btn.onclick = () => request(id, btn);
+    scripts.append(btn);
+  }
+  diag.append(scripts, el("p", { className: "muted", textContent: "El agente recibe el pedido en su próximo heartbeat (hasta ~1 min). Solo se leen datos; no se modifica nada en la PC." }));
+  main.append(diag);
+
+  const hist = el("div", { className: "card" }, el("h2", { textContent: "Historial (últimos 30 días)" }));
+  if (!state.commands.length) hist.append(el("span", { className: "muted", textContent: "Todavía no hay diagnósticos para este agente." }));
+  for (const c of state.commands) hist.append(renderCommand(c));
+  main.append(hist);
+}
+
+const LABELS = {
+  "agent-health": "Salud del equipo", printers: "Impresoras", spooler: "Spooler", network: "Red", "agent-logs": "Logs", "agent-state": "Estado y cola",
+};
+
+function renderCommand(c) {
+  const [label, cls] = STATUS[c.status] ?? [c.status, ""];
+  const details = el("details", { className: "cmd", open: state.open.has(c.commandId) });
+  details.ontoggle = () => (details.open ? state.open.add(c.commandId) : state.open.delete(c.commandId));
+  details.append(el("summary", {},
+    el("b", { textContent: LABELS[c.scriptId] ?? c.scriptId }),
+    el("span", { className: "pill " + cls, textContent: label }),
+    el("span", { className: "muted", textContent: c.durationMs != null ? `${(c.durationMs / 1000).toFixed(1)} s` : "" }),
+    el("span", { className: "when", textContent: ago(c.createdAt) })));
+  if (c.status === "pending" || c.status === "delivered") {
+    details.append(el("p", { className: "muted", textContent: c.status === "pending" ? "Esperando al próximo heartbeat del agente…" : "El agente lo recibió y lo está ejecutando…" }));
+  } else {
+    const copy = el("button", { textContent: "Copiar salida" });
+    copy.onclick = () => navigator.clipboard.writeText([c.stdout, c.stderr].filter(Boolean).join("\n"));
+    details.append(el("div", { className: "tools" }, copy));
+    details.append(el("pre", { textContent: c.stdout || "(sin salida)" }));
+    if (c.stderr) details.append(el("pre", { className: "err", textContent: c.stderr }));
+  }
+  return details;
+}
+
+async function request(scriptId, btn) {
+  btn.disabled = true;
+  try {
+    const { command } = await api(`/api/tenants/${state.tenantId}/agents/${state.agentId}/commands`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scriptId }),
+    });
+    state.open.add(command.commandId);
+    await refreshCommands();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function refreshAgents() {
+  if (!state.tenantId) return;
+  state.agents = (await api(`/api/tenants/${state.tenantId}/agents`)).agents;
+}
+
+async function refreshCommands() {
+  if (!state.tenantId || !state.agentId) { state.commands = []; return renderMain(); }
+  const previous = new Map(state.commands.map((c) => [c.commandId, c.status]));
+  state.commands = (await api(`/api/tenants/${state.tenantId}/agents/${state.agentId}/commands`)).commands;
+  // El que acaba de terminar se abre solo, para ver la salida sin buscarla.
+  for (const c of state.commands) if (previous.has(c.commandId) && previous.get(c.commandId) !== c.status && (c.status === "done" || c.status === "failed")) state.open.add(c.commandId);
+  renderMain();
+  schedulePoll();
+}
+
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  const waiting = state.commands.some((c) => c.status === "pending" || c.status === "delivered");
+  pollTimer = setTimeout(async () => {
+    try { if (!waiting) await refreshAgents(); await refreshCommands(); } catch (err) { console.error(err); schedulePoll(); }
+  }, waiting ? 3000 : 20000);
+}
+
+async function selectTenant(tenantId) {
+  state.tenantId = tenantId; state.agentId = null; state.agents = []; state.commands = [];
+  history.replaceState(null, "", "#" + tenantId);
+  renderTenants(); renderMain();
+  try { await refreshAgents(); renderMain(); } catch (err) { $("main").append(el("div", { className: "banner bad", textContent: err.message })); }
+}
+
+async function selectAgent(agentId) {
+  state.agentId = agentId; state.commands = [];
+  history.replaceState(null, "", `#${state.tenantId}/${agentId}`);
+  renderMain();
+  await refreshCommands();
+}
+
+(async function init() {
+  $("search").oninput = renderTenants;
+  try {
+    const [{ tenants }, { catalog }] = await Promise.all([api("/api/tenants"), api("/api/catalog")]);
+    state.tenants = tenants; state.catalog = catalog;
+    renderTenants();
+    const [t, a] = location.hash.slice(1).split("/");
+    if (t && tenants.some((x) => x.tenantId === t)) { await selectTenant(t); if (a && state.agents.some((x) => x.agentId === a)) await selectAgent(a); }
+  } catch (err) {
+    $("tenants").textContent = err.message;
+  }
+})();
+</script>
+</body>
+</html>

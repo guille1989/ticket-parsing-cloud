@@ -166,6 +166,33 @@ export interface AgentRecord {
 }
 
 /**
+ * Pedido de diagnóstico para un agente. Lo crea el operador (consola local,
+ * directo en DynamoDB); el agente lo recibe en la respuesta de su heartbeat,
+ * corre el script de su catálogo local que corresponde a `scriptId` (nunca
+ * texto libre) y devuelve la salida. Un `delivered` que no se resuelve = el
+ * agente cayó a mitad de camino.
+ */
+export type AgentCommandStatus = "pending" | "delivered" | "done" | "failed";
+
+export interface AgentCommandRecord {
+  tenantId: string;
+  agentId: string;
+  commandId: string;
+  scriptId: string;
+  status: AgentCommandStatus;
+  createdAt: string;
+  deliveredAt?: string;
+  completedAt?: string;
+  exitCode?: number;
+  durationMs?: number;
+  timedOut?: boolean;
+  stdout?: string;
+  stderr?: string;
+  /** Epoch en segundos — TTL de la tabla Agents. */
+  ttl?: number;
+}
+
+/**
  * Código de un solo uso para vincular un robot nuevo a un tenant. Se
  * generan de a 5 por tenant al darlo de alta (ver `onboard-tenant.ts`) —
  * el tope de 5 robots es estructural: no hay endpoint para generar más

@@ -97,6 +97,22 @@ export function agentKey(tenantId: string, agentId: string) {
 }
 
 /**
+ * Diagnóstico pedido por el operador a un agente — vive en la tabla Agents con
+ * SK = CMD#<agentId>#<commandId>. El commandId empieza por el epoch en ms con
+ * relleno (ordena por fecha) y no lleva "#", así sirve tal cual en un path.
+ */
+export function commandKey(tenantId: string, agentId: string, commandId: string) {
+  return {
+    pk: `TENANT#${tenantId}`,
+    sk: `${commandSkPrefix(agentId)}${commandId}`,
+  };
+}
+
+export function commandSkPrefix(agentId: string) {
+  return `CMD#${agentId}#`;
+}
+
+/**
  * Clave de la tabla ActivationCodes: PK = CODE#<code>. Global (no anidada
  * bajo el tenant) porque quien canjea un código no sabe todavía a qué
  * tenant pertenece — eso lo resuelve el canje, no lo aporta el cliente.

@@ -90,9 +90,13 @@ export class TicketParsingCloudStack extends cdk.Stack {
     // compartida por todo el negocio, pensada para el onboarding manual
     // original), cada agente tiene su propia api-key — se resuelve por
     // `apiKeyId-index`, mismo patrón que Tenants. Ver `agents/activateHandler.ts`.
+    // También guarda los diagnósticos que el operador le pide a un agente
+    // (SK = CMD#<agentId>#<id>, ver `agents/commandCatalog.ts`), que se borran
+    // solos por `ttl`.
     const agentsTable = new dynamodb.TableV2(this, "AgentsTable", {
       partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: "ttl",
       globalSecondaryIndexes: [
         {
           indexName: "apiKeyId-index",
@@ -758,6 +762,17 @@ export class TicketParsingCloudStack extends cdk.Stack {
       environment: { AGENTS_TABLE: agentsTable.tableName },
     });
 
+    // El agente devuelve la salida de un diagnóstico que pidió el operador.
+    // Los pedidos se crean y se leen directo en la tabla desde la consola
+    // local (`scripts/admin-console`), por eso no hay rutas de Cognito acá.
+    const agentsCommandResultFn = new nodejs.NodejsFunction(this, "AgentsCommandResultFunction", {
+      entry: "src/agents/commandResultHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: { AGENTS_TABLE: agentsTable.tableName },
+    });
+
     // Acciones de plano de control de API Gateway (no son sobre un recurso
     // de negocio como una tabla, son sobre la API misma) — el formato de
     // recurso de IAM de API Gateway es "método HTTP + path", no un ARN de
@@ -954,6 +969,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
     activationCodesTable.grantReadData(agentsCodesFn);
     agentsTable.grantReadWriteData(agentsHeartbeatFn);
     agentsTable.grantReadWriteData(agentsUpdateLocationFn);
+    agentsTable.grantReadWriteData(agentsCommandResultFn);
 
     // El authorizer valida el JWT; el handler comprueba el bloqueo actual
     // con GetItem consistente, sin caché. Esto cubre también tokens emitidos
@@ -1016,6 +1032,10 @@ export class TicketParsingCloudStack extends cdk.Stack {
 
     const agentsHeartbeat = agents.addResource("heartbeat");
     agentsHeartbeat.addMethod("POST", new apigateway.LambdaIntegration(agentsHeartbeatFn), { apiKeyRequired: true });
+
+    // El agente devuelve la salida de un diagnóstico — api-key, no Cognito.
+    const agentsCommandResult = agents.addResource("commands").addResource("{commandId}").addResource("result");
+    agentsCommandResult.addMethod("POST", new apigateway.LambdaIntegration(agentsCommandResultFn), { apiKeyRequired: true });
 
     const agentById = agents.addResource("{agentId}");
     const agentLocation = agentById.addResource("location");
