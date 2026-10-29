@@ -28,7 +28,7 @@ export function isTicketLevelField(field: string): boolean {
 /** Pseudo-campo: cuenta tickets (eventos), no filas de ítem — ver queryBuilder.ts. */
 export const EVENT_COUNT_FIELD = "event_count";
 
-export const CATEGORICAL_FIELDS = ["port", "agent", "status", "parsedBy", "description"] as const;
+export const CATEGORICAL_FIELDS = ["port", "agent", "status", "parsedBy", "description", "customer"] as const;
 export type CategoricalField = (typeof CATEGORICAL_FIELDS)[number];
 export const TEMPORAL_FIELDS = ["day", "hour"] as const;
 export type TemporalField = (typeof TEMPORAL_FIELDS)[number];
@@ -56,6 +56,8 @@ const CATEGORICAL_COLUMN_BY_FIELD: Record<CategoricalField, string> = {
   status: "status",
   parsedBy: "parsedby",
   description: "description",
+  // Solo las facturas electrónicas traen cliente; el resto queda en NULL.
+  customer: "customername",
 };
 
 export function isValidMetricField(field: string): field is NumericField | typeof EVENT_COUNT_FIELD {

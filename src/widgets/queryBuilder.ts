@@ -170,6 +170,9 @@ function buildWhere(widget: WidgetRecord, timeZone?: string): { whereClause: str
       params.push(inclusiveDateTo(dateTo));
     }
   }
+  // Solo ventas. Las filas anteriores al campo no lo traen (NULL = venta).
+  // Cuando se capturen compras o notas crédito, ningún total las mezcla.
+  conditions.push("COALESCE(doctype, 'sale') = 'sale'");
   if (widget.filters?.port) {
     conditions.push("port = ?");
     params.push(widget.filters.port);

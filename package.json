@@ -15,7 +15,8 @@
     "etapa-a-ocr": "tsx scripts/etapa-a-ocr.ts",
     "tenant-tickets": "tsx scripts/tenant-tickets.ts",
     "reparse-ticket": "tsx scripts/reparse-ticket.ts",
-    "reconcile-analytics": "tsx scripts/reconcile-analytics.ts"
+    "reconcile-analytics": "tsx scripts/reconcile-analytics.ts",
+    "backfill-ubl-fields": "tsx scripts/backfill-ubl-fields.ts"
   },
   "devDependencies": {
     "@swc/core": "^1.15.0",

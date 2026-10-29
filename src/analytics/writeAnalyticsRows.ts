@@ -64,6 +64,13 @@ export function buildAnalyticsBody(ctx: AnalyticsTicketContext, parsed: ParsedTi
       tip: parsed.tip ?? null,
       tax: parsed.tax ?? null,
       total: parsed.total,
+      // Solo facturas electrónicas (null en el resto). `docType` por defecto
+      // "sale": todo lo que llega acá hoy es una venta.
+      docType: parsed.docType ?? "sale",
+      customerName: parsed.customerName ?? null,
+      customerId: parsed.customerId ?? null,
+      purchaseOrder: parsed.purchaseOrder ?? null,
+      paymentDueDate: parsed.paymentDueDate ?? null,
     }),
   );
 

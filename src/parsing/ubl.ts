@@ -74,6 +74,46 @@ function partyId(party: XmlNode | undefined): string | undefined {
   );
 }
 
+/** Texto sin espacios de más, o `undefined` si queda vacío. Los ERP rellenan campos opcionales con blancos. */
+function cleanText(value: string | undefined, maxLength: number): string | undefined {
+  const text = value?.replace(/\s+/g, " ").trim();
+  return text ? text.slice(0, maxLength) : undefined;
+}
+
+/**
+ * Quién compró. Se guardan solo el nombre y el documento: la dirección y los
+ * contactos del comprador (a menudo una persona natural) se dejan en el XML
+ * original y no se copian a la base ni a la analítica.
+ */
+function readCustomer(root: XmlNode): { customerName?: string; customerId?: string } {
+  const party = child(root, "AccountingCustomerParty");
+  const name =
+    textOf(pathTo(party, "Party", "PartyLegalEntity", "RegistrationName")) ??
+    textOf(pathTo(party, "Party", "PartyTaxScheme", "RegistrationName")) ??
+    textOf(pathTo(party, "Party", "PartyName", "Name"));
+  const id =
+    textOf(pathTo(party, "Party", "PartyLegalEntity", "CompanyID")) ??
+    textOf(pathTo(party, "Party", "PartyTaxScheme", "CompanyID")) ??
+    textOf(pathTo(party, "Party", "PartyIdentification", "ID"));
+  const out: { customerName?: string; customerId?: string } = {};
+  const customerName = cleanText(name, 200);
+  const customerId = cleanText(id, 40);
+  if (customerName) out.customerName = customerName;
+  if (customerId) out.customerId = customerId;
+  return out;
+}
+
+/**
+ * Fecha límite de pago. `PaymentMeans/PaymentDueDate` es la que el ERP de
+ * Alamo usa de verdad; `cbc:DueDate` es el respaldo. La "fecha de entrega" del
+ * XML (`Delivery/ActualDeliveryDate`) NO se lee: en las facturas de Alamo
+ * siempre es la emisión + 9 días, un valor por defecto del ERP.
+ */
+function readPaymentDueDate(root: XmlNode): string | undefined {
+  const raw = textOf(pathTo(root, "PaymentMeans", "PaymentDueDate")) ?? textOf(child(root, "DueDate"));
+  return raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : undefined;
+}
+
 /** Número de documento y emisor, sin interpretar montos — lo usa `ingest` para no registrar dos veces una misma factura. */
 export function readUblIdentity(xml: string): UblIdentity | { error: string } {
   const root = parseDocument(xml);
@@ -188,7 +228,13 @@ export function parseUblInvoice(xml: string): UblResult {
     total: round2(payable + prepaid),
     timestamp,
     documentNumber,
+    docType: "sale",
+    ...readCustomer(root),
   };
+  const purchaseOrder = cleanText(textOf(pathTo(root, "OrderReference", "ID")), 80);
+  if (purchaseOrder) ticket.purchaseOrder = purchaseOrder;
+  const paymentDueDate = readPaymentDueDate(root);
+  if (paymentDueDate) ticket.paymentDueDate = paymentDueDate;
   if (discount > 0) ticket.discount = discount;
   if (tax > 0) ticket.tax = tax;
   return { kind: "sale", ticket };

@@ -246,6 +246,13 @@ export class TicketParsingCloudStack extends cdk.Stack {
             { name: "tip", type: "double" },
             { name: "tax", type: "double" },
             { name: "total", type: "double" },
+            // Agregadas después: los objetos anteriores no traen estas claves y
+            // Athena las lee como NULL (por eso las consultas usan COALESCE en doctype).
+            { name: "doctype", type: "string" },
+            { name: "customername", type: "string" },
+            { name: "customerid", type: "string" },
+            { name: "purchaseorder", type: "string" },
+            { name: "paymentduedate", type: "string" },
           ],
         },
       },

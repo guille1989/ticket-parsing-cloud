@@ -6,6 +6,14 @@ export interface ParsedItem {
   voided?: boolean;
 }
 
+/**
+ * Qué representa el documento. Hoy solo se captura `sale`; `purchase`
+ * (documento soporte) y `credit_note` están reservados para cuando esos
+ * documentos dejen de descartarse. Ausente = `sale`: todo lo capturado antes
+ * de este campo (y todo ticket de impresora) es una venta.
+ */
+export type DocumentType = "sale" | "purchase" | "credit_note";
+
 export interface ParsedTicket {
   items: ParsedItem[];
   discount?: number;
@@ -30,6 +38,16 @@ export interface ParsedTicket {
   timestamp: string; // ISO 8601
   /** Solo facturas electrónicas (UBL): el número de documento, ej. "FVA38267". */
   documentNumber?: string;
+  /** Ver `DocumentType`. */
+  docType?: DocumentType;
+  /** Solo facturas electrónicas: razón social (o nombre) del comprador. */
+  customerName?: string;
+  /** Solo facturas electrónicas: NIT o cédula del comprador. */
+  customerId?: string;
+  /** Solo facturas electrónicas: número de la orden de compra del cliente, si la factura la cita. */
+  purchaseOrder?: string;
+  /** Solo facturas electrónicas: fecha límite de pago, `YYYY-MM-DD`. */
+  paymentDueDate?: string;
 }
 
 export interface TicketParser {

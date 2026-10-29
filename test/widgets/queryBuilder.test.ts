@@ -27,7 +27,7 @@ test("KPI sin groupBy, campo por ítem: una sola fila, agregación directa sin s
     widget({ visualization: "kpi", groupBy: undefined, metric: { field: "subtotal", aggregation: "sum" } }),
   );
 
-  expect(sql).toBe("SELECT SUM(subtotal) AS value FROM ticket_analytics.ticket_items WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND status IN ('parsed', 'needs_review') AND COALESCE(voided, false) = false");
+  expect(sql).toBe("SELECT SUM(subtotal) AS value FROM ticket_analytics.ticket_items WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND COALESCE(doctype, 'sale') = 'sale' AND status IN ('parsed', 'needs_review') AND COALESCE(voided, false) = false");
   expect(params).toEqual(["t1", DEFAULT_FROM_YEAR, DEFAULT_TO_YEAR]);
 });
 
@@ -42,7 +42,7 @@ test("KPI sin groupBy, campo de TICKET (total/discount/tip): colapsa por ticketi
 
   expect(sql).toBe(
     "SELECT SUM(total) AS value FROM (SELECT ticketid, MAX(total) AS total FROM ticket_analytics.ticket_items " +
-      "WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND status IN ('parsed', 'needs_review') GROUP BY ticketid)",
+      "WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND COALESCE(doctype, 'sale') = 'sale' AND status IN ('parsed', 'needs_review') GROUP BY ticketid)",
   );
   expect(params).toEqual(["t1", DEFAULT_FROM_YEAR, DEFAULT_TO_YEAR]);
 });
@@ -54,7 +54,7 @@ test("bar/donut con groupBy y campo de TICKET: colapsa por (ticketid, groupBy) a
 
   expect(sql).toBe(
     "SELECT port AS label, SUM(total) AS value FROM (SELECT ticketid, port, MAX(total) AS total " +
-      "FROM ticket_analytics.ticket_items WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND status IN ('parsed', 'needs_review') GROUP BY ticketid, port) " +
+      "FROM ticket_analytics.ticket_items WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND COALESCE(doctype, 'sale') = 'sale' AND status IN ('parsed', 'needs_review') GROUP BY ticketid, port) " +
       "GROUP BY port ORDER BY value DESC LIMIT 200",
   );
 });
@@ -115,7 +115,7 @@ test("cada filtro presente agrega su condición y su parámetro, en orden — el
     }),
   );
 
-  expect(sql).toContain("tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND capturedat >= ? AND capturedat <= ? AND port = ? AND status = ?");
+  expect(sql).toContain("tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR) AND capturedat >= ? AND capturedat <= ? AND COALESCE(doctype, 'sale') = 'sale' AND port = ? AND status = ?");
   // dateTo de solo fecha se lleva al final del día — si no, los tickets del 31 quedaban afuera.
   expect(params).toEqual(["t1", "2026", "2026", "2026-07-01", "2026-07-31T23:59:59.999Z", "COM3", "parsed"]);
 });

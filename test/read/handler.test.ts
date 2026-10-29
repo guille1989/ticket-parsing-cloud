@@ -128,6 +128,8 @@ test("la respuesta no expone claves internas de DynamoDB (pk/sk/rawS3Key)", asyn
     capturedAt: "2026-07-27T12:00:00.000Z",
     status: "parsed",
     total: 3450,
+    // Sin docType guardado = venta (tickets anteriores al campo).
+    docType: "sale",
   });
   expect(body.tickets[0].pk).toBeUndefined();
   expect(body.tickets[0].rawS3Key).toBeUndefined();
@@ -183,4 +185,38 @@ test("un ticket revisado expone quién, cuándo y qué decidió", async () => {
   const body = JSON.parse((await handler(eventWith("t1"))).body);
 
   expect(body.tickets[0]).toMatchObject({ reviewedBy: "dueno@negocio.com", reviewedAt: "2026-07-30T09:00:00.000Z", reviewDecision: "discarded" });
+});
+
+test("las facturas electrónicas exponen número, cliente, orden de compra y vencimiento", async () => {
+  mockDdbSend.mockResolvedValue({
+    Items: [
+      {
+        pk: "TENANT#t1",
+        sk: "TICKET#2026-10-26T15:40:56.965Z#tk1",
+        rawS3Key: "tenants/t1/tk1.xml",
+        tenantId: "t1",
+        ticketId: "tk1",
+        port: "Carpeta UNFE",
+        capturedAt: "2026-10-26T15:40:56.965Z",
+        status: "parsed",
+        total: 180000,
+        documentNumber: "FVA38313",
+        docType: "sale",
+        customerName: "CLIENTE SAS",
+        customerId: "900000002",
+        purchaseOrder: "4503803859",
+        paymentDueDate: "2026-12-10",
+      },
+    ],
+  });
+
+  const body = JSON.parse((await handler(eventWith("t1"))).body);
+
+  expect(body.tickets[0]).toMatchObject({
+    documentNumber: "FVA38313",
+    customerName: "CLIENTE SAS",
+    customerId: "900000002",
+    purchaseOrder: "4503803859",
+    paymentDueDate: "2026-12-10",
+  });
 });

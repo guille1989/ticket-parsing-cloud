@@ -1,4 +1,4 @@
-import type { ParsedItem } from "../parsing/types.js";
+import type { DocumentType, ParsedItem } from "../parsing/types.js";
 
 /**
  * `needs_review` es el destino de todo lo resuelto por el fallback de
@@ -89,6 +89,14 @@ export interface TicketRecord {
   rawKind?: "text" | "escpos" | "ubl";
   /** Solo facturas electrónicas: el número de la factura, ej. "FVA38267". */
   documentNumber?: string;
+  /** Ver `DocumentType`. Ausente = `"sale"`. */
+  docType?: DocumentType;
+  /** Solo facturas electrónicas — ver `ParsedTicket`. */
+  customerName?: string;
+  customerId?: string;
+  purchaseOrder?: string;
+  /** `YYYY-MM-DD`. */
+  paymentDueDate?: string;
   parsedAt?: string;
   items?: ParsedItem[];
   total?: number;

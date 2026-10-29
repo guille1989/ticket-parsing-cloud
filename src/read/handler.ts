@@ -22,6 +22,12 @@ function toPublicTicket(item: TicketRecord) {
     tax: item.tax,
     discount: item.discount,
     tip: item.tip,
+    documentNumber: item.documentNumber,
+    docType: item.docType ?? "sale",
+    customerName: item.customerName,
+    customerId: item.customerId,
+    purchaseOrder: item.purchaseOrder,
+    paymentDueDate: item.paymentDueDate,
     failReason: item.failReason,
     // Un negocio que audite `needs_review` necesita saber que ese ticket
     // vino del fallback de Bedrock, no del parser determinístico, para no

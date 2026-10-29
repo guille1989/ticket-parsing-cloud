@@ -222,19 +222,23 @@ function coherentOrNull(candidate: ParsedTicket | null): { ticket: ParsedTicket 
   return coherence.ok ? { ticket: candidate } : { ticket: null, incoherenceReason: coherence.reason };
 }
 
+/** Campos que solo traen las facturas electrónicas: se escriben únicamente cuando el parseo los encontró. */
+const OPTIONAL_STRING_FIELDS = ["documentNumber", "docType", "customerName", "customerId", "purchaseOrder", "paymentDueDate"] as const;
+
 async function markParsed(
   message: ParseJobMessage,
   parsed: ParsedTicket,
   parsedBy: NonNullable<TicketRecord["parsedBy"]>,
   status: "parsed" | "needs_review",
 ): Promise<void> {
+  const optional = OPTIONAL_STRING_FIELDS.filter((field) => parsed[field] !== undefined);
   await ddb.send(
     new UpdateCommand({
       TableName: TICKETS_TABLE,
       Key: ticketKey(message.tenantId, message.capturedAt, message.ticketId),
       UpdateExpression:
         "SET #status = :status, parsedAt = :parsedAt, #items = :items, #total = :total, #tax = :tax, discount = :discount, tip = :tip, parsedBy = :parsedBy, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk" +
-        (parsed.documentNumber !== undefined ? ", documentNumber = :documentNumber" : ""),
+        optional.map((field) => `, ${field} = :${field}`).join(""),
       ExpressionAttributeNames: { "#status": "status", "#total": "total", "#items": "items", "#tax": "tax" },
       ExpressionAttributeValues: {
         ":status": status,
@@ -245,7 +249,7 @@ async function markParsed(
         ":discount": parsed.discount ?? null,
         ":tip": parsed.tip ?? null,
         ":parsedBy": parsedBy,
-        ...(parsed.documentNumber !== undefined ? { ":documentNumber": parsed.documentNumber } : {}),
+        ...Object.fromEntries(optional.map((field) => [`:${field}`, parsed[field]])),
         ...prefixed(ticketStatusGsiKey(message.tenantId, status, message.capturedAt)),
       },
     }),

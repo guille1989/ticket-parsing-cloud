@@ -10,7 +10,7 @@ jest.mock("@aws-sdk/client-s3", () => {
 
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 
-import { writeAnalyticsRows } from "../../src/analytics/writeAnalyticsRows";
+import { buildAnalyticsBody, writeAnalyticsRows } from "../../src/analytics/writeAnalyticsRows";
 import type { ParsedTicket } from "../../src/parsing/types";
 
 const ctx = {
@@ -93,4 +93,23 @@ test("discount/tip ausentes se escriben como null, no undefined (evita romper el
   const row = JSON.parse((call.input.Body as string).trim());
   expect(row.discount).toBeNull();
   expect(row.tip).toBeNull();
+});
+
+test("marca cada fila como venta y lleva los datos de la factura electrónica (null si no los hay)", () => {
+  const plain = JSON.parse(buildAnalyticsBody(ctx, ticket()).trim());
+  expect(plain).toMatchObject({ docType: "sale", customerName: null, customerId: null, purchaseOrder: null, paymentDueDate: null });
+
+  const invoice = JSON.parse(
+    buildAnalyticsBody(
+      ctx,
+      ticket({
+        docType: "sale",
+        customerName: "CLIENTE SAS",
+        customerId: "900000002",
+        purchaseOrder: "4503803859",
+        paymentDueDate: "2026-12-10",
+      }),
+    ).trim(),
+  );
+  expect(invoice).toMatchObject({ customerName: "CLIENTE SAS", customerId: "900000002", purchaseOrder: "4503803859", paymentDueDate: "2026-12-10" });
 });

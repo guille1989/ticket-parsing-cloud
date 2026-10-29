@@ -103,6 +103,59 @@ describe("parseUblInvoice", () => {
   it("reporta XML mal formado como inválido, sin lanzar", () => {
     expect(parseUblInvoice("<Invoice><ID>")).toMatchObject({ kind: "invalid" });
   });
+
+  describe("datos extra de la venta", () => {
+    it("lee el cliente, el tipo de documento y el vencimiento del pago; no copia la dirección", () => {
+      const result = parseUblInvoice(fixture("fe-erp-38267.xml"));
+      expect(result.kind).toBe("sale");
+      if (result.kind !== "sale") return;
+
+      expect(result.ticket).toMatchObject({
+        docType: "sale",
+        customerName: "CLIENTE DE PRUEBA DOS SAS",
+        customerId: "900000002",
+        paymentDueDate: "2026-10-22",
+      });
+      expect(JSON.stringify(result.ticket)).not.toMatch(/CALI/);
+      // El fixture no cita una orden de compra: no se inventa.
+      expect(result.ticket.purchaseOrder).toBeUndefined();
+    });
+
+    it("lee la orden de compra del cliente cuando la factura la cita", () => {
+      const xml = fixture("fe-erp-38267.xml").replace(
+        "<cbc:DueDate>",
+        "<cac:OrderReference><cbc:ID> 4503803859 </cbc:ID></cac:OrderReference><cbc:DueDate>",
+      );
+      const result = parseUblInvoice(xml);
+      if (result.kind !== "sale") throw new Error("se esperaba una venta");
+      expect(result.ticket.purchaseOrder).toBe("4503803859");
+    });
+
+    it("prefiere el vencimiento de PaymentMeans y cae a cbc:DueDate", () => {
+      const withoutMeans = fixture("fe-erp-38267.xml").replace(/<cbc:PaymentDueDate>[^<]*<\/cbc:PaymentDueDate>/, "").replace(
+        "<cbc:DueDate>2026-10-22</cbc:DueDate>",
+        "<cbc:DueDate>2026-12-10</cbc:DueDate>",
+      );
+      const fallback = parseUblInvoice(withoutMeans);
+      if (fallback.kind !== "sale") throw new Error("se esperaba una venta");
+      expect(fallback.ticket.paymentDueDate).toBe("2026-12-10");
+
+      const withMeans = fixture("fe-erp-38267.xml").replace("<cbc:PaymentDueDate>2026-10-22<", "<cbc:PaymentDueDate>2026-11-24<");
+      const preferred = parseUblInvoice(withMeans);
+      if (preferred.kind !== "sale") throw new Error("se esperaba una venta");
+      expect(preferred.ticket.paymentDueDate).toBe("2026-11-24");
+    });
+
+    it("ignora un vencimiento que no es una fecha y no lee la fecha de entrega", () => {
+      const xml = fixture("fe-erp-38267.xml")
+        .replace("<cbc:PaymentDueDate>2026-10-22<", "<cbc:PaymentDueDate>mañana<")
+        .replace("<cbc:DueDate>2026-10-22</cbc:DueDate>", "");
+      const result = parseUblInvoice(xml);
+      if (result.kind !== "sale") throw new Error("se esperaba una venta");
+      expect(result.ticket.paymentDueDate).toBeUndefined();
+      expect(JSON.stringify(result.ticket)).not.toMatch(/ActualDelivery/i);
+    });
+  });
 });
 
 describe("readUblIdentity", () => {

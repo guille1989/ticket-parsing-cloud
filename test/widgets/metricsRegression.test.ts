@@ -18,17 +18,17 @@ beforeEach(() => {
     tenant TEXT, year TEXT, ticketid TEXT, capturedat TEXT, port TEXT,
     agentid TEXT, parsedby TEXT, status TEXT, description TEXT,
     quantity REAL, unitprice REAL, subtotal REAL, voided INTEGER,
-    total REAL, discount REAL, tip REAL, tax REAL
+    total REAL, discount REAL, tip REAL, tax REAL, doctype TEXT, customername TEXT
   )`);
 });
 afterEach(() => db.close());
 
 function addTicket(ticketid: string, parsed: ParsedTicket, status = "parsed", capturedat = "2026-07-01T12:00:00.000Z") {
-  const insert = db.prepare("INSERT INTO ticket_analytics.ticket_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const insert = db.prepare("INSERT INTO ticket_analytics.ticket_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   for (const item of parsed.items) {
     insert.run("t1", capturedat.slice(0, 4), ticketid, capturedat, "COM3", "a1", "deterministic", status,
       item.description, item.quantity, item.unitPrice, item.subtotal, item.voided ? 1 : 0,
-      parsed.total, parsed.discount ?? null, parsed.tip ?? null, parsed.tax ?? null);
+      parsed.total, parsed.discount ?? null, parsed.tip ?? null, parsed.tax ?? null, parsed.docType ?? null, parsed.customerName ?? null);
   }
 }
 
@@ -108,4 +108,35 @@ test("un ticket descartado o fallido nunca cuenta en las métricas por defecto",
   addTicket("fallido", { ...ticket, total: 888 }, "failed");
 
   expect(query("total")).toEqual([{ value: 10 }]);
+});
+
+test("solo las ventas cuentan: una compra o nota crédito no suma, y las filas sin docType (anteriores al campo) sí", () => {
+  const ticket: ParsedTicket = { total: 10, timestamp: "2026-07-01T12:00:00.000Z", items: [{ description: "Agua", quantity: 1, unitPrice: 10, subtotal: 10 }] };
+  addTicket("legacy", ticket); // docType NULL: fila escrita antes de existir el campo
+  addTicket("venta", { ...ticket, docType: "sale" });
+  addTicket("compra", { ...ticket, total: 500, docType: "purchase" });
+  addTicket("nota", { ...ticket, total: 700, docType: "credit_note" });
+
+  expect(query("total")).toEqual([{ value: 20 }]);
+  expect(query("event_count")).toEqual([{ value: 2 }]);
+  expect(query("subtotal", "sum", { groupBy: "description" })).toEqual([{ label: "Agua", value: 20 }]);
+});
+
+test("agrupar por cliente reparte el total por comprador y deja sin dato a las ventas sin cliente", () => {
+  const ticket: ParsedTicket = { total: 10, timestamp: "2026-07-01T12:00:00.000Z", items: [
+    { description: "Agua", quantity: 1, unitPrice: 5, subtotal: 5 },
+    { description: "Hielo", quantity: 1, unitPrice: 5, subtotal: 5 },
+  ] };
+  addTicket("a1", { ...ticket, customerName: "CLIENTE A" });
+  addTicket("a2", { ...ticket, total: 30, customerName: "CLIENTE A" });
+  addTicket("b1", { ...ticket, total: 7, customerName: "CLIENTE B" });
+  addTicket("sin", { ...ticket, total: 3 });
+
+  const rows = query("total", "sum", { groupBy: "customer" });
+  expect(rows).toEqual(expect.arrayContaining([
+    { label: "CLIENTE A", value: 40 },
+    { label: "CLIENTE B", value: 7 },
+    { label: null, value: 3 },
+  ]));
+  expect(rows).toHaveLength(3);
 });
