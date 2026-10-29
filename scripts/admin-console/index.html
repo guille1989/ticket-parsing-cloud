@@ -125,7 +125,8 @@ function renderMain() {
 
   const agentsCard = el("div", { className: "card" }, el("h2", { textContent: `Agentes de ${tenant.businessName}` }));
   const grid = el("div", { className: "agents" });
-  if (!state.agents.length) grid.append(el("span", { className: "muted", textContent: "Este negocio no tiene agentes activados." }));
+  if (state.loadingAgents) grid.append(el("span", { className: "muted", textContent: "Cargando agentes…" }));
+  else if (!state.agents.length) grid.append(el("span", { className: "muted", textContent: "Este negocio no tiene agentes activados." }));
   for (const a of state.agents) {
     const card = el("button", { className: "agent" + (a.agentId === state.agentId ? " active" : "") },
       el("b", {}, el("span", { className: "dot" + (a.online ? " on" : "") }), a.name),
@@ -201,7 +202,9 @@ async function request(scriptId, btn) {
 
 async function refreshAgents() {
   if (!state.tenantId) return;
-  state.agents = (await api(`/api/tenants/${state.tenantId}/agents`)).agents;
+  const tenantId = state.tenantId;
+  const { agents } = await api(`/api/tenants/${tenantId}/agents`);
+  if (state.tenantId === tenantId) state.agents = agents;
 }
 
 async function refreshCommands() {
@@ -223,10 +226,12 @@ function schedulePoll() {
 }
 
 async function selectTenant(tenantId) {
-  state.tenantId = tenantId; state.agentId = null; state.agents = []; state.commands = [];
+  state.tenantId = tenantId; state.agentId = null; state.agents = []; state.commands = []; state.loadingAgents = true;
   history.replaceState(null, "", "#" + tenantId);
   renderTenants(); renderMain();
-  try { await refreshAgents(); renderMain(); } catch (err) { $("main").append(el("div", { className: "banner bad", textContent: err.message })); }
+  try { await refreshAgents(); } catch (err) { $("main").append(el("div", { className: "banner bad", textContent: err.message })); }
+  // Si el operador cambió de negocio mientras cargaba, esta respuesta ya no importa.
+  if (state.tenantId === tenantId) { state.loadingAgents = false; renderMain(); }
 }
 
 async function selectAgent(agentId) {
