@@ -1,6 +1,7 @@
 import * as cdk from "aws-cdk-lib/core";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as athena from "aws-cdk-lib/aws-athena";
+import * as budgets from "aws-cdk-lib/aws-budgets";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
@@ -298,6 +299,32 @@ export class TicketParsingCloudStack extends cdk.Stack {
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    // ---- Presupuesto de costo de la cuenta ----------------------------------
+    //
+    // Octubre de 2026 cerró cerca de US$27 (Lightsail ~10, S3 ~8,5, Bedrock ~5)
+    // con días de US$3-7 por Athena/S3 (polling del dashboard) y Bedrock, sin
+    // que nada avisara; el gasto diario normal ronda US$0,65-0,85. El tope de
+    // US$25 deja pasar un mes normal y salta ante un pico real. El presupuesto
+    // cubre TODA la cuenta (no solo este stack): el gasto de Lightsail u otros
+    // servicios también cuenta. Solo notifica por correo, no corta ni cambia
+    // ningún recurso.
+    const budgetAlertEmail = "innoappdigital@gmail.com";
+    const budgetSubscribers = [{ subscriptionType: "EMAIL", address: budgetAlertEmail }];
+    new budgets.CfnBudget(this, "MonthlyCostBudget", {
+      budget: {
+        budgetName: "innoapp-monthly-cost",
+        budgetType: "COST",
+        timeUnit: "MONTHLY",
+        budgetLimit: { amount: 25, unit: "USD" },
+      },
+      notificationsWithSubscribers: [
+        { notification: { notificationType: "ACTUAL", comparisonOperator: "GREATER_THAN", thresholdType: "PERCENTAGE", threshold: 50 }, subscribers: budgetSubscribers },
+        { notification: { notificationType: "ACTUAL", comparisonOperator: "GREATER_THAN", thresholdType: "PERCENTAGE", threshold: 80 }, subscribers: budgetSubscribers },
+        // Pronosticado: avisa en cuanto la proyección del mes pasa el tope, antes de gastarlo.
+        { notification: { notificationType: "FORECASTED", comparisonOperator: "GREATER_THAN", thresholdType: "PERCENTAGE", threshold: 100 }, subscribers: budgetSubscribers },
+      ],
     });
 
     // ---- Cognito: login real del negocio para el dashboard -------------

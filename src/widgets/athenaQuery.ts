@@ -7,6 +7,13 @@ import {
 
 const athena = new AthenaClient({});
 
+// Athena devuelve el resultado de una ejecución idéntica reciente (mismo SQL,
+// mismos parámetros, mismo workgroup) sin volver a escanear S3. El dashboard
+// re-consulta cada widget cada 30 s y cada consulta lee ~2.500 objetos chicos
+// (ver el pico de costo de octubre de 2026); con esto las repeticiones salen
+// gratis. El costo: un ticket nuevo puede tardar hasta este tiempo en verse.
+const RESULT_REUSE_MAX_AGE_MINUTES = 1;
+
 const POLL_INTERVAL_MS = 500;
 const MAX_POLL_ATTEMPTS = 40; // ~20s — a este volumen de datos, Athena suele responder en 1-3s.
 
@@ -49,6 +56,9 @@ export async function runWidgetQuery(sql: string, params: string[], workGroup: s
       QueryString: sql,
       ExecutionParameters: params.map(toSqlStringLiteral),
       WorkGroup: workGroup,
+      ResultReuseConfiguration: {
+        ResultReuseByAgeConfiguration: { Enabled: true, MaxAgeInMinutes: RESULT_REUSE_MAX_AGE_MINUTES },
+      },
     }),
   );
   const queryExecutionId = start.QueryExecutionId;

@@ -73,6 +73,24 @@ test("manda cada parámetro como literal de texto entre comillas (sin esto, 2026
   ]);
 });
 
+test("pide reutilizar el resultado de una ejecución idéntica de hasta 1 minuto", async () => {
+  mockAthenaSend.mockImplementation((command) => {
+    if (command instanceof StartQueryExecutionCommand) return Promise.resolve({ QueryExecutionId: "q1" });
+    if (command instanceof GetQueryExecutionCommand) {
+      return Promise.resolve({ QueryExecution: { Status: { State: "SUCCEEDED" } } });
+    }
+    if (command instanceof GetQueryResultsCommand) return Promise.resolve(resultSet(1, [["1"]]));
+    throw new Error("comando inesperado");
+  });
+
+  await runWidgetQuery("SELECT 1 FROM x WHERE tenant = ?", ["t1"], "wg");
+
+  const start = mockAthenaSend.mock.calls.map(([cmd]) => cmd).find((cmd) => cmd instanceof StartQueryExecutionCommand);
+  expect(start?.input.ResultReuseConfiguration).toEqual({
+    ResultReuseByAgeConfiguration: { Enabled: true, MaxAgeInMinutes: 1 },
+  });
+});
+
 test("bar/donut (dos columnas): devuelve label + value por fila", async () => {
   mockAthenaSend.mockImplementation((command) => {
     if (command instanceof StartQueryExecutionCommand) return Promise.resolve({ QueryExecutionId: "q1" });
