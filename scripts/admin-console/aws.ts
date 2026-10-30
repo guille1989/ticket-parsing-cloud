@@ -15,7 +15,7 @@ const REGION = "us-east-1";
  */
 export function resolveTables(): AdminTables {
   if (process.env.AGENTS_TABLE && process.env.TENANTS_TABLE) {
-    return { agents: process.env.AGENTS_TABLE, tenants: process.env.TENANTS_TABLE };
+    return { agents: process.env.AGENTS_TABLE, tenants: process.env.TENANTS_TABLE, tickets: process.env.TICKETS_TABLE };
   }
   const raw = execFileSync(
     "aws",
@@ -24,7 +24,7 @@ export function resolveTables(): AdminTables {
   );
   const outputs = Object.fromEntries((JSON.parse(raw) as Array<{ OutputKey: string; OutputValue: string }>).map((o) => [o.OutputKey, o.OutputValue]));
   if (!outputs.AgentsTableName || !outputs.TenantsTableName) throw new Error("el stack no tiene los outputs AgentsTableName / TenantsTableName");
-  return { agents: outputs.AgentsTableName, tenants: outputs.TenantsTableName };
+  return { agents: outputs.AgentsTableName, tenants: outputs.TenantsTableName, tickets: outputs.TicketsTableName };
 }
 
 export function connectAdminData() {

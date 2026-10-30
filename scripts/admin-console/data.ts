@@ -20,6 +20,8 @@ import type { AgentCommandRecord, AgentRecord } from "../../src/shared/types.js"
 export interface AdminTables {
   agents: string;
   tenants: string;
+  /** Solo la usan los scripts de borrado, para contar los tickets de un agente. */
+  tickets?: string;
 }
 
 export class AdminError extends Error {

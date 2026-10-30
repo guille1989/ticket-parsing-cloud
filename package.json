@@ -18,7 +18,8 @@
     "reconcile-analytics": "tsx scripts/reconcile-analytics.ts",
     "backfill-ubl-fields": "tsx scripts/backfill-ubl-fields.ts",
     "admin": "tsx scripts/admin-console/server.ts",
-    "agent-command": "tsx scripts/agent-command.ts"
+    "agent-command": "tsx scripts/agent-command.ts",
+    "delete-agent": "tsx scripts/delete-agent.ts"
   },
   "devDependencies": {
     "@swc/core": "^1.15.0",
