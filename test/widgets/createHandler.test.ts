@@ -159,6 +159,33 @@ test("rechaza filters.port con caracteres fuera de lo permitido", async () => {
   expect(result.statusCode).toBe(400);
 });
 
+test("crea un KPI filtrado por sucursal (filters.agentId)", async () => {
+  const agentId = "3f2b8c1e-5d4a-4b7e-9c10-2a6f8e1d7b90";
+  const result = await handler(
+    eventWith({
+      name: "Ventas — Madrid Centro",
+      visualization: "kpi",
+      metric: { field: "total", aggregation: "sum" },
+      filters: { agentId },
+    }),
+  );
+
+  expect(result.statusCode).toBe(201);
+  expect(JSON.parse(result.body).filters).toEqual({ agentId });
+});
+
+test("rechaza filters.agentId con caracteres fuera de lo permitido", async () => {
+  const result = await handler(
+    eventWith({
+      name: "X",
+      visualization: "kpi",
+      metric: { field: "total", aggregation: "sum" },
+      filters: { agentId: "abc' OR '1'='1" },
+    }),
+  );
+  expect(result.statusCode).toBe(400);
+});
+
 test("sin sesión de Cognito (sin claim de tenantId): 403, no toca DynamoDB", async () => {
   const result = await handler(eventWith({}, ""));
   expect(result.statusCode).toBe(403);

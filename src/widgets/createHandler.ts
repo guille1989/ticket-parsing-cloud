@@ -17,6 +17,8 @@ const STATUSES = ["pending", "parsed", "needs_review", "failed"];
 const MAX_NAME_LENGTH = 100;
 const PORT_PATTERN = /^[A-Za-z0-9_.-]+$/;
 const MAX_PORT_LENGTH = 64;
+const AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+const MAX_AGENT_ID_LENGTH = 64;
 
 type WidgetInput = Omit<WidgetRecord, "tenantId" | "widgetId" | "createdAt">;
 type Validation = { ok: true; value: WidgetInput } | { ok: false; error: string };
@@ -95,6 +97,12 @@ function validateBody(body: unknown): Validation {
         return { ok: false, error: `filters.port inválido (máx ${MAX_PORT_LENGTH} caracteres; solo letras, números, "_", "." o "-")` };
       }
       filters.port = f.port;
+    }
+    if (f.agentId !== undefined) {
+      if (typeof f.agentId !== "string" || f.agentId.length === 0 || f.agentId.length > MAX_AGENT_ID_LENGTH || !AGENT_ID_PATTERN.test(f.agentId)) {
+        return { ok: false, error: `filters.agentId inválido (máx ${MAX_AGENT_ID_LENGTH} caracteres; solo letras, números, "_" o "-")` };
+      }
+      filters.agentId = f.agentId;
     }
     if (f.status !== undefined) {
       if (typeof f.status !== "string" || !STATUSES.includes(f.status)) {

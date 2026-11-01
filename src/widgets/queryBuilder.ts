@@ -178,6 +178,10 @@ function buildWhere(widget: WidgetRecord, timeZone?: string): { whereClause: str
     conditions.push("port = ?");
     params.push(widget.filters.port);
   }
+  if (widget.filters?.agentId) {
+    conditions.push("agentid = ?");
+    params.push(widget.filters.agentId);
+  }
   if (widget.filters?.status) {
     conditions.push("status = ?");
     params.push(widget.filters.status);

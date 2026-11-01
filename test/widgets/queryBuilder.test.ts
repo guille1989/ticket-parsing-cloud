@@ -144,6 +144,18 @@ test("descriptionContains con un campo del ticket (total) se rechaza: sumaría t
 // comentario sobre DEFAULT_YEAR_LOOKBACK) — sin esto, un tenant nuevo con
 // un solo ticket de hoy obligaba a Athena a barrer ~4500 particiones
 // proyectadas (2024-2035 × 12 × 31) y tardaba más de 20s.
+test("filters.agentId filtra por sucursal con un parámetro (nunca interpolado) y se combina con total de ticket", () => {
+  const { sql, params } = buildWidgetQuery(
+    widget({ metric: { field: "total", aggregation: "sum" }, groupBy: undefined, filters: { agentId: "agent-1" } }),
+  );
+
+  expect(sql).toContain("AND agentid = ?");
+  expect(sql).not.toContain("agent-1");
+  expect(params).toContain("agent-1");
+  // total es del ticket: sigue colapsando por ticket antes de sumar.
+  expect(sql).toContain("MAX(total) AS total");
+});
+
 test("sin filtros explícitos, igual acota por año (para no barrer toda la proyección de Athena)", () => {
   const { sql, params } = buildWidgetQuery(widget({ filters: undefined }));
   expect(sql).toContain("WHERE tenant = ? AND CAST(year AS VARCHAR) >= CAST(? AS VARCHAR) AND CAST(year AS VARCHAR) <= CAST(? AS VARCHAR)");

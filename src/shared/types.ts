@@ -226,6 +226,8 @@ export interface WidgetFilters {
   dateTo?: string;
   port?: string;
   status?: string;
+  /** Solo tickets de esta sucursal (agente). Lo usa el KPI "ventas por sucursal". */
+  agentId?: string;
   /**
    * Solo ítems cuya descripción contiene este texto (sin distinguir
    * mayúsculas). Hoy lo usa únicamente el asistente ("lo que diga
