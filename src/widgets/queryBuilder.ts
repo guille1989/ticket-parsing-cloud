@@ -1,6 +1,7 @@
 import {
   EVENT_COUNT_FIELD,
   groupByExpression,
+  isItemLevelGroupBy,
   isTemporalGroupByField,
   isTicketLevelField,
   isValidAggregation,
@@ -55,9 +56,9 @@ export function buildWidgetQuery(widget: WidgetRecord, maxGroups: number = MAX_G
   // "total"/"discount"/"tip" son del ticket, no del ítem — no hay forma
   // correcta de repartirlos entre las descripciones de un mismo ticket.
   // Para desglosar por producto existe "subtotal", que sí es por ítem.
-  if (widget.groupBy === "description" && isTicketLevelField(widget.metric.field)) {
+  if (isItemLevelGroupBy(widget.groupBy) && isTicketLevelField(widget.metric.field)) {
     throw new Error(
-      `no se puede agrupar "${widget.metric.field}" (un valor por ticket) por "description" (un valor por ítem) — usá "subtotal" para desglosar por producto`,
+      `no se puede agrupar "${widget.metric.field}" (un valor por ticket) por "${widget.groupBy}" (un valor por ítem) — usá "subtotal" para desglosar por producto`,
     );
   }
   // Mismo motivo que arriba: filtrar ítems por descripción y después sumar
@@ -190,7 +191,7 @@ function buildWhere(widget: WidgetRecord, timeZone?: string): { whereClause: str
     conditions.push("status IN ('parsed', 'needs_review')");
   }
   if (!isTicketLevelField(widget.metric.field) &&
-      (widget.metric.field !== EVENT_COUNT_FIELD || widget.groupBy === "description" || widget.filters?.descriptionContains)) {
+      (widget.metric.field !== EVENT_COUNT_FIELD || isItemLevelGroupBy(widget.groupBy) || widget.filters?.descriptionContains)) {
     // NULL corresponde a filas legacy anteriores a la marca de anulación.
     conditions.push("COALESCE(voided, false) = false");
   }

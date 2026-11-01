@@ -239,6 +239,25 @@ test("run_widget_query: ofrece y acepta agrupar por día (\"¿qué día vendí m
   expect(toolResultMsg.content[0].toolResult.status).toBeUndefined();
 });
 
+test("run_widget_query: agrupado por producto, cada fila trae el volumen del nombre", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "run_widget_query", { field: "quantity", aggregation: "sum", groupBy: "description" }),
+    )
+    .mockResolvedValueOnce(textResponse("Listo."));
+  mockRunAthenaQuery.mockResolvedValue([
+    { label: "AGUA TRATADA 350 ML SIN GAS", value: 40 },
+    { label: "CASINO Y RESTAURANTE SERV DE COMEDOR", value: 2 },
+  ]);
+
+  await handler(eventWith({ question: "tabla de envases vendidos con el volumen" }, "tenant-x"));
+
+  const toolResultMsg = mockBedrockSend.mock.calls[1][0].input.messages[2];
+  const data = toolResultMsg.content[0].toolResult.content[0].json.data;
+  expect(data[0]).toMatchObject({ label: "AGUA TRATADA 350 ML SIN GAS", value: 40, volume: "350 ML" });
+  expect(data[1].volume).toBeUndefined();
+});
+
 test("list_tickets: consulta DynamoDB por estado y limita el resultado", async () => {
   mockBedrockSend
     .mockResolvedValueOnce(toolUseResponse("tu1", "list_tickets", { status: "failed", limit: 5 }))
@@ -260,6 +279,25 @@ test("list_tickets: consulta DynamoDB por estado y limita el resultado", async (
   expect(ddbInput).toBeDefined();
   expect(ddbInput.ExpressionAttributeValues[":gsi1pk"]).toBe("TENANT#tenant-x#STATUS#failed");
   expect(ddbInput.Limit).toBe(5);
+});
+
+test("list_tickets: devuelve cliente y número de factura de las facturas electrónicas", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "list_tickets", {}))
+    .mockResolvedValueOnce(textResponse("Listo."));
+  mockDdbSend.mockResolvedValue({
+    Items: [
+      { ticketId: "a", capturedAt: "2026-08-01T00:00:00Z", status: "parsed", port: "UBL", total: 100, customerName: "ACME SAS", customerId: "900123", documentNumber: "FVA1", docType: "sale" },
+      { ticketId: "b", capturedAt: "2026-08-02T00:00:00Z", status: "parsed", port: "COM3", total: 50 },
+    ],
+  });
+
+  await handler(eventWith({ question: "listame las ventas con el cliente" }, "tenant-x"));
+
+  const toolResultMsg = mockBedrockSend.mock.calls[1][0].input.messages[2];
+  const payload = JSON.parse(toolResultMsg.content[0].toolResult.content[0].text ?? JSON.stringify(toolResultMsg.content[0].toolResult.content[0].json));
+  expect(payload.tickets[0]).toMatchObject({ customerName: "ACME SAS", customerId: "900123", documentNumber: "FVA1" });
+  expect(payload.tickets[1].customerName).toBeUndefined();
 });
 
 test("429 si el tenant supera el límite de preguntas por minuto: no llama a Bedrock", async () => {

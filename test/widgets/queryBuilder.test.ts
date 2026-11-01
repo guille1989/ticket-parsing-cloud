@@ -230,3 +230,17 @@ test("zona horaria inválida o con intento de inyección: se rechaza antes de ge
   expect(() => buildWidgetQuery(w, undefined, "x'); DROP TABLE t;--")).toThrow(/zona horaria inválida/);
   expect(() => buildWidgetQuery(w, undefined, "Mars/Olympus")).toThrow(/zona horaria inválida/);
 });
+
+test("groupBy volume: agrupa por la medida del nombre, filtra anulados y no agrega placeholders", () => {
+  const { sql, params } = buildWidgetQuery(widget({ groupBy: "volume", metric: { field: "quantity", aggregation: "sum" } }));
+
+  expect(sql).toContain("regexp_extract(lower(description)");
+  expect(sql).toContain("COALESCE(voided, false) = false");
+  expect(sql).toMatch(/GROUP BY concat\(.*\) ORDER BY value DESC LIMIT 200$/);
+  // Cada `?` del SQL es un parámetro: la regex inlineada no puede traer ninguno.
+  expect((sql.match(/\?/g) ?? []).length).toBe(params.length);
+});
+
+test("groupBy volume con un valor por ticket (total) se rechaza, igual que description", () => {
+  expect(() => buildWidgetQuery(widget({ groupBy: "volume", metric: { field: "total", aggregation: "sum" } }))).toThrow(/un valor por ítem/);
+});

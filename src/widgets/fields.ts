@@ -28,8 +28,13 @@ export function isTicketLevelField(field: string): boolean {
 /** Pseudo-campo: cuenta tickets (eventos), no filas de ítem — ver queryBuilder.ts. */
 export const EVENT_COUNT_FIELD = "event_count";
 
-export const CATEGORICAL_FIELDS = ["port", "agent", "status", "parsedBy", "description", "customer"] as const;
+export const CATEGORICAL_FIELDS = ["port", "agent", "status", "parsedBy", "description", "customer", "volume"] as const;
 export type CategoricalField = (typeof CATEGORICAL_FIELDS)[number];
+
+/** Agrupaciones por ÍTEM (un valor por línea de producto, no por ticket). */
+export function isItemLevelGroupBy(field: string | undefined): boolean {
+  return field === "description" || field === "volume";
+}
 export const TEMPORAL_FIELDS = ["day", "hour"] as const;
 export type TemporalField = (typeof TEMPORAL_FIELDS)[number];
 export type GroupByField = CategoricalField | TemporalField;
@@ -50,6 +55,23 @@ const NUMERIC_COLUMN_BY_FIELD: Record<NumericField, string> = {
   total: "total",
 };
 
+/**
+ * Medida (volumen o peso) que figura en el nombre del producto: número +
+ * unidad, para agrupar "AGUA TRATADA 350 ML SIN GAS" y "…350 ML CON GAS" bajo
+ * "350 ML". Se aplica sobre `lower(description)`. Sin `?` ni comillas: Athena
+ * cuenta los `?` como parámetros y esto va inlineado en el SQL. Grupo 1 =
+ * número, grupo 3 = unidad (la más larga primero para que "lts" no quede como "l").
+ */
+export const VOLUME_PATTERN = String.raw`(\d+([.,]\d+)*)\s*(ml|cc|lts|lt|litros|litro|l|kg|grs|gr|g|onz|oz)([^a-z]|$)`;
+
+const VOLUME_UNIT_SQL = `regexp_extract(lower(description), '${VOLUME_PATTERN}', 3)`;
+// regexp_extract devuelve NULL sin coincidencia y concat(NULL, …) también: queda "(sin dato)".
+const VOLUME_EXPRESSION =
+  `concat(replace(regexp_extract(lower(description), '${VOLUME_PATTERN}', 1), ',', '.'), ' ', ` +
+  `CASE ${VOLUME_UNIT_SQL} WHEN 'lts' THEN 'L' WHEN 'lt' THEN 'L' WHEN 'litros' THEN 'L' WHEN 'litro' THEN 'L' WHEN 'l' THEN 'L' ` +
+  `WHEN 'grs' THEN 'G' WHEN 'gr' THEN 'G' WHEN 'g' THEN 'G' ELSE upper(${VOLUME_UNIT_SQL}) END)`;
+
+// Expresión SQL de agrupación por campo (casi siempre una columna; "volume" es una expresión).
 const CATEGORICAL_COLUMN_BY_FIELD: Record<CategoricalField, string> = {
   port: "port",
   agent: "agentid",
@@ -58,6 +80,7 @@ const CATEGORICAL_COLUMN_BY_FIELD: Record<CategoricalField, string> = {
   description: "description",
   // Solo las facturas electrónicas traen cliente; el resto queda en NULL.
   customer: "customername",
+  volume: VOLUME_EXPRESSION,
 };
 
 export function isValidMetricField(field: string): field is NumericField | typeof EVENT_COUNT_FIELD {

@@ -10,12 +10,14 @@ import { jsonResponse } from "../shared/http.js";
 import type { AgentRecord, TicketRecord, TicketStatus, WidgetAggregation, WidgetFilters, WidgetRecord } from "../shared/types.js";
 import { runWidgetQuery as runAthenaQuery, type WidgetDataPoint } from "../widgets/athenaQuery.js";
 import { dateFilterError } from "../widgets/dateFilters.js";
+import { extractProductVolume } from "./productVolume.js";
 import {
   AGGREGATIONS,
   CATEGORICAL_FIELDS,
   EVENT_COUNT_FIELD,
   NUMERIC_FIELDS,
   TEMPORAL_FIELDS,
+  isItemLevelGroupBy,
   isTicketLevelField,
   isValidAggregation,
   isValidGroupByField,
@@ -48,21 +50,24 @@ const SYSTEM_PROMPT = `Sos el asistente de datos del dashboard de un negocio que
 Tenés tres herramientas para consultar los datos REALES del negocio — nunca inventes números:
 Las métricas de venta cuentan por defecto los tickets confirmados (parsed) y los pendientes de revisión (needs_review), este último un ticket leído por un modelo de IA que el negocio aún no confirmó; excluyen líneas anuladas al consultar productos. Un value null significa que no hay observaciones para esa métrica: no lo conviertas en cero ni calcules un porcentaje contra una base ausente. sampleCount, cuando aparece, indica el número de observaciones del promedio. Si el usuario pregunta por ventas confirmadas, filtrá por estado parsed; si una consulta explícita por estado incluye needs_review, aclaralo.
 - "run_widget_query": totales/promedios/conteos, opcionalmente agrupados por sucursal/estado/producto o por día. Usala para preguntas de agregados ("¿cuánto vendí?", "¿qué producto vendió más?", "comparame las sucursales", "¿qué día vendí más?").
-- "list_tickets": los tickets más recientes, opcionalmente filtrados por estado. Usala para preguntas puntuales sobre ventas concretas, no para totales.
+- "list_tickets": los tickets más recientes (fecha, sucursal, puerto, estado, total y, en facturas electrónicas, cliente y número de factura), opcionalmente filtrados por estado. Usala para preguntas puntuales sobre ventas concretas o para listados fila por fila, no para totales.
 
 - "build_report": arma un reporte descargable (varias secciones, cada una con su consulta). Usala SOLO cuando el usuario pida un reporte, informe o resumen para descargar. Las tablas las calcula la herramienta con datos reales; vos no transcribas números. Después de llamarla, contestá en pocas oraciones con los hallazgos principales y decí que el reporte está listo para descargar.
 
 Sucursales: cada robot ("agent") es una sucursal/local del negocio. Para "¿qué sucursal/local/sede…?", "comparame las sucursales" o "ventas por sucursal" agrupá por "agent": el resultado ya trae el nombre de cada sucursal, usalo tal cual en la respuesta. NO uses "port" para eso: "port" es el puerto/periférico (por ejemplo una caja registradora, TPV-CAJA1) y un mismo local puede tener varios; solo agrupá por "port" si piden explícitamente comparar cajas o puertos.
 
-Clientes: si el negocio factura con factura electrónica, las ventas traen el cliente. Para "¿qué cliente compró más?" o "ventas por cliente" agrupá por "customer" (con "total" o "subtotal"). Si todo sale como "sin dato", ese negocio no registra clientes: decilo.
+Clientes: si el negocio factura con factura electrónica, las ventas traen el cliente. Para "¿qué cliente compró más?" o "ventas por cliente" agrupá por "customer" (con "total" o "subtotal"). Si todo sale como "sin dato", ese negocio no registra clientes: decilo. Para una lista de ventas/facturas con el nombre del cliente en una columna, usá "list_tickets": cada ticket trae customerName, customerId y documentNumber (solo las facturas electrónicas los tienen; si un ticket no los trae, ponelo como "sin dato" y no digas que el sistema no captura clientes).
 
-Formato de la respuesta: texto plano. Podés resaltar con **negrita** lo más importante (el nombre de la sucursal o producto y la cifra clave), pero ningún otro markdown (nada de #, tablas ni viñetas con asteriscos). No pongas símbolo de moneda ($, €…) porque no sabés la moneda del negocio: escribí solo el número (con separador de miles y hasta 2 decimales).
+Formato de la respuesta: texto plano. Podés resaltar con **negrita** lo más importante (el nombre de la sucursal o producto y la cifra clave). Si piden una lista o una tabla con columnas, armala como tabla markdown (| col | col | con la fila |---|---|); fuera de eso, nada de #, tablas ni viñetas con asteriscos. No pongas símbolo de moneda ($, €…) porque no sabés la moneda del negocio: escribí solo el número (con separador de miles y hasta 2 decimales).
 
 No pidas aclaraciones si la pregunta se puede contestar con una suposición razonable: consultá, contestá y decí en una frase qué supusiste. Supuestos por defecto:
 - "Ventas" es plata: "subtotal" si es por producto, "total" si es del negocio entero.
 - Para "lo más vendido" o "el producto que más se vende" usá "quantity" (unidades vendidas) con sum, agrupado por producto. "event_count" cuenta tickets que incluyen el producto (un ticket con 3 horneadas cuenta 1): usalo solo si piden transacciones, tickets o clientes. Nunca mezcles las dos métricas en una misma comparación y decí siempre cuál usaste ("unidades" o "tickets"). En los títulos de las secciones de un reporte nombrá la métrica ("Unidades vendidas por producto", "Tickets por producto").
 - Un mes o un día sin año es el más reciente que ya empezó, según la fecha de hoy (va al final).
 - "Las horneadas", "lo que diga empanadas" y parecidos son un tipo de producto: usá el filtro "descriptionContains" con una raíz corta de la palabra, una consulta por cada tipo. La suma la hace la herramienta, no la calcules vos.
+- "Envases", "botellas", "presentaciones", "tamaños", "tipos" o "referencias" vendidas NO son una palabra que aparezca en los nombres: el tipo de envase/presentación viene dentro del nombre del producto (por ejemplo "AGUA TRATADA 350 ML SIN GAS", "AGUA TRATADA 600 ML BALA CON GAS"). NUNCA filtres con "descriptionContains" por una categoría genérica como "envase", "botella" o "producto". Agrupá por "description" con "quantity" (sum) —y si piden plata, también "subtotal"— en el periodo pedido, y presentá cada producto como una fila: el nombre del producto es el tipo de envase y la cantidad es el número de envases/unidades. Cada fila agrupada por producto trae "volume" (la medida que figura en el nombre, ej. "350 ML"; ausente si no tiene): si piden el volumen separado, ponelo en su propia columna (Producto | Volumen | Unidades) copiando "volume" tal cual, sin calcularlo vos. Si piden totales POR VOLUMEN (todo lo de 350 ML junto, con y sin gas), agrupá por "volume" (con "quantity" o "subtotal"): la herramienta ya suma por medida; las filas "(sin dato)" son productos sin medida en el nombre. Nunca sumes filas por volumen vos.
+- Si piden el "total del ticket"/"total de la factura" desglosado por producto, volumen o medida, ese total no se puede repartir entre los ítems: usá "subtotal" (valor de las líneas, antes de los impuestos del ticket) y decí explícitamente en la respuesta que usaste subtotal y por qué. El encabezado de la columna de cifras nombra la métrica real que devolvió la herramienta (campo "metric": "Subtotal", "Unidades"…), no la que pidió el usuario.
+- Cada cifra de una tabla se copia tal cual del resultado de la herramienta. Nunca multipliques, dividas ni derives importes (por ejemplo cantidad × precio) ni inventes precios: si te falta una cifra, volvé a consultar. Solo usá "descriptionContains" si el usuario nombra una palabra concreta que sí figura en los productos (una medida, "bala", "con gas"). Si el resultado viene vacío, volvé a consultar sin filtro de producto antes de decir que no hay datos.
 Pedí aclaración solo si no hay ninguna interpretación razonable.
 
 Si la pregunta no tiene que ver con los datos del negocio (tickets, ventas, robots), respondé brevemente que solo podés ayudar con eso. Basá la respuesta únicamente en lo que devolvió la herramienta — si no hay datos, decilo en vez de inventar. Cuando uses datos reales, mencioná brevemente sobre qué te basaste (ej. cantidad de tickets).
@@ -98,7 +103,7 @@ function widgetQueryProperties() {
         // (isValidGroupByField), solo faltaba ofrecerlo.
         enum: [...CATEGORICAL_FIELDS, ...TEMPORAL_FIELDS],
         description:
-          "Campo para desglosar el resultado (opcional, omitir para un solo total). 'agent' desglosa por sucursal/local (devuelve el nombre de cada una). 'port' desglosa por puerto/periférico (caja), NO por sucursal. 'day' agrupa por fecha (YYYY-MM-DD) y 'hour' por hora (YYYY-MM-DD HH, 24h), ordenados de lo más viejo a lo más nuevo.",
+          "Campo para desglosar el resultado (opcional, omitir para un solo total). 'agent' desglosa por sucursal/local (devuelve el nombre de cada una). 'port' desglosa por puerto/periférico (caja), NO por sucursal. 'volume' agrupa por la medida del nombre del producto (350 ML, 600 ML, 20 L…); solo con 'subtotal', 'quantity', 'unitPrice' o 'event_count'. 'day' agrupa por fecha (YYYY-MM-DD) y 'hour' por hora (YYYY-MM-DD HH, 24h), ordenados de lo más viejo a lo más nuevo.",
       },
       filters: {
         type: "object",
@@ -110,7 +115,7 @@ function widgetQueryProperties() {
           descriptionContains: {
             type: "string",
             description:
-              "Solo productos cuyo nombre contiene este texto, sin distinguir mayúsculas (opcional). Usá una raíz corta ('horne', 'empa') porque los nombres pueden venir abreviados. Solo con 'subtotal', 'quantity', 'unitPrice' o 'event_count'.",
+              "Solo productos cuyo nombre contiene este texto, sin distinguir mayúsculas (opcional). Usá una raíz corta ('horne', 'empa') porque los nombres pueden venir abreviados. No sirve para categorías genéricas ('envase', 'botella'): para eso agrupá por 'description'. Solo con 'subtotal', 'quantity', 'unitPrice' o 'event_count'.",
           },
         },
       },
@@ -166,7 +171,7 @@ function buildTools(): Tool[] {
     {
       toolSpec: {
         name: "list_tickets",
-        description: `Lista hasta ${LIST_TICKETS_MAX_LIMIT} tickets recientes del negocio, opcionalmente filtrados por estado. Para preguntas puntuales, no para totales.`,
+        description: `Lista hasta ${LIST_TICKETS_MAX_LIMIT} tickets recientes del negocio, opcionalmente filtrados por estado. Cada ticket trae fecha, sucursal, puerto, estado, total y, si es factura electrónica, customerName/customerId/documentNumber. Para preguntas puntuales o listados, no para totales.`,
         inputSchema: {
           json: {
             type: "object",
@@ -210,8 +215,8 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
     }
     groupBy = raw.groupBy;
   }
-  if (groupBy === "description" && isTicketLevelField(field)) {
-    throw new Error(`no se puede agrupar "${field}" (un valor por ticket) por "description" (un valor por ítem) — usá "subtotal"`);
+  if (isItemLevelGroupBy(groupBy) && isTicketLevelField(field)) {
+    throw new Error(`no se puede agrupar "${field}" (un valor por ticket) por "${groupBy}" (un valor por ítem) — usá "subtotal"`);
   }
 
   let filters: WidgetFilters | undefined;
@@ -252,11 +257,16 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
 
   const query = buildWidgetQuery(widget, ASSISTANT_MAX_GROUPS, ctx.timeZone);
   const data = await runAthenaQuery(query.sql, query.params, process.env.ATHENA_WORKGROUP!);
-  if (groupBy !== "agent") return { data };
+  // Qué se calculó de verdad, para que el modelo rotule la columna con la métrica real
+  // y no la confunda con la que pidió el usuario (p. ej. "total del ticket" → subtotal).
+  const meta = { metric: field, aggregation, ...(groupBy ? { groupBy } : {}), ...(filters && Object.keys(filters).length ? { filters } : {}) };
+  if (groupBy === "description") return { ...meta, data: data.map((row) => ({ ...row, volume: extractProductVolume(row.label) })) };
+  if (groupBy !== "agent") return { ...meta, data };
 
   // Por sucursal: Athena devuelve el agentId (UUID) — se traduce al nombre del local.
   const names = await branchNames(tenantId, ctx);
   return {
+    ...meta,
     data: data.map((row) => ({
       ...row,
       label: !row.label || row.label === "(sin dato)" ? "Sin sucursal asignada" : (names.get(row.label) ?? row.label),
@@ -303,6 +313,11 @@ async function listTicketsTool(input: unknown, tenantId: string, ctx: ToolContex
     branch: t.agentId ? names.get(t.agentId) : undefined,
     port: t.port,
     total: t.total,
+    // Solo las facturas electrónicas traen estos datos; en el resto quedan ausentes.
+    customerName: t.customerName,
+    customerId: t.customerId,
+    documentNumber: t.documentNumber,
+    docType: t.docType,
   }));
 
   return { tickets, count: tickets.length };

@@ -7,7 +7,7 @@ import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import type { WidgetAggregation, WidgetFilters, WidgetRecord, WidgetVisualization } from "../shared/types.js";
-import { AGGREGATIONS, CATEGORICAL_FIELDS, TEMPORAL_FIELDS, isTicketLevelField, isValidAggregation, isValidGroupByField, isValidMetricField } from "./fields.js";
+import { AGGREGATIONS, CATEGORICAL_FIELDS, TEMPORAL_FIELDS, isItemLevelGroupBy, isTicketLevelField, isValidAggregation, isValidGroupByField, isValidMetricField } from "./fields.js";
 import { dateFilterError } from "./dateFilters.js";
 
 const VISUALIZATIONS: WidgetVisualization[] = ["kpi", "bar", "line", "donut"];
@@ -66,10 +66,10 @@ function validateBody(body: unknown): Validation {
     }
     // total/discount/tip son del ticket, no del ítem — no hay forma
     // correcta de repartirlos entre las descripciones de un mismo ticket.
-    if (b.groupBy === "description" && isTicketLevelField(metric.field)) {
+    if (isItemLevelGroupBy(b.groupBy as string) && isTicketLevelField(metric.field)) {
       return {
         ok: false,
-        error: `no se puede agrupar "${metric.field}" (un valor por ticket) por "description" (un valor por ítem) — usá "subtotal" para desglosar por producto`,
+        error: `no se puede agrupar "${metric.field}" (un valor por ticket) por "${b.groupBy}" (un valor por ítem) — usá "subtotal" para desglosar por producto`,
       };
     }
     groupBy = b.groupBy;

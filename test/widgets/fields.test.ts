@@ -6,6 +6,7 @@ import {
   isValidAggregation,
   isValidGroupByField,
   isValidMetricField,
+  VOLUME_PATTERN,
   numericColumn,
 } from "../../src/widgets/fields";
 
@@ -50,4 +51,27 @@ test("solo sum/avg/max/min/count son agregaciones válidas", () => {
 test("numericColumn/categoricalColumn traducen a la columna real de Athena", () => {
   expect(numericColumn("unitPrice")).toBe("unitprice");
   expect(categoricalColumn("parsedBy")).toBe("parsedby");
+});
+
+test.each([
+  ["AGUA TRATADA 350 ML SIN GAS", "350", "ml"],
+  ["AGUA TRATADA 600 ML BALA CON GAS", "600", "ml"],
+  ["AGUA TRATADA 350ML", "350", "ml"],
+  ["BOTELLON 20 LT", "20", "lt"],
+  ["BOTELLON 20 LTS.", "20", "lts"],
+  ["AGUA 1,5 LITROS", "1,5", "litros"],
+  ["ARROZ 500 GR", "500", "gr"],
+])("VOLUME_PATTERN (versión JS de la regex de Athena): %s", (description, number, unit) => {
+  const match = new RegExp(VOLUME_PATTERN).exec(description.toLowerCase());
+  expect(match?.[1]).toBe(number);
+  expect(match?.[3]).toBe(unit);
+});
+
+test.each(["CASINO Y RESTAURANTE SERV DE COMEDOR", "AGUA LIGHT", "2 GASEOSAS"])("VOLUME_PATTERN no coincide: %s", (description) => {
+  expect(new RegExp(VOLUME_PATTERN).test(description.toLowerCase())).toBe(false);
+});
+
+test("volume es un groupBy válido y su columna es una expresión sin placeholders", () => {
+  expect(isValidGroupByField("volume")).toBe(true);
+  expect(categoricalColumn("volume")).not.toContain("?");
 });
