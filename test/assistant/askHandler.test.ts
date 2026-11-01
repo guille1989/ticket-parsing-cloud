@@ -635,6 +635,77 @@ test("run_widget_query por agent: traduce los agentId al nombre de la sucursal (
   ]);
 });
 
+const BRANCH_AGENTS = [
+  { agentId: "agent-sol", name: "TPV Sol", location: { label: "Horno Castizo · Sol" } },
+  { agentId: "agent-atocha", name: "TPV Atocha", location: { label: "Horno Castizo · Atocha" } },
+  { agentId: "agent-solera", name: "TPV Solera" },
+];
+function mockBranchAgents() {
+  mockDdbSend.mockImplementation(async (cmd: { input: { TableName?: string } }) =>
+    cmd.input.TableName === "TestAgents" ? { Items: BRANCH_AGENTS } : {},
+  );
+}
+
+test("run_widget_query con filters.branch: el nombre se traduce a agentId (parámetro SQL) y el modelo recibe el nombre", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "run_widget_query", {
+        field: "quantity", aggregation: "sum", groupBy: "description", filters: { branch: "TPV Sol" },
+      }),
+    )
+    .mockResolvedValueOnce(textResponse("Listo."));
+  mockRunAthenaQuery.mockResolvedValue([{ label: "Menú del día", value: 2760 }]);
+  mockBranchAgents();
+
+  await handler(eventWith({ question: "¿qué se vende más en Sol?" }, "tenant-x"));
+
+  const [sql, params] = mockRunAthenaQuery.mock.calls[0];
+  expect(sql).toContain("agentid = ?");
+  expect(sql).not.toContain("agent-sol");
+  expect(params).toContain("agent-sol");
+  const json = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult.content[0].json;
+  expect(json.filters).toEqual({ branch: "Horno Castizo · Sol" });
+  expect(JSON.stringify(json)).not.toContain("agent-sol");
+});
+
+test("run_widget_query con filters.branch: acepta una coincidencia parcial única, sin tildes ni mayúsculas", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", filters: { branch: "ATOCHA" } }))
+    .mockResolvedValueOnce(textResponse("Listo."));
+  mockRunAthenaQuery.mockResolvedValue([{ value: 10 }]);
+  mockBranchAgents();
+
+  await handler(eventWith({ question: "ventas de atocha" }, "tenant-x"));
+
+  expect(mockRunAthenaQuery.mock.calls[0][1]).toContain("agent-atocha");
+});
+
+test.each([
+  ["so", /coincide con varias sucursales: .*Horno Castizo · Sol.*TPV Solera/],
+  ["Chueca", /no existe la sucursal .*Chueca.*Sucursales disponibles: .*Horno Castizo · Sol/],
+])("run_widget_query con filters.branch \"%s\": si no es única no consulta y le devuelve las opciones al modelo", async (branch, message) => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", filters: { branch } }))
+    .mockResolvedValueOnce(textResponse("¿Cuál?"));
+  mockBranchAgents();
+
+  await handler(eventWith({ question: "ventas" }, "tenant-x"));
+
+  expect(mockRunAthenaQuery).not.toHaveBeenCalled();
+  const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
+  expect(toolResult.status).toBe("error");
+  expect(JSON.stringify(toolResult.content)).toMatch(message);
+});
+
+test("el prompt y la herramienta ofrecen filters.branch para una sola sucursal", async () => {
+  mockBedrockSend.mockResolvedValueOnce(textResponse("hola"));
+  await handler(eventWith({ question: "hola" }));
+  const input = mockBedrockSend.mock.calls[0][0].input;
+  expect(input.system[0].text).toContain('filtro "branch"');
+  const tool = input.toolConfig.tools.find((t: { toolSpec: { name: string } }) => t.toolSpec.name === "run_widget_query");
+  expect(tool.toolSpec.inputSchema.json.properties.filters.properties.branch).toBeDefined();
+});
+
 test("run_widget_query por agent: si no se pueden leer las sucursales, sigue funcionando con los ids", async () => {
   mockBedrockSend
     .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", groupBy: "agent" }))

@@ -55,6 +55,7 @@ Las métricas de venta cuentan por defecto los tickets confirmados (parsed) y lo
 - "build_report": arma un reporte descargable (varias secciones, cada una con su consulta). Usala SOLO cuando el usuario pida un reporte, informe o resumen para descargar. Las tablas las calcula la herramienta con datos reales; vos no transcribas números. Después de llamarla, contestá en pocas oraciones con los hallazgos principales y decí que el reporte está listo para descargar.
 
 Sucursales: cada robot ("agent") es una sucursal/local del negocio. Para "¿qué sucursal/local/sede…?", "comparame las sucursales" o "ventas por sucursal" agrupá por "agent": el resultado ya trae el nombre de cada sucursal, usalo tal cual en la respuesta. NO uses "port" para eso: "port" es el puerto/periférico (por ejemplo una caja registradora, TPV-CAJA1) y un mismo local puede tener varios; solo agrupá por "port" si piden explícitamente comparar cajas o puertos.
+Para los datos de UNA sola sucursal ("¿qué se vende más en la sucursal Sol?", "ventas de Chapinero en octubre") usá el filtro "branch" con el nombre que dijo el usuario, junto con el resto de la consulta (por ejemplo agrupado por producto). Sin ese filtro el resultado es de TODO el negocio: nunca atribuyas a una sucursal un resultado que no consultaste con "branch". Si la herramienta responde que la sucursal no existe o es ambigua, mostrale al usuario las sucursales que te devuelve y pedile que elija.
 
 Clientes: si el negocio factura con factura electrónica, las ventas traen el cliente. Para "¿qué cliente compró más?" o "ventas por cliente" agrupá por "customer" (con "total" o "subtotal"). Si todo sale como "sin dato", ese negocio no registra clientes: decilo. Para una lista de ventas/facturas con el nombre del cliente en una columna, usá "list_tickets": cada ticket trae customerName, customerId y documentNumber (solo las facturas electrónicas los tienen; si un ticket no los trae, ponelo como "sin dato" y no digas que el sistema no captura clientes).
 
@@ -112,6 +113,11 @@ function widgetQueryProperties() {
           dateTo: { type: "string", description: "Fecha hasta, YYYY-MM-DD, incluye ese día entero (opcional)." },
           port: { type: "string", description: "Filtrar por un puerto/periférico puntual, p. ej. TPV-CAJA1 (opcional). No sirve para filtrar por sucursal." },
           status: { type: "string", enum: TICKET_STATUSES, description: "Filtrar por estado del ticket (opcional)." },
+          branch: {
+            type: "string",
+            description:
+              "Solo los datos de esta sucursal/local, por su nombre tal cual lo dijo el usuario, p. ej. 'Sol' (opcional). Sin este filtro la consulta abarca todas las sucursales.",
+          },
           descriptionContains: {
             type: "string",
             description:
@@ -220,6 +226,7 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
   }
 
   let filters: WidgetFilters | undefined;
+  let branchLabel: string | undefined;
   if (raw.filters !== undefined) {
     if (!raw.filters || typeof raw.filters !== "object" || Array.isArray(raw.filters)) throw new Error("filters inválido, se esperaba un objeto");
     const f = raw.filters as Record<string, unknown>;
@@ -237,6 +244,13 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
     if (f.status !== undefined) {
       if (typeof f.status !== "string" || !TICKET_STATUSES.includes(f.status as TicketStatus)) throw new Error("status inválido");
       filters.status = f.status as TicketStatus;
+    }
+    if (f.branch !== undefined) {
+      if (typeof f.branch !== "string" || !f.branch.trim()) throw new Error("branch inválido, se esperaba el nombre de una sucursal");
+      await branchNames(tenantId, ctx);
+      const match = resolveBranch(f.branch, ctx.branchAliases ?? new Map());
+      filters.agentId = match.agentId;
+      branchLabel = match.label;
     }
     if (f.descriptionContains !== undefined && (typeof f.descriptionContains !== "string" || !f.descriptionContains.trim())) throw new Error("descriptionContains inválido");
     if (typeof f.descriptionContains === "string" && f.descriptionContains.trim()) {
@@ -259,7 +273,10 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
   const data = await runAthenaQuery(query.sql, query.params, process.env.ATHENA_WORKGROUP!);
   // Qué se calculó de verdad, para que el modelo rotule la columna con la métrica real
   // y no la confunda con la que pidió el usuario (p. ej. "total del ticket" → subtotal).
-  const meta = { metric: field, aggregation, ...(groupBy ? { groupBy } : {}), ...(filters && Object.keys(filters).length ? { filters } : {}) };
+  // El agentId es interno: al modelo se le devuelve el nombre de la sucursal consultada.
+  const { agentId: _agentId, ...visibleFilters } = filters ?? {};
+  const metaFilters = { ...visibleFilters, ...(branchLabel ? { branch: branchLabel } : {}) };
+  const meta = { metric: field, aggregation, ...(groupBy ? { groupBy } : {}), ...(Object.keys(metaFilters).length ? { filters: metaFilters } : {}) };
   if (groupBy === "description") return { ...meta, data: data.map((row) => ({ ...row, volume: extractProductVolume(row.label) })) };
   if (groupBy !== "agent") return { ...meta, data };
 
@@ -416,7 +433,40 @@ async function buildReportTool(input: unknown, tenantId: string, ctx: ToolContex
   return { ok: true, title, sections: sections.map((s) => ({ heading: s.heading, data: s.data, previous: s.previous })) };
 }
 
-type ToolContext = { report?: Report; timeZone?: string; branches?: Promise<Map<string, string>> };
+type ToolContext = {
+  report?: Report;
+  timeZone?: string;
+  branches?: Promise<Map<string, string>>;
+  /** agentId -> nombres con los que un usuario puede referirse a la sucursal (se llena junto con `branches`). */
+  branchAliases?: Map<string, { label: string; names: string[] }>;
+};
+
+function normalizeName(value: string): string {
+  return value.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+}
+
+/**
+ * Traduce el nombre de sucursal que dijo el usuario al agentId. Primero
+ * coincidencia exacta (sin tildes ni mayúsculas) con el nombre mostrado, el
+ * nombre del robot o la etiqueta de la ubicación; si no hay, la que lo
+ * contenga ("sol" → "TPV Sol"). Si no es única, devuelve un error con las
+ * opciones para que el modelo le pregunte al usuario en vez de adivinar.
+ */
+export function resolveBranch(query: string, aliases: Map<string, { label: string; names: string[] }>): { agentId: string; label: string } {
+  const available = [...aliases.values()].map((entry) => entry.label).join(", ");
+  if (aliases.size === 0) throw new Error("no hay sucursales registradas para filtrar por branch");
+  const q = normalizeName(query);
+  const pick = (matches: (names: string[]) => boolean) =>
+    [...aliases.entries()].filter(([, entry]) => matches(entry.names.map(normalizeName)));
+  let found = pick((names) => names.includes(q));
+  if (found.length === 0) found = pick((names) => names.some((name) => name.includes(q)));
+  if (found.length === 0) throw new Error(`no existe la sucursal "${query}". Sucursales disponibles: ${available}`);
+  if (found.length > 1) {
+    throw new Error(`"${query}" coincide con varias sucursales: ${found.map(([, entry]) => entry.label).join(", ")}. Pedile al usuario que elija una.`);
+  }
+  const [agentId, entry] = found[0];
+  return { agentId, label: entry.label };
+}
 
 /**
  * agentId -> nombre de la sucursal. El dashboard traduce los UUID de
@@ -427,7 +477,7 @@ type ToolContext = { report?: Report; timeZone?: string; branches?: Promise<Map<
  * robots comparten etiqueta se desambigua con el nombre del robot.
  * Si la lectura falla, el asistente sigue andando (con los ids crudos).
  */
-async function loadBranchNames(tenantId: string): Promise<Map<string, string>> {
+async function loadBranchNames(tenantId: string, aliases: NonNullable<ToolContext["branchAliases"]>): Promise<Map<string, string>> {
   const names = new Map<string, string>();
   try {
     const result = await ddb.send(
@@ -445,7 +495,12 @@ async function loadBranchNames(tenantId: string): Promise<Map<string, string>> {
     for (const agent of agents) labelCount.set(labelOf(agent), (labelCount.get(labelOf(agent)) ?? 0) + 1);
     for (const agent of agents) {
       const label = labelOf(agent);
-      names.set(agent.agentId, (labelCount.get(label) ?? 0) > 1 && label !== agent.name ? `${label} (${agent.name})` : label);
+      const display = (labelCount.get(label) ?? 0) > 1 && label !== agent.name ? `${label} (${agent.name})` : label;
+      names.set(agent.agentId, display);
+      aliases.set(agent.agentId, {
+        label: display,
+        names: [...new Set([display, agent.name, agent.location?.label?.trim()].filter((n): n is string => !!n))],
+      });
     }
   } catch (err) {
     console.error("[assistant] no se pudieron leer las sucursales:", err);
@@ -454,7 +509,8 @@ async function loadBranchNames(tenantId: string): Promise<Map<string, string>> {
 }
 
 function branchNames(tenantId: string, ctx: ToolContext): Promise<Map<string, string>> {
-  ctx.branches ??= loadBranchNames(tenantId);
+  ctx.branchAliases ??= new Map();
+  ctx.branches ??= loadBranchNames(tenantId, ctx.branchAliases);
   return ctx.branches;
 }
 
