@@ -44,6 +44,7 @@ export interface MatterRecord {
   createdAt: string;
   updatedAt: string;
   seenAt?: string;
+  resolvedAt?: string;
 }
 
 export interface MatterItem extends MatterRecord {
