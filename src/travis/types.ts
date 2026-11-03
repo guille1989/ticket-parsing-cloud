@@ -53,6 +53,23 @@ export interface MatterItem extends MatterRecord {
   ttl: number;
 }
 
+/** Lo que produce un detector; el ciclo de vida (estado, fechas, TTL) lo agrega la capa que lo guarda. */
+export type MatterCandidate = Pick<MatterRecord, "detector" | "scope" | "periodDate" | "severity" | "expected" | "actual" | "evidence">;
+
+/**
+ * Cuándo suele capturar tickets un robot, por hora local (índice 0-23), sobre sus últimos
+ * días con actividad. Se calcula una vez al día con Athena y se guarda, para que los
+ * chequeos de cada hora (robot caído, captura en cero) no necesiten Athena.
+ */
+export interface AgentHabit {
+  /** Días con al menos un ticket que sustentan el hábito. */
+  activeDays: number;
+  /** Fracción de esos días con tickets en cada hora. */
+  dayShare: number[];
+  /** Tickets promedio en cada hora, por día activo. */
+  avgTickets: number[];
+}
+
 export function isValidMatterScope(scope: string): boolean {
   return scope.length > 0 && scope.length <= 80 && !scope.includes("#");
 }
