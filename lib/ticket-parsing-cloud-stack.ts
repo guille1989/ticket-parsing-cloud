@@ -149,6 +149,16 @@ export class TicketParsingCloudStack extends cdk.Stack {
       timeToLiveAttribute: "ttl",
     });
 
+    // Matters: los asuntos que detecta Travis (anomalías de venta, robot caído, captura en
+    // cero...). PK = TENANT#<id>, SK = MATTER#<fecha local>#<detector>#<scope>: determinista,
+    // así que el job es idempotente. Se borran solos a los 90 días con TTL (ver
+    // `travis/types.ts`). Sin GSI: un negocio genera pocos asuntos y listar por fecha basta.
+    const mattersTable = new dynamodb.TableV2(this, "MattersTable", {
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: "ttl",
+    });
+
     // SignupUsage: rate limit por IP para POST /signup (público, sin
     // api-key ni Cognito) — mismo patrón que AssistantUsage, PK =
     // IP#<ip>#WINDOW#HOUR#<bucket>. Ver `signup/rateLimit.ts`.
@@ -1111,6 +1121,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
     new cdk.CfnOutput(this, "ReportsTableName", { value: reportsTable.tableName });
     new cdk.CfnOutput(this, "ConversationsTableName", { value: conversationsTable.tableName });
     new cdk.CfnOutput(this, "AssistantUsageTableName", { value: assistantUsageTable.tableName });
+    new cdk.CfnOutput(this, "MattersTableName", { value: mattersTable.tableName });
     new cdk.CfnOutput(this, "RawTicketsBucketName", { value: rawTicketsBucket.bucketName });
     new cdk.CfnOutput(this, "AnalyticsBucketName", { value: analyticsBucket.bucketName });
     new cdk.CfnOutput(this, "AnalyticsDatabaseName", { value: analyticsDatabaseName });

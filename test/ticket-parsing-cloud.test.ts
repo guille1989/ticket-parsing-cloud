@@ -8,7 +8,7 @@ test("el stack sintetiza con las piezas clave del pipeline multi-tenant", () => 
   const stack = new TicketParsingCloudStack(app, "TestStack");
   const template = Template.fromStack(stack);
 
-  template.resourceCountIs("AWS::DynamoDB::GlobalTable", 9); // Tickets + Tenants + Widgets + Agents + ActivationCodes + Reports + Conversations + AssistantUsage + SignupUsage
+  template.resourceCountIs("AWS::DynamoDB::GlobalTable", 10); // Tickets + Tenants + Widgets + Agents + ActivationCodes + Reports + Conversations + AssistantUsage + SignupUsage + Matters
   template.resourceCountIs("AWS::SQS::Queue", 2); // DLQ del parseo + DLQ de la sincronización analítica — el trigger es el Stream, no una cola
   template.resourceCountIs("AWS::Lambda::Function", 29); // pipeline + reportes guardados (3) + conversaciones del asistente (4) + dashboard + agentes (con el resultado de diagnósticos) + auth + perfil/onboarding + revisión de tickets + imagen de ticket
   template.resourceCountIs("AWS::Lambda::EventSourceMapping", 2); // parser + sincronización analítica, ambos suscriptos al Stream de Tickets

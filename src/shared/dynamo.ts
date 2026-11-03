@@ -80,6 +80,23 @@ export function conversationSkPrefix(userId: string) {
   return `CONV#${userId}#`;
 }
 
+/**
+ * Clave de la tabla Matters (asuntos de Travis): PK = TENANT#<tenantId>,
+ * SK = MATTER#<periodDate>#<detector>#<scope>. La fecha local va primero, así que un
+ * `Query` al revés trae lo más reciente; y la clave es determinista, así que correr el
+ * job dos veces el mismo día reescribe el mismo asunto en vez de duplicarlo.
+ */
+export function matterKey(tenantId: string, periodDate: string, detector: string, scope: string) {
+  return {
+    pk: `TENANT#${tenantId}`,
+    sk: `${matterSkPrefix()}${periodDate}#${detector}#${scope}`,
+  };
+}
+
+export function matterSkPrefix() {
+  return "MATTER#";
+}
+
 /** Clave de la tabla Widgets: PK = TENANT#<tenantId>, SK = WIDGET#<widgetId>. */
 export function widgetKey(tenantId: string, widgetId: string) {
   return {
