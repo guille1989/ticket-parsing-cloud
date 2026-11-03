@@ -3,9 +3,9 @@ import type { MatterCandidate } from "../types.js";
 import type { HourlyContext } from "./context.js";
 import { round } from "./stats.js";
 
-// Los POS que imprimen la factura como imagen entran siempre como `needs_review` (los lee un
-// modelo de visión), así que en esos negocios la cola nunca está vacía. Estos umbrales son un
-// punto de partida: se afinan con los datos reales antes de activar el job.
+// La cola que llega acá ya excluye los tickets leídos por visión (ver `loadReviewQueue`): los POS que
+// imprimen la factura como imagen entran siempre a revisión y no son una anomalía. Estos umbrales son
+// un punto de partida: se afinan con los datos reales antes de activar el job.
 const BACKLOG_WARN_COUNT = 10;
 const BACKLOG_CRITICAL_COUNT = 30;
 const BACKLOG_WARN_AGE_HOURS = 24;

@@ -66,9 +66,30 @@ describe("loadReviewQueue", () => {
     expect(oldestCall).toMatchObject({
       IndexName: "status-index",
       ScanIndexForward: true,
-      Limit: 1,
       ExpressionAttributeValues: { ":gsi1pk": "TENANT#t1#STATUS#needs_review" },
     });
+    // `Limit` se aplica antes del filtro: pediría una página vacía aunque haya coincidencias.
+    expect(oldestCall).not.toHaveProperty("Limit");
+  });
+
+  it("no cuenta los tickets leídos por visión (la cola de un POS-imagen nunca se vacía por diseño)", async () => {
+    mockDdbSend.mockResolvedValue({ Count: 0 });
+
+    await loadReviewQueue("t1");
+
+    const input = mockDdbSend.mock.calls[0][0].input;
+    expect(input.FilterExpression).toBe("attribute_not_exists(parsedBy) OR parsedBy <> :vision");
+    expect(input.ExpressionAttributeValues[":vision"]).toBe("bedrock-vision");
+  });
+
+  it("si la primera página del más viejo viene vacía por el filtro, sigue con la siguiente", async () => {
+    mockDdbSend
+      .mockResolvedValueOnce({ Count: 2 })
+      .mockResolvedValueOnce({ Items: [], LastEvaluatedKey: { gsi1pk: "x" } })
+      .mockResolvedValueOnce({ Items: [{ gsi1sk: "2026-11-01T10:00:00.000Z" }] });
+
+    expect(await loadReviewQueue("t1")).toEqual({ count: 2, oldestCapturedAt: "2026-11-01T10:00:00.000Z" });
+    expect(mockDdbSend).toHaveBeenCalledTimes(3);
   });
 });
 

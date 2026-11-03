@@ -1,4 +1,4 @@
-import { QueryCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { QueryCommand, ScanCommand, type QueryCommandOutput } from "@aws-sdk/lib-dynamodb";
 
 import { AGENTS_TABLE, ddb, TENANTS_TABLE, TICKETS_TABLE } from "../shared/dynamo.js";
 import { queryAllPages } from "../shared/pagination.js";
@@ -46,13 +46,23 @@ export interface ReviewQueueSummary {
   oldestCapturedAt?: string;
 }
 
-/** Tickets `needs_review` del tenant, por el índice de estado (gsi1sk = capturedAt, ascendente = el más viejo primero). */
+/**
+ * Tickets `needs_review` que el dueño tendría que mirar, por el índice de estado (gsi1sk =
+ * capturedAt, ascendente = el más viejo primero).
+ *
+ * No cuenta los leídos por visión (`parsedBy = bedrock-vision`): los POS que imprimen la factura
+ * como imagen entran SIEMPRE a revisión por diseño, y en esos negocios la cola nunca se vacía
+ * (Empanadas: 512 tickets, todos de visión). Cualquier umbral sobre ellos sería una alerta
+ * permanente. Los que llegan por el fallback de texto sí son la excepción que vale la pena avisar.
+ */
 export async function loadReviewQueue(tenantId: string): Promise<ReviewQueueSummary> {
   const key = {
     TableName: TICKETS_TABLE,
     IndexName: "status-index",
     KeyConditionExpression: "gsi1pk = :gsi1pk",
-    ExpressionAttributeValues: { ":gsi1pk": `TENANT#${tenantId}#STATUS#needs_review` },
+    // Los tickets anteriores al campo `parsedBy` no lo tienen: cuentan como revisables.
+    FilterExpression: "attribute_not_exists(parsedBy) OR parsedBy <> :vision",
+    ExpressionAttributeValues: { ":gsi1pk": `TENANT#${tenantId}#STATUS#needs_review`, ":vision": "bedrock-vision" },
   };
 
   let count = 0;
@@ -64,9 +74,18 @@ export async function loadReviewQueue(tenantId: string): Promise<ReviewQueueSumm
   } while (exclusiveStartKey);
   if (count === 0) return { count };
 
-  const oldest = await ddb.send(new QueryCommand({ ...key, ScanIndexForward: true, Limit: 1 }));
-  const capturedAt = (oldest.Items?.[0] as { gsi1sk?: string } | undefined)?.gsi1sk;
-  return { count, ...(capturedAt ? { oldestCapturedAt: capturedAt } : {}) };
+  // Sin `Limit`: DynamoDB lo aplica ANTES del filtro y podría devolver una página vacía aunque haya
+  // coincidencias más adelante. Se recorren las páginas hasta encontrar el primero.
+  let oldestCapturedAt: string | undefined;
+  let nextKey: Record<string, unknown> | undefined;
+  do {
+    const page: QueryCommandOutput = await ddb.send(
+      new QueryCommand({ ...key, ScanIndexForward: true, ProjectionExpression: "gsi1sk", ExclusiveStartKey: nextKey }),
+    );
+    oldestCapturedAt = (page.Items?.[0] as { gsi1sk?: string } | undefined)?.gsi1sk;
+    nextKey = oldestCapturedAt ? undefined : page.LastEvaluatedKey;
+  } while (nextKey);
+  return { count, ...(oldestCapturedAt ? { oldestCapturedAt } : {}) };
 }
 
 export interface RecentTicket {
