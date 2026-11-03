@@ -51,6 +51,52 @@ function toSqlStringLiteral(value: string): string {
  * elaborado (colas, WebSocket) todavía.
  */
 export async function runWidgetQuery(sql: string, params: string[], workGroup: string): Promise<WidgetDataPoint[]> {
+  return fetchResults(await executeQuery(sql, params, workGroup));
+}
+
+/** Una fila de resultado con las columnas por nombre (en minúsculas); `null` = celda vacía. */
+export type AthenaRow = Record<string, string | null>;
+
+// Athena pagina el resultado de a 1.000 filas; un historial por hora y sucursal las supera.
+const MAX_RESULT_PAGES = 20;
+
+/**
+ * Como `runWidgetQuery`, pero devuelve todas las columnas por nombre y recorre todas las
+ * páginas de resultados. Lo usa Travis, que necesita varias columnas por fila (día, hora,
+ * sucursal, monto) y no el par label/value de un widget.
+ */
+export async function runAthenaRows(sql: string, params: string[], workGroup: string): Promise<AthenaRow[]> {
+  const queryExecutionId = await executeQuery(sql, params, workGroup);
+  const rows: AthenaRow[] = [];
+  let names: string[] | undefined;
+  let nextToken: string | undefined;
+
+  for (let page = 0; page < MAX_RESULT_PAGES; page++) {
+    const result = await athena.send(new GetQueryResultsCommand({ QueryExecutionId: queryExecutionId, NextToken: nextToken }));
+    let dataRows = result.ResultSet?.Rows ?? [];
+    if (names === undefined) {
+      // Solo la primera página trae la fila de encabezados.
+      const columns = result.ResultSet?.ResultSetMetadata?.ColumnInfo ?? [];
+      const header = dataRows[0];
+      names = columns.map((column, index) => (column.Name ?? header?.Data?.[index]?.VarCharValue ?? "").toLowerCase());
+      dataRows = dataRows.slice(1);
+    }
+    const columnNames = names;
+    for (const row of dataRows) {
+      const record: AthenaRow = {};
+      columnNames.forEach((name, index) => {
+        record[name] = row.Data?.[index]?.VarCharValue ?? null;
+      });
+      rows.push(record);
+    }
+    nextToken = result.NextToken;
+    if (!nextToken) return rows;
+  }
+  throw new Error(`el resultado de Athena supera ${MAX_RESULT_PAGES} páginas`);
+}
+
+/** Dispara la consulta y espera a que termine; devuelve el id para leer sus resultados. */
+async function executeQuery(sql: string, params: string[], workGroup: string): Promise<string> {
   const start = await athena.send(
     new StartQueryExecutionCommand({
       QueryString: sql,
@@ -71,7 +117,7 @@ export async function runWidgetQuery(sql: string, params: string[], workGroup: s
     const state = execution.QueryExecution?.Status?.State;
 
     if (state === "SUCCEEDED") {
-      return fetchResults(queryExecutionId);
+      return queryExecutionId;
     }
     if (state === "FAILED" || state === "CANCELLED") {
       const reason = execution.QueryExecution?.Status?.StateChangeReason ?? "sin detalle";

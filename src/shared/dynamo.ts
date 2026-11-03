@@ -12,6 +12,7 @@ export const REPORTS_TABLE = process.env.REPORTS_TABLE ?? "";
 export const CONVERSATIONS_TABLE = process.env.CONVERSATIONS_TABLE ?? "";
 export const ASSISTANT_USAGE_TABLE = process.env.ASSISTANT_USAGE_TABLE ?? "";
 export const SIGNUP_USAGE_TABLE = process.env.SIGNUP_USAGE_TABLE ?? "";
+export const MATTERS_TABLE = process.env.MATTERS_TABLE ?? "";
 export const RAW_BUCKET = process.env.RAW_BUCKET ?? "";
 export const ANALYTICS_BUCKET = process.env.ANALYTICS_BUCKET ?? "";
 export const ATHENA_WORKGROUP = process.env.ATHENA_WORKGROUP ?? "";
