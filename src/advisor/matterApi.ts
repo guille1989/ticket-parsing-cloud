@@ -1,3 +1,4 @@
+import { describeMatter } from "./describeMatter.js";
 import { loadAgents } from "./opsData.js";
 import { matterIdOf, parseMatterId } from "./matterStore.js";
 import type { MatterItem } from "./types.js";
@@ -30,11 +31,14 @@ export async function loadBranchLabels(tenantId: string): Promise<Map<string, st
 /** Lo que ve el dashboard: sin claves internas de DynamoDB, TTL ni tenantId. */
 export function toPublicMatter(item: MatterItem, branchLabels: ReadonlyMap<string, string>) {
   const agentId = item.scope.startsWith("branch:") ? item.scope.slice("branch:".length) : undefined;
+  const branchLabel = agentId ? (branchLabels.get(agentId) ?? null) : null;
   return {
     id: publicMatterId(item),
     detector: item.detector,
     scope: item.scope,
-    branchLabel: agentId ? (branchLabels.get(agentId) ?? null) : null,
+    branchLabel,
+    // Texto ya redactado: lo comparten la pantalla y la voz (ver describeMatter.ts).
+    ...describeMatter(item, branchLabel),
     periodDate: item.periodDate,
     severity: item.severity,
     status: item.status,

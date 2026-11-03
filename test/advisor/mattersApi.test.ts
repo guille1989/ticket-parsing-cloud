@@ -79,6 +79,10 @@ describe("GET /advisor/matters", () => {
         detector: "agent_offline",
         scope: "branch:a1",
         branchLabel: "Sede Norte",
+        // Texto ya redactado por el backend (ver describeMatter.ts), con el nombre de la sucursal.
+        title: "Sede Norte no ha reportado señal",
+        detail: expect.stringContaining("Revisa que el equipo esté encendido"),
+        spoken: expect.stringContaining("Sede Norte no ha reportado señal."),
         severity: "warn",
         status: "new",
         expected: null,
