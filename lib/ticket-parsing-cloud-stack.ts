@@ -1001,6 +1001,28 @@ export class TicketParsingCloudStack extends cdk.Stack {
     conversationsTable.grantWriteData(conversationSaveFn);
     conversationsTable.grantWriteData(conversationDeleteFn);
 
+    // ---- Travis: asuntos del negocio (listar / marcar visto o descartado) ----
+    // Los escribe el job horario (`TravisRunFunction`, más abajo); acá solo se leen y se marcan.
+    const mattersEnv = { MATTERS_TABLE: mattersTable.tableName, AGENTS_TABLE: agentsTable.tableName };
+    const mattersListFn = new nodejs.NodejsFunction(this, "MattersListFunction", {
+      entry: "src/travis/mattersListHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: mattersEnv,
+    });
+    const mattersUpdateFn = new nodejs.NodejsFunction(this, "MattersUpdateFunction", {
+      entry: "src/travis/mattersUpdateHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: mattersEnv,
+    });
+    mattersTable.grantReadData(mattersListFn);
+    mattersTable.grantReadWriteData(mattersUpdateFn);
+    agentsTable.grantReadData(mattersListFn); // nombra las sucursales
+    agentsTable.grantReadData(mattersUpdateFn);
+
     agentsTable.grantReadData(ingestFn);
     agentsTable.grantReadWriteData(activateFn);
     activationCodesTable.grantReadWriteData(activateFn);
@@ -1020,6 +1042,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
       meGetFn, onboardingUpdateFn, assistantAskFn,
       reportsListFn, reportsGetFn, reportsDeleteFn,
       conversationsListFn, conversationGetFn, conversationSaveFn, conversationDeleteFn,
+      mattersListFn, mattersUpdateFn,
     ]) {
       fn.addEnvironment("TENANTS_TABLE", tenantsTable.tableName);
       tenantsTable.grant(fn, "dynamodb:GetItem");
@@ -1108,6 +1131,10 @@ export class TicketParsingCloudStack extends cdk.Stack {
     const reportById = reports.addResource("{reportId}");
     reportById.addMethod("GET", new apigateway.LambdaIntegration(reportsGetFn), dashboardAuth);
     reportById.addMethod("DELETE", new apigateway.LambdaIntegration(reportsDeleteFn), dashboardAuth);
+
+    const travisMatters = api.root.addResource("travis").addResource("matters");
+    travisMatters.addMethod("GET", new apigateway.LambdaIntegration(mattersListFn), dashboardAuth);
+    travisMatters.addResource("{matterId}").addMethod("PATCH", new apigateway.LambdaIntegration(mattersUpdateFn), dashboardAuth);
 
     // ---- Travis: el directivo digital del negocio -------------------------
     //
