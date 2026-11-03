@@ -1148,7 +1148,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
     // decir calcula y deja en CloudWatch lo que habría detectado sin guardar ningún asunto.
     // Cuando los umbrales se vean bien con datos reales, `advisorDryRun = false` lo activa de verdad.
     const advisorEnabled = true;
-    const advisorDryRun = true;
+    const advisorDryRun = false;
 
     const advisorRunFn = new nodejs.NodejsFunction(this, "AdvisorRunFunction", {
       entry: "src/advisor/runHandler.ts",
