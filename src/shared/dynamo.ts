@@ -82,7 +82,7 @@ export function conversationSkPrefix(userId: string) {
 }
 
 /**
- * Clave de la tabla Matters (asuntos de Travis): PK = TENANT#<tenantId>,
+ * Clave de la tabla Matters (asuntos de Advisor): PK = TENANT#<tenantId>,
  * SK = MATTER#<periodDate>#<detector>#<scope>. La fecha local va primero, así que un
  * `Query` al revés trae lo más reciente; y la clave es determinista, así que correr el
  * job dos veces el mismo día reescribe el mismo asunto en vez de duplicarlo.

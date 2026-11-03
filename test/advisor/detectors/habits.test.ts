@@ -1,4 +1,4 @@
-import { buildAgentHabits } from "../../../src/travis/detectors/habits";
+import { buildAgentHabits } from "../../../src/advisor/detectors/habits";
 import { buildHistory, NOW } from "./fixtures";
 
 test("calcula la fracción de días y los tickets promedio por hora, y deja en cero las horas sin actividad", () => {

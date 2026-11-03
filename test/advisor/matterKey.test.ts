@@ -1,5 +1,5 @@
 import { matterKey, matterSkPrefix } from "../../src/shared/dynamo";
-import { isValidMatterScope } from "../../src/travis/types";
+import { isValidMatterScope } from "../../src/advisor/types";
 
 describe("matterKey", () => {
   it("es determinista: el mismo día/detector/scope siempre cae en la misma clave", () => {

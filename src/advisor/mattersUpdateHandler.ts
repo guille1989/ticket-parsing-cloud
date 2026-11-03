@@ -7,7 +7,7 @@ import { markMatter, type MatterAction } from "./matterStore.js";
 
 const ACTIONS: readonly MatterAction[] = ["seen", "dismissed"];
 
-/** PATCH /travis/matters/{matterId} con `{ "status": "seen" | "dismissed" }`: lo que hace el dueño con un asunto. */
+/** PATCH /advisor/matters/{matterId} con `{ "status": "seen" | "dismissed" }`: lo que hace el dueño con un asunto. */
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
   const tenantId = await resolveActiveTenantIdFromEvent(event);
   if (!tenantId) {

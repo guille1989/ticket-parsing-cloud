@@ -151,10 +151,10 @@ export class TicketParsingCloudStack extends cdk.Stack {
       timeToLiveAttribute: "ttl",
     });
 
-    // Matters: los asuntos que detecta Travis (anomalías de venta, robot caído, captura en
+    // Matters: los asuntos que detecta Advisor (anomalías de venta, robot caído, captura en
     // cero...). PK = TENANT#<id>, SK = MATTER#<fecha local>#<detector>#<scope>: determinista,
     // así que el job es idempotente. Se borran solos a los 90 días con TTL (ver
-    // `travis/types.ts`). Sin GSI: un negocio genera pocos asuntos y listar por fecha basta.
+    // `advisor/types.ts`). Sin GSI: un negocio genera pocos asuntos y listar por fecha basta.
     const mattersTable = new dynamodb.TableV2(this, "MattersTable", {
       partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
@@ -1001,18 +1001,18 @@ export class TicketParsingCloudStack extends cdk.Stack {
     conversationsTable.grantWriteData(conversationSaveFn);
     conversationsTable.grantWriteData(conversationDeleteFn);
 
-    // ---- Travis: asuntos del negocio (listar / marcar visto o descartado) ----
-    // Los escribe el job horario (`TravisRunFunction`, más abajo); acá solo se leen y se marcan.
+    // ---- Advisor: asuntos del negocio (listar / marcar visto o descartado) ----
+    // Los escribe el job horario (`AdvisorRunFunction`, más abajo); acá solo se leen y se marcan.
     const mattersEnv = { MATTERS_TABLE: mattersTable.tableName, AGENTS_TABLE: agentsTable.tableName };
     const mattersListFn = new nodejs.NodejsFunction(this, "MattersListFunction", {
-      entry: "src/travis/mattersListHandler.ts",
+      entry: "src/advisor/mattersListHandler.ts",
       runtime: nodeRuntime,
       bundling: sharedBundling,
       timeout: cdk.Duration.seconds(10),
       environment: mattersEnv,
     });
     const mattersUpdateFn = new nodejs.NodejsFunction(this, "MattersUpdateFunction", {
-      entry: "src/travis/mattersUpdateHandler.ts",
+      entry: "src/advisor/mattersUpdateHandler.ts",
       runtime: nodeRuntime,
       bundling: sharedBundling,
       timeout: cdk.Duration.seconds(10),
@@ -1132,13 +1132,13 @@ export class TicketParsingCloudStack extends cdk.Stack {
     reportById.addMethod("GET", new apigateway.LambdaIntegration(reportsGetFn), dashboardAuth);
     reportById.addMethod("DELETE", new apigateway.LambdaIntegration(reportsDeleteFn), dashboardAuth);
 
-    const travisMatters = api.root.addResource("travis").addResource("matters");
-    travisMatters.addMethod("GET", new apigateway.LambdaIntegration(mattersListFn), dashboardAuth);
-    travisMatters.addResource("{matterId}").addMethod("PATCH", new apigateway.LambdaIntegration(mattersUpdateFn), dashboardAuth);
+    const advisorMatters = api.root.addResource("advisor").addResource("matters");
+    advisorMatters.addMethod("GET", new apigateway.LambdaIntegration(mattersListFn), dashboardAuth);
+    advisorMatters.addResource("{matterId}").addMethod("PATCH", new apigateway.LambdaIntegration(mattersUpdateFn), dashboardAuth);
 
-    // ---- Travis: el directivo digital del negocio -------------------------
+    // ---- Advisor: el directivo digital del negocio -------------------------
     //
-    // Un solo Lambda que EventBridge dispara cada hora (ver `travis/runner.ts`): a partir de la
+    // Un solo Lambda que EventBridge dispara cada hora (ver `advisor/runner.ts`): a partir de la
     // hora del briefing de cada negocio hace UNA consulta de Athena al día (historial → hábitos
     // de los robots y ventas anómalas), y en cada pasada hace chequeos baratos de DynamoDB
     // (robot caído, captura en cero, cola de revisión, tickets fallidos). Guarda los asuntos en
@@ -1146,20 +1146,20 @@ export class TicketParsingCloudStack extends cdk.Stack {
     //
     // Interruptores (se cambian acá y se despliega): arranca ENCENDIDO pero en DRY-RUN, es
     // decir calcula y deja en CloudWatch lo que habría detectado sin guardar ningún asunto.
-    // Cuando los umbrales se vean bien con datos reales, `travisDryRun = false` lo activa de verdad.
-    const travisEnabled = true;
-    const travisDryRun = true;
+    // Cuando los umbrales se vean bien con datos reales, `advisorDryRun = false` lo activa de verdad.
+    const advisorEnabled = true;
+    const advisorDryRun = true;
 
-    const travisRunFn = new nodejs.NodejsFunction(this, "TravisRunFunction", {
-      entry: "src/travis/runHandler.ts",
+    const advisorRunFn = new nodejs.NodejsFunction(this, "AdvisorRunFunction", {
+      entry: "src/advisor/runHandler.ts",
       runtime: nodeRuntime,
       bundling: sharedBundling,
       // Un negocio tarda unos segundos (Athena ~5 s una vez al día); el margen cubre varios negocios en serie.
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
       environment: {
-        TRAVIS_ENABLED: String(travisEnabled),
-        TRAVIS_DRY_RUN: String(travisDryRun),
+        ADVISOR_ENABLED: String(advisorEnabled),
+        ADVISOR_DRY_RUN: String(advisorDryRun),
         TENANTS_TABLE: tenantsTable.tableName,
         TICKETS_TABLE: ticketsTable.tableName,
         AGENTS_TABLE: agentsTable.tableName,
@@ -1167,16 +1167,16 @@ export class TicketParsingCloudStack extends cdk.Stack {
         ATHENA_WORKGROUP: athenaWorkGroupName,
       },
     });
-    grantAnalyticsQueryAccess(travisRunFn);
-    tenantsTable.grantReadData(travisRunFn);
-    ticketsTable.grantReadData(travisRunFn);
-    agentsTable.grantReadData(travisRunFn);
-    mattersTable.grantReadWriteData(travisRunFn);
+    grantAnalyticsQueryAccess(advisorRunFn);
+    tenantsTable.grantReadData(advisorRunFn);
+    ticketsTable.grantReadData(advisorRunFn);
+    agentsTable.grantReadData(advisorRunFn);
+    mattersTable.grantReadWriteData(advisorRunFn);
 
-    new events.Rule(this, "TravisHourlyRule", {
+    new events.Rule(this, "AdvisorHourlyRule", {
       schedule: events.Schedule.rate(cdk.Duration.hours(1)),
       // Sin reintentos: el job no lanza excepciones y la pasada siguiente repite todo igual.
-      targets: [new targets.LambdaFunction(travisRunFn, { retryAttempts: 0 })],
+      targets: [new targets.LambdaFunction(advisorRunFn, { retryAttempts: 0 })],
     });
 
     // ---- Outputs -------------------------------------------------------

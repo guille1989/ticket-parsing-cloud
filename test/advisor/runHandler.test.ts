@@ -1,10 +1,10 @@
 const mockRunTenant = jest.fn();
 const mockListTenants = jest.fn();
 
-jest.mock("../../src/travis/runner", () => ({ runTenant: (...args: unknown[]) => mockRunTenant(...args) }));
-jest.mock("../../src/travis/opsData", () => ({ listTravisTenants: () => mockListTenants() }));
+jest.mock("../../src/advisor/runner", () => ({ runTenant: (...args: unknown[]) => mockRunTenant(...args) }));
+jest.mock("../../src/advisor/opsData", () => ({ listAdvisorTenants: () => mockListTenants() }));
 
-import { handler } from "../../src/travis/runHandler";
+import { handler } from "../../src/advisor/runHandler";
 
 const result = (tenantId: string, errors: string[] = []) => ({
   tenantId,
@@ -24,8 +24,8 @@ const result = (tenantId: string, errors: string[] = []) => ({
 beforeEach(() => {
   mockRunTenant.mockReset();
   mockListTenants.mockReset();
-  delete process.env.TRAVIS_ENABLED;
-  delete process.env.TRAVIS_DRY_RUN;
+  delete process.env.ADVISOR_ENABLED;
+  delete process.env.ADVISOR_DRY_RUN;
   jest.spyOn(console, "log").mockImplementation(() => undefined);
   jest.spyOn(console, "error").mockImplementation(() => undefined);
 });
@@ -37,13 +37,13 @@ test("apagado (interruptor): no lista tenants ni toca nada", async () => {
   expect(mockListTenants).not.toHaveBeenCalled();
 });
 
-test("solo corre con TRAVIS_ENABLED exactamente en 'true'", async () => {
-  process.env.TRAVIS_ENABLED = "TRUE";
+test("solo corre con ADVISOR_ENABLED exactamente en 'true'", async () => {
+  process.env.ADVISOR_ENABLED = "TRUE";
   expect((await handler()).enabled).toBe(false);
 });
 
 test("un negocio que lanza una excepción no frena a los demás", async () => {
-  process.env.TRAVIS_ENABLED = "true";
+  process.env.ADVISOR_ENABLED = "true";
   mockListTenants.mockResolvedValue([{ tenantId: "t1" }, { tenantId: "t2" }, { tenantId: "t3" }]);
   mockRunTenant.mockImplementation(async (tenant: { tenantId: string }) => {
     if (tenant.tenantId === "t2") throw new Error("boom");
@@ -55,7 +55,7 @@ test("un negocio que lanza una excepción no frena a los demás", async () => {
 });
 
 test("cuenta como fallido al negocio que terminó con errores parciales", async () => {
-  process.env.TRAVIS_ENABLED = "true";
+  process.env.ADVISOR_ENABLED = "true";
   mockListTenants.mockResolvedValue([{ tenantId: "t1" }, { tenantId: "t2" }]);
   mockRunTenant.mockImplementation(async (tenant: { tenantId: string }) => result(tenant.tenantId, tenant.tenantId === "t1" ? ["análisis diario: x"] : []));
 
@@ -63,15 +63,15 @@ test("cuenta como fallido al negocio que terminó con errores parciales", async 
 });
 
 test("no lanza aunque no pueda listar los negocios", async () => {
-  process.env.TRAVIS_ENABLED = "true";
+  process.env.ADVISOR_ENABLED = "true";
   mockListTenants.mockRejectedValue(new Error("dynamo caído"));
 
   expect(await handler()).toEqual({ enabled: true, tenants: 0, failed: 1 });
 });
 
-test("TRAVIS_DRY_RUN llega al runner y el log incluye lo que se habría guardado", async () => {
-  process.env.TRAVIS_ENABLED = "true";
-  process.env.TRAVIS_DRY_RUN = "true";
+test("ADVISOR_DRY_RUN llega al runner y el log incluye lo que se habría guardado", async () => {
+  process.env.ADVISOR_ENABLED = "true";
+  process.env.ADVISOR_DRY_RUN = "true";
   mockListTenants.mockResolvedValue([{ tenantId: "t1" }]);
   mockRunTenant.mockResolvedValue({ ...result("t1"), dryRun: true });
 
@@ -83,7 +83,7 @@ test("TRAVIS_DRY_RUN llega al runner y el log incluye lo que se habría guardado
 });
 
 test("fuera de dry-run el log no vuelca los candidatos", async () => {
-  process.env.TRAVIS_ENABLED = "true";
+  process.env.ADVISOR_ENABLED = "true";
   mockListTenants.mockResolvedValue([{ tenantId: "t1" }]);
   mockRunTenant.mockResolvedValue(result("t1"));
 

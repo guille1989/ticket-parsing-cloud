@@ -1,7 +1,7 @@
-// Script administrativo — fija la zona horaria de un negocio (`travis.timeZone` en la tabla
-// Tenants). Travis la necesita para saber cuándo son las 07:00 de cada negocio y qué día es
+// Script administrativo — fija la zona horaria de un negocio (`advisor.timeZone` en la tabla
+// Tenants). Advisor la necesita para saber cuándo son las 07:00 de cada negocio y qué día es
 // "ayer": hasta ahora la zona solo la mandaba el navegador, y el job corre sin navegador.
-// Sin esto Travis usa America/Bogota para todos.
+// Sin esto Advisor usa America/Bogota para todos.
 //
 // Por defecto solo muestra qué haría; con --apply escribe.
 //
@@ -34,11 +34,11 @@ async function main(): Promise<void> {
   const { Item } = await ddb.send(new GetCommand({ TableName: tenantsTable, Key: key, ConsistentRead: true }));
   if (!Item) throw new Error(`no existe ningún tenant con id ${tenantId}`);
 
-  const current = (Item.travis ?? {}) as Record<string, unknown>;
-  // `travis` es un mapa con más ajustes (hora del briefing, correos): se conserva lo que ya tenga.
+  const current = (Item.advisor ?? {}) as Record<string, unknown>;
+  // `advisor` es un mapa con más ajustes (hora del briefing, correos): se conserva lo que ya tenga.
   const next = { ...current, timeZone };
   console.log(`${Item.businessName} (${tenantId})`);
-  console.log(`  zona actual: ${current.timeZone ?? "(sin definir, Travis usa America/Bogota)"}`);
+  console.log(`  zona actual: ${current.timeZone ?? "(sin definir, Advisor usa America/Bogota)"}`);
   console.log(`  zona nueva:  ${timeZone}`);
   if (current.timeZone === timeZone) {
     console.log("  ya está así, nada que hacer.");
@@ -53,9 +53,9 @@ async function main(): Promise<void> {
     new UpdateCommand({
       TableName: tenantsTable,
       Key: key,
-      UpdateExpression: "SET travis = :travis",
+      UpdateExpression: "SET advisor = :advisor",
       ConditionExpression: "attribute_exists(pk)",
-      ExpressionAttributeValues: { ":travis": next },
+      ExpressionAttributeValues: { ":advisor": next },
     }),
   );
   console.log("  listo.");

@@ -20,7 +20,7 @@
     "admin": "tsx scripts/admin-console/server.ts",
     "agent-command": "tsx scripts/agent-command.ts",
     "delete-agent": "tsx scripts/delete-agent.ts",
-    "travis-run": "tsx scripts/travis-run.ts",
+    "advisor-run": "tsx scripts/advisor-run.ts",
     "set-tenant-timezone": "tsx scripts/set-tenant-timezone.ts"
   },
   "devDependencies": {

@@ -1,4 +1,4 @@
-import { localDate, localHour } from "../../src/travis/localTime";
+import { localDate, localHour } from "../../src/advisor/localTime";
 
 const instant = new Date("2026-11-04T03:00:00Z");
 

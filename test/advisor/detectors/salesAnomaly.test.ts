@@ -1,4 +1,4 @@
-import { DEFAULT_SALES_THRESHOLDS, detectSalesAnomalies } from "../../../src/travis/detectors/salesAnomaly";
+import { DEFAULT_SALES_THRESHOLDS, detectSalesAnomalies } from "../../../src/advisor/detectors/salesAnomaly";
 import { buildHistory, NOW } from "./fixtures";
 
 const TARGET = "2026-11-03";

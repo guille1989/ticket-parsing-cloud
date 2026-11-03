@@ -1,11 +1,11 @@
 import { matterKey } from "../../src/shared/dynamo";
 import type { AgentRecord } from "../../src/shared/types";
-import { resolveSettings, runTenant, type TravisDeps } from "../../src/travis/runner";
-import type { TravisTenant } from "../../src/travis/opsData";
-import type { MatterItem } from "../../src/travis/types";
+import { resolveSettings, runTenant, type AdvisorDeps } from "../../src/advisor/runner";
+import type { AdvisorTenant } from "../../src/advisor/opsData";
+import type { MatterItem } from "../../src/advisor/types";
 import { buildHistory, habitFor } from "./detectors/fixtures";
 
-const tenant: TravisTenant = { tenantId: "t1", businessName: "Alamo", travis: { timeZone: "UTC", briefingHour: 7 } };
+const tenant: AdvisorTenant = { tenantId: "t1", businessName: "Alamo", advisor: { timeZone: "UTC", briefingHour: 7 } };
 const BEFORE_BRIEFING = new Date("2026-11-04T05:00:00Z");
 const AFTER_BRIEFING = new Date("2026-11-04T08:00:00Z");
 const TODAY = "2026-11-04";
@@ -24,7 +24,7 @@ function agent(lastSeenMinutesAgo: number, now: Date): AgentRecord {
   };
 }
 
-function makeDeps(overrides: Partial<TravisDeps> = {}) {
+function makeDeps(overrides: Partial<AdvisorDeps> = {}) {
   const deps = {
     loadSalesHistory: jest.fn(async () => history),
     loadAgents: jest.fn(async () => [agent(1, AFTER_BRIEFING)]),
@@ -44,7 +44,7 @@ function makeDeps(overrides: Partial<TravisDeps> = {}) {
   return deps as unknown as MockDeps;
 }
 
-type MockDeps = { [K in keyof TravisDeps]: jest.MockedFunction<TravisDeps[K]> };
+type MockDeps = { [K in keyof AdvisorDeps]: jest.MockedFunction<AdvisorDeps[K]> };
 
 const storedProfile = (dailyDate: string) => ({ habits: { a1: habitFor([8, 9, 10, 11, 12, 13]) }, computedAt: "x", dailyDate });
 
@@ -170,7 +170,7 @@ describe("runTenant", () => {
 
 describe("resolveSettings", () => {
   it("usa la configuración del negocio cuando es válida", () => {
-    expect(resolveSettings({ travis: { timeZone: "Europe/Madrid", briefingHour: 9 } })).toEqual({ timeZone: "Europe/Madrid", briefingHour: 9 });
+    expect(resolveSettings({ advisor: { timeZone: "Europe/Madrid", briefingHour: 9 } })).toEqual({ timeZone: "Europe/Madrid", briefingHour: 9 });
   });
 
   it("sin configuración: Bogotá y las 07:00", () => {
@@ -178,11 +178,11 @@ describe("resolveSettings", () => {
   });
 
   it("una zona o una hora inválidas caen al valor por defecto en vez de romper el job", () => {
-    expect(resolveSettings({ travis: { timeZone: "Marte/Olympus", briefingHour: 25 } })).toEqual({ timeZone: "America/Bogota", briefingHour: 7 });
-    expect(resolveSettings({ travis: { briefingHour: 7.5 } }).briefingHour).toBe(7);
+    expect(resolveSettings({ advisor: { timeZone: "Marte/Olympus", briefingHour: 25 } })).toEqual({ timeZone: "America/Bogota", briefingHour: 7 });
+    expect(resolveSettings({ advisor: { briefingHour: 7.5 } }).briefingHour).toBe(7);
   });
 
   it("la hora 0 (medianoche) es válida", () => {
-    expect(resolveSettings({ travis: { briefingHour: 0 } }).briefingHour).toBe(0);
+    expect(resolveSettings({ advisor: { briefingHour: 0 } }).briefingHour).toBe(0);
   });
 });

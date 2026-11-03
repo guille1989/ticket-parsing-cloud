@@ -62,7 +62,7 @@ const MAX_RESULT_PAGES = 20;
 
 /**
  * Como `runWidgetQuery`, pero devuelve todas las columnas por nombre y recorre todas las
- * páginas de resultados. Lo usa Travis, que necesita varias columnas por fila (día, hora,
+ * páginas de resultados. Lo usa Advisor, que necesita varias columnas por fila (día, hora,
  * sucursal, monto) y no el par label/value de un widget.
  */
 export async function runAthenaRows(sql: string, params: string[], workGroup: string): Promise<AthenaRow[]> {

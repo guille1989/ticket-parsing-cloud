@@ -1,5 +1,5 @@
-import { detectAgentOffline, detectCaptureZero } from "../../../src/travis/detectors/agentHealth";
-import type { HourlyContext } from "../../../src/travis/detectors/context";
+import { detectAgentOffline, detectCaptureZero } from "../../../src/advisor/detectors/agentHealth";
+import type { HourlyContext } from "../../../src/advisor/detectors/context";
 import type { AgentRecord } from "../../../src/shared/types";
 import { habitFor } from "./fixtures";
 

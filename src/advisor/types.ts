@@ -1,5 +1,7 @@
-// Travis: el "directivo" digital del negocio. Los detectores (funciones puras sobre los
-// datos) generan asuntos; la IA solo los redacta, nunca calcula las cifras.
+// Advisor: el "directivo" digital del negocio; de cara al usuario se llama Innova. El nombre de
+// marca vive solo en el frontend: acá el módulo se llama `advisor` para que un cambio de marca
+// no toque el código, las rutas ni los datos. Los detectores (funciones puras sobre los datos)
+// generan asuntos; la IA solo los redacta, nunca calcula las cifras.
 
 export const MATTER_DETECTORS = ["sales_anomaly", "agent_offline", "capture_zero", "review_backlog", "data_integrity"] as const;
 export type MatterDetector = (typeof MATTER_DETECTORS)[number];
@@ -15,11 +17,11 @@ export const MATTER_RETENTION_DAYS = 90;
 export const DEFAULT_BRIEFING_HOUR = 7;
 
 /**
- * Preferencias de Travis dentro del tenant. `timeZone` es IANA ("America/Bogota"): hasta
+ * Preferencias de Advisor dentro del tenant. `timeZone` es IANA ("America/Bogota"): hasta
  * ahora la zona horaria solo la mandaba el navegador, pero el job corre sin navegador y
  * necesita saber cuándo son las 07:00 de cada negocio.
  */
-export interface TravisSettings {
+export interface AdvisorSettings {
   timeZone?: string;
   /** 0-23, hora local del briefing. Ausente = `DEFAULT_BRIEFING_HOUR`. */
   briefingHour?: number;

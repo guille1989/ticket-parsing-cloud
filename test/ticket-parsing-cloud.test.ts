@@ -10,7 +10,7 @@ test("el stack sintetiza con las piezas clave del pipeline multi-tenant", () => 
 
   template.resourceCountIs("AWS::DynamoDB::GlobalTable", 10); // Tickets + Tenants + Widgets + Agents + ActivationCodes + Reports + Conversations + AssistantUsage + SignupUsage + Matters
   template.resourceCountIs("AWS::SQS::Queue", 2); // DLQ del parseo + DLQ de la sincronización analítica — el trigger es el Stream, no una cola
-  template.resourceCountIs("AWS::Lambda::Function", 32); // Travis (job horario + asuntos listar/marcar) + pipeline + reportes guardados (3) + conversaciones del asistente (4) + dashboard + agentes (con el resultado de diagnósticos) + auth + perfil/onboarding + revisión de tickets + imagen de ticket
+  template.resourceCountIs("AWS::Lambda::Function", 32); // Advisor (job horario + asuntos listar/marcar) + pipeline + reportes guardados (3) + conversaciones del asistente (4) + dashboard + agentes (con el resultado de diagnósticos) + auth + perfil/onboarding + revisión de tickets + imagen de ticket
   template.resourceCountIs("AWS::Lambda::EventSourceMapping", 2); // parser + sincronización analítica, ambos suscriptos al Stream de Tickets
   template.resourceCountIs("AWS::Cognito::UserPool", 1);
   template.resourceCountIs("AWS::Cognito::UserPoolClient", 1);
@@ -40,7 +40,7 @@ test("el stack sintetiza con las piezas clave del pipeline multi-tenant", () => 
   });
 });
 
-test("Travis corre cada hora, en dry-run (no guarda asuntos hasta que se apague el interruptor)", () => {
+test("Advisor corre cada hora, en dry-run (no guarda asuntos hasta que se apague el interruptor)", () => {
   const app = new cdk.App();
   const stack = new TicketParsingCloudStack(app, "TestStack");
   const template = Template.fromStack(stack);
@@ -48,12 +48,12 @@ test("Travis corre cada hora, en dry-run (no guarda asuntos hasta que se apague 
   template.resourceCountIs("AWS::Events::Rule", 1);
   template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(1 hour)" });
   template.hasResourceProperties("AWS::Lambda::Function", {
-    Environment: { Variables: { TRAVIS_ENABLED: "true", TRAVIS_DRY_RUN: "true" } },
+    Environment: { Variables: { ADVISOR_ENABLED: "true", ADVISOR_DRY_RUN: "true" } },
     Timeout: 300,
   });
 
-  // API del dashboard: GET /travis/matters y PATCH /travis/matters/{matterId}, ambas con Cognito.
-  template.hasResourceProperties("AWS::ApiGateway::Resource", { PathPart: "travis" });
+  // API del dashboard: GET /advisor/matters y PATCH /advisor/matters/{matterId}, ambas con Cognito.
+  template.hasResourceProperties("AWS::ApiGateway::Resource", { PathPart: "advisor" });
   template.hasResourceProperties("AWS::ApiGateway::Resource", { PathPart: "matters" });
   template.hasResourceProperties("AWS::ApiGateway::Resource", { PathPart: "{matterId}" });
   const methods = Object.values(template.findResources("AWS::ApiGateway::Method")) as any[];
@@ -107,7 +107,7 @@ test("cada ruta Cognito puede verificar el estado actual del tenant con GetItem"
   const humanMethods = Object.values(resources).filter((resource) =>
     resource.Type === "AWS::ApiGateway::Method" && resource.Properties?.AuthorizationType === "COGNITO_USER_POOLS",
   );
-  expect(humanMethods).toHaveLength(23); // +2 de Travis: GET /travis/matters y PATCH /travis/matters/{matterId}
+  expect(humanMethods).toHaveLength(23); // +2 de Advisor: GET /advisor/matters y PATCH /advisor/matters/{matterId}
   for (const method of humanMethods) {
     const uriParts = method.Properties.Integration.Uri["Fn::Join"][1];
     const functionId = uriParts.find((part: any) => part?.["Fn::GetAtt"]?.[1] === "Arn")?.["Fn::GetAtt"][0];

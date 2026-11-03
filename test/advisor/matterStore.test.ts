@@ -14,8 +14,8 @@ import {
   parseMatterId,
   resolveClearedMatters,
   upsertMatters,
-} from "../../src/travis/matterStore";
-import type { MatterCandidate } from "../../src/travis/types";
+} from "../../src/advisor/matterStore";
+import type { MatterCandidate } from "../../src/advisor/types";
 
 const T = "t1";
 const TODAY = "2026-11-04";

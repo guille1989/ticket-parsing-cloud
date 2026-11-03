@@ -4,28 +4,28 @@ import { AGENTS_TABLE, ddb, TENANTS_TABLE, TICKETS_TABLE } from "../shared/dynam
 import { queryAllPages } from "../shared/pagination.js";
 import type { AgentRecord, TenantRecord } from "../shared/types.js";
 
-// Datos operativos de Travis. Salen de DynamoDB y no de Athena a propósito: son baratos
+// Datos operativos de Advisor. Salen de DynamoDB y no de Athena a propósito: son baratos
 // (decenas de ítems por tenant) y permiten correr los chequeos de "robot caído" y
 // "captura en cero" cada hora sin tocar el layout de archivos chicos de S3.
 
-export type TravisTenant = Pick<TenantRecord, "tenantId" | "businessName" | "travis">;
+export type AdvisorTenant = Pick<TenantRecord, "tenantId" | "businessName" | "advisor">;
 
-/** Negocios activos y con registro completo: lo que Travis revisa. */
-export async function listTravisTenants(): Promise<TravisTenant[]> {
-  const tenants: TravisTenant[] = [];
+/** Negocios activos y con registro completo: lo que Advisor revisa. */
+export async function listAdvisorTenants(): Promise<AdvisorTenant[]> {
+  const tenants: AdvisorTenant[] = [];
   let exclusiveStartKey: Record<string, unknown> | undefined;
   do {
     const page = await ddb.send(
       new ScanCommand({
         TableName: TENANTS_TABLE,
-        ProjectionExpression: "tenantId, businessName, #status, signupState, travis",
+        ProjectionExpression: "tenantId, businessName, #status, signupState, advisor",
         ExpressionAttributeNames: { "#status": "status" },
         ExclusiveStartKey: exclusiveStartKey,
       }),
     );
-    for (const item of (page.Items ?? []) as Array<TravisTenant & { status?: string; signupState?: string }>) {
+    for (const item of (page.Items ?? []) as Array<AdvisorTenant & { status?: string; signupState?: string }>) {
       if (item.status === "blocked" || item.signupState === "provisioning") continue;
-      tenants.push({ tenantId: item.tenantId, businessName: item.businessName, travis: item.travis });
+      tenants.push({ tenantId: item.tenantId, businessName: item.businessName, advisor: item.advisor });
     }
     exclusiveStartKey = page.LastEvaluatedKey;
   } while (exclusiveStartKey);

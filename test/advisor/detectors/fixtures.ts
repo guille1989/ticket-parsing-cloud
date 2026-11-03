@@ -1,6 +1,6 @@
-import { addDays } from "../../../src/travis/detectors/stats";
-import type { SalesHourRow } from "../../../src/travis/salesHistory";
-import type { AgentHabit } from "../../../src/travis/types";
+import { addDays } from "../../../src/advisor/detectors/stats";
+import type { SalesHourRow } from "../../../src/advisor/salesHistory";
+import type { AgentHabit } from "../../../src/advisor/types";
 
 export const NOW = new Date("2026-11-04T07:00:00Z"); // miércoles 4 de noviembre, 07:00 en UTC; "ayer" = martes 2026-11-03
 

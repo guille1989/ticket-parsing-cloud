@@ -3,7 +3,7 @@ import { buildAgentHabits, runDailyDetectors, runHourlyDetectors } from "./detec
 import { loadHabitProfile, saveHabitProfile, type HabitProfile } from "./habitStore.js";
 import { localDate, localHour } from "./localTime.js";
 import { resolveClearedMatters, upsertMatters, type UpsertResult } from "./matterStore.js";
-import { loadAgents, loadRecentTickets, loadReviewQueue, type TravisTenant } from "./opsData.js";
+import { loadAgents, loadRecentTickets, loadReviewQueue, type AdvisorTenant } from "./opsData.js";
 import { loadSalesHistory } from "./salesHistory.js";
 import { DEFAULT_BRIEFING_HOUR, type MatterCandidate, type MatterDetector } from "./types.js";
 
@@ -15,7 +15,7 @@ const HOUR_MS = 3_600_000;
 const RECENT_WINDOW_HOURS = 24;
 
 /** Dependencias inyectables: los tests las reemplazan, el Lambda usa las reales. */
-export interface TravisDeps {
+export interface AdvisorDeps {
   loadSalesHistory: typeof loadSalesHistory;
   loadAgents: typeof loadAgents;
   loadRecentTickets: typeof loadRecentTickets;
@@ -26,7 +26,7 @@ export interface TravisDeps {
   resolveClearedMatters: typeof resolveClearedMatters;
 }
 
-export const realDeps: TravisDeps = {
+export const realDeps: AdvisorDeps = {
   loadSalesHistory,
   loadAgents,
   loadRecentTickets,
@@ -59,9 +59,9 @@ export interface TenantRunResult {
   errors: string[];
 }
 
-export function resolveSettings(tenant: Pick<TravisTenant, "travis">): { timeZone: string; briefingHour: number } {
-  const zone = tenant.travis?.timeZone;
-  const hour = tenant.travis?.briefingHour;
+export function resolveSettings(tenant: Pick<AdvisorTenant, "advisor">): { timeZone: string; briefingHour: number } {
+  const zone = tenant.advisor?.timeZone;
+  const hour = tenant.advisor?.briefingHour;
   return {
     timeZone: zone && isValidTimeZone(zone) ? zone : DEFAULT_TIME_ZONE,
     briefingHour: Number.isInteger(hour) && hour! >= 0 && hour! <= 23 ? hour! : DEFAULT_BRIEFING_HOUR,
@@ -71,7 +71,7 @@ export function resolveSettings(tenant: Pick<TravisTenant, "travis">): { timeZon
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /**
- * Una pasada de Travis para un negocio (el Lambda la corre cada hora):
+ * Una pasada de Advisor para un negocio (el Lambda la corre cada hora):
  *  - Análisis diario, una vez al día a partir de la hora del briefing: una consulta Athena con
  *    el historial → hábitos de cada robot (se guardan) + detectores de venta. Si Athena falla,
  *    se reintenta en la hora siguiente; un marcador `dailyDate` evita repetirlo si salió bien.
@@ -80,10 +80,10 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
  * que de verdad corrieron.
  */
 export async function runTenant(
-  tenant: TravisTenant,
+  tenant: AdvisorTenant,
   now: Date,
   options: RunOptions = {},
-  deps: TravisDeps = realDeps,
+  deps: AdvisorDeps = realDeps,
 ): Promise<TenantRunResult> {
   const { timeZone, briefingHour } = resolveSettings(tenant);
   const today = localDate(now, timeZone);

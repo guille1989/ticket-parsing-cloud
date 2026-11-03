@@ -1,4 +1,4 @@
-import { buildSalesHistoryQuery, parseSalesHistoryRows, UNASSIGNED_AGENT } from "../../src/travis/salesHistory";
+import { buildSalesHistoryQuery, parseSalesHistoryRows, UNASSIGNED_AGENT } from "../../src/advisor/salesHistory";
 
 describe("buildSalesHistoryQuery", () => {
   const now = new Date("2026-11-03T12:00:00Z");

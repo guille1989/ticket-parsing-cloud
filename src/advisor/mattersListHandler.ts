@@ -18,7 +18,7 @@ function parseDays(raw: string | undefined): number {
 }
 
 /**
- * Los asuntos de Travis del negocio, del día más reciente al más viejo y, dentro de cada día,
+ * Los asuntos de Advisor del negocio, del día más reciente al más viejo y, dentro de cada día,
  * lo más grave primero. `?days=14` (hasta 90) acota el rango y `?status=new,seen` filtra por
  * estado. `newCount` cuenta los que el dueño todavía no vio, sin importar el filtro: es el
  * número de la campana.

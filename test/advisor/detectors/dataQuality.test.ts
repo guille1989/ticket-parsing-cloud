@@ -1,5 +1,5 @@
-import type { HourlyContext } from "../../../src/travis/detectors/context";
-import { detectParseFailures, detectReviewBacklog } from "../../../src/travis/detectors/dataQuality";
+import type { HourlyContext } from "../../../src/advisor/detectors/context";
+import { detectParseFailures, detectReviewBacklog } from "../../../src/advisor/detectors/dataQuality";
 
 const NOW = new Date("2026-11-04T11:30:00Z");
 

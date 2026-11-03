@@ -1,10 +1,10 @@
-// Corrida en seco de Travis desde tu PC contra los datos reales de AWS (solo lectura: no escribe
+// Corrida en seco de Advisor desde tu PC contra los datos reales de AWS (solo lectura: no escribe
 // asuntos ni el perfil de hábitos). Sirve para ver qué detectaría y afinar umbrales ANTES de
 // activar el job. Siempre hace el análisis diario completo (una consulta Athena por negocio).
 //
 // Uso (desde ticket-parsing-cloud/):
-//   npm run travis-run                          # todos los negocios activos
-//   npm run travis-run -- --tenant <tenantId>   # uno solo
+//   npm run advisor-run                          # todos los negocios activos
+//   npm run advisor-run -- --tenant <tenantId>   # uno solo
 //   opciones: --now 2026-11-03T12:00:00Z        # simular otra hora (cambia qué día es "ayer")
 import { readStackOutputs, requireOutput } from "./lib/stackOutputs.js";
 
@@ -23,14 +23,14 @@ async function main() {
   process.env.AGENTS_TABLE = need("AgentsTableName");
   process.env.ATHENA_WORKGROUP = need("AthenaWorkGroupName");
 
-  const { listTravisTenants } = await import("../src/travis/opsData.js");
-  const { realDeps, runTenant } = await import("../src/travis/runner.js");
+  const { listAdvisorTenants } = await import("../src/advisor/opsData.js");
+  const { realDeps, runTenant } = await import("../src/advisor/runner.js");
   // La tabla Matters puede no estar desplegada todavía: el perfil de hábitos no se lee ni se escribe.
   const deps = { ...realDeps, loadHabitProfile: async () => undefined, saveHabitProfile: async () => undefined };
 
   const onlyTenant = argValue("tenant");
   const now = argValue("now") ? new Date(argValue("now")!) : new Date();
-  const tenants = (await listTravisTenants()).filter((tenant) => !onlyTenant || tenant.tenantId === onlyTenant);
+  const tenants = (await listAdvisorTenants()).filter((tenant) => !onlyTenant || tenant.tenantId === onlyTenant);
   if (tenants.length === 0) throw new Error("no hay negocios que revisar");
 
   for (const tenant of tenants) {

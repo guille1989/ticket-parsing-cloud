@@ -11,28 +11,28 @@ jest.mock("../../src/shared/dynamo", () => {
   };
 });
 
-import { listTravisTenants, loadAgents, loadRecentTickets, loadReviewQueue } from "../../src/travis/opsData";
+import { listAdvisorTenants, loadAgents, loadRecentTickets, loadReviewQueue } from "../../src/advisor/opsData";
 
 beforeEach(() => {
   mockDdbSend.mockReset();
 });
 
-test("listTravisTenants salta los bloqueados y los registros a medio crear, y sigue la paginación", async () => {
+test("listAdvisorTenants salta los bloqueados y los registros a medio crear, y sigue la paginación", async () => {
   mockDdbSend
     .mockResolvedValueOnce({
       Items: [
-        { tenantId: "t1", businessName: "Alamo", travis: { timeZone: "America/Bogota" } },
+        { tenantId: "t1", businessName: "Alamo", advisor: { timeZone: "America/Bogota" } },
         { tenantId: "t2", businessName: "Bloqueado", status: "blocked" },
       ],
       LastEvaluatedKey: { pk: "TENANT#t2" },
     })
     .mockResolvedValueOnce({ Items: [{ tenantId: "t3", businessName: "Nuevo", signupState: "provisioning" }, { tenantId: "t4", businessName: "Empanadas" }] });
 
-  const tenants = await listTravisTenants();
+  const tenants = await listAdvisorTenants();
 
   expect(tenants).toEqual([
-    { tenantId: "t1", businessName: "Alamo", travis: { timeZone: "America/Bogota" } },
-    { tenantId: "t4", businessName: "Empanadas", travis: undefined },
+    { tenantId: "t1", businessName: "Alamo", advisor: { timeZone: "America/Bogota" } },
+    { tenantId: "t4", businessName: "Empanadas", advisor: undefined },
   ]);
   expect(mockDdbSend).toHaveBeenCalledTimes(2);
 });

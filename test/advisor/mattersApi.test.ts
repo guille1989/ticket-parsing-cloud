@@ -15,11 +15,11 @@ jest.mock("../../src/shared/dynamo", () => {
   return { ...actual, ddb: { send: (...args: unknown[]) => fake.send(args[0]) }, MATTERS_TABLE: "TestMatters", AGENTS_TABLE: "TestAgents" };
 });
 
-import { publicMatterId, internalMatterId } from "../../src/travis/matterApi";
-import { upsertMatters } from "../../src/travis/matterStore";
-import { handler as listHandler } from "../../src/travis/mattersListHandler";
-import { handler as updateHandler } from "../../src/travis/mattersUpdateHandler";
-import type { MatterCandidate } from "../../src/travis/types";
+import { publicMatterId, internalMatterId } from "../../src/advisor/matterApi";
+import { upsertMatters } from "../../src/advisor/matterStore";
+import { handler as listHandler } from "../../src/advisor/mattersListHandler";
+import { handler as updateHandler } from "../../src/advisor/mattersUpdateHandler";
+import type { MatterCandidate } from "../../src/advisor/types";
 
 function event(options: { tenant?: string | null; query?: Record<string, string>; matterId?: string; body?: unknown } = {}): APIGatewayProxyWithCognitoAuthorizerEvent {
   const { tenant = "t1", query, matterId, body } = options;
@@ -60,7 +60,7 @@ describe("id público", () => {
   });
 });
 
-describe("GET /travis/matters", () => {
+describe("GET /advisor/matters", () => {
   it("sin sesión: 403", async () => {
     expect((await listHandler(event({ tenant: null }))).statusCode).toBe(403);
   });
@@ -139,7 +139,7 @@ describe("GET /travis/matters", () => {
   });
 });
 
-describe("PATCH /travis/matters/{matterId}", () => {
+describe("PATCH /advisor/matters/{matterId}", () => {
   it("sin sesión: 403", async () => {
     expect((await updateHandler(event({ tenant: null, matterId: idOf(matter()), body: { status: "seen" } }))).statusCode).toBe(403);
   });

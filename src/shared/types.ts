@@ -1,5 +1,5 @@
 import type { DocumentType, ParsedItem } from "../parsing/types.js";
-import type { TravisSettings } from "../travis/types.js";
+import type { AdvisorSettings } from "../advisor/types.js";
 
 /**
  * `needs_review` es el destino de todo lo resuelto por el fallback de
@@ -64,8 +64,8 @@ export interface TenantRecord {
    * de forma retroactiva por el recorrido inicial.
    */
   onboarding?: OnboardingState;
-  /** Preferencias del asistente-directivo Travis (zona horaria, hora del briefing, correos). */
-  travis?: TravisSettings;
+  /** Preferencias del asistente-directivo Advisor (zona horaria, hora del briefing, correos). */
+  advisor?: AdvisorSettings;
 }
 
 export interface TicketRecord {
