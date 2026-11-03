@@ -1,9 +1,16 @@
-import { detectSalesAnomalies } from "../../../src/travis/detectors/salesAnomaly";
+import { DEFAULT_SALES_THRESHOLDS, detectSalesAnomalies } from "../../../src/travis/detectors/salesAnomaly";
 import { buildHistory, NOW } from "./fixtures";
 
 const TARGET = "2026-11-03";
 const detect = (history: ReturnType<typeof buildHistory>, now: Date = NOW, timeZone = "UTC") => detectSalesAnomalies({ now, timeZone, history });
 const dropOnTarget = (multiplier: number) => (day: string) => (day === TARGET ? multiplier : 1);
+
+test("los umbrales se pueden sobreescribir: con un piso de dispersión del 25% una caída del 32% ya es variación normal", () => {
+  const history = buildHistory({ factor: dropOnTarget(0.68) });
+
+  expect(detectSalesAnomalies({ now: NOW, timeZone: "UTC", history })).not.toHaveLength(0);
+  expect(detectSalesAnomalies({ now: NOW, timeZone: "UTC", history }, { ...DEFAULT_SALES_THRESHOLDS, scaleFloor: 0.25 })).toEqual([]);
+});
 
 test("un negocio estable no genera asuntos", () => {
   expect(detect(buildHistory())).toEqual([]);

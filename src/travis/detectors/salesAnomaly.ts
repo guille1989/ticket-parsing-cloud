@@ -12,16 +12,22 @@ const BASELINE_WEEKS = 6;
 const MIN_BASELINE_DAYS = 4;
 // Sin actividad suficiente en la base, cualquier variación es ruido (y un negocio cerrado ese día no es una caída).
 const MIN_BASELINE_TICKETS = 5;
-// Si los días de la base son casi idénticos la dispersión sería ~0 y cualquier cambio daría z enorme:
-// se asume al menos esta variación relativa.
-const SCALE_FLOOR = 0.15;
 const MAD_TO_SIGMA = 1.4826;
 
-// Hace falta que el desvío sea estadísticamente raro (z) Y grande en términos de negocio (%).
-const WARN_Z = 2;
-const WARN_PCT = 0.2;
-const CRITICAL_Z = 3;
-const CRITICAL_PCT = 0.35;
+/**
+ * Hace falta que el desvío sea estadísticamente raro (z) Y grande en términos de negocio (%).
+ * `scaleFloor`: si los días de la base son casi idénticos la dispersión sería ~0 y cualquier
+ * cambio daría z enorme, así que se asume al menos esta variación relativa.
+ */
+export interface SalesThresholds {
+  scaleFloor: number;
+  warnZ: number;
+  warnPct: number;
+  criticalZ: number;
+  criticalPct: number;
+}
+
+export const DEFAULT_SALES_THRESHOLDS: SalesThresholds = { scaleFloor: 0.15, warnZ: 2, warnPct: 0.2, criticalZ: 3, criticalPct: 0.35 };
 
 interface DayTotals {
   sales: number;
@@ -38,19 +44,19 @@ function addTo(series: DailySeries, day: string, row: SalesHourRow) {
   series.set(day, totals);
 }
 
-function classify(z: number, pct: number): { direction: "drop" | "spike"; severity: MatterSeverity } | null {
-  if (z <= -WARN_Z && pct <= -WARN_PCT) {
-    return { direction: "drop", severity: z <= -CRITICAL_Z && pct <= -CRITICAL_PCT ? "critical" : "warn" };
+function classify(z: number, pct: number, t: SalesThresholds): { direction: "drop" | "spike"; severity: MatterSeverity } | null {
+  if (z <= -t.warnZ && pct <= -t.warnPct) {
+    return { direction: "drop", severity: z <= -t.criticalZ && pct <= -t.criticalPct ? "critical" : "warn" };
   }
   // Un pico es una buena noticia que conviene saber, no un riesgo: nunca pasa de "warn".
-  if (z >= WARN_Z && pct >= WARN_PCT) {
-    return { direction: "spike", severity: z >= CRITICAL_Z && pct >= CRITICAL_PCT ? "warn" : "info" };
+  if (z >= t.warnZ && pct >= t.warnPct) {
+    return { direction: "spike", severity: z >= t.criticalZ && pct >= t.criticalPct ? "warn" : "info" };
   }
   return null;
 }
 
 /** Ventas de ayer vs. lo habitual para ese día de la semana: total del negocio y de cada sucursal. */
-export function detectSalesAnomalies(ctx: DailyContext): MatterCandidate[] {
+export function detectSalesAnomalies(ctx: DailyContext, thresholds: SalesThresholds = DEFAULT_SALES_THRESHOLDS): MatterCandidate[] {
   const target = addDays(localDate(ctx.now, ctx.timeZone), -1);
 
   const byScope = new Map<string, DailySeries>();
@@ -75,11 +81,11 @@ export function detectSalesAnomalies(ctx: DailyContext): MatterCandidate[] {
     if (expectedTickets < MIN_BASELINE_TICKETS || expectedSales <= 0) continue;
 
     const actual = series.get(target) ?? NO_SALES;
-    const spread = Math.max(MAD_TO_SIGMA * medianAbsoluteDeviation(baseline.map((day) => day.sales), expectedSales), SCALE_FLOOR * expectedSales);
+    const spread = Math.max(MAD_TO_SIGMA * medianAbsoluteDeviation(baseline.map((day) => day.sales), expectedSales), thresholds.scaleFloor * expectedSales);
     const z = (actual.sales - expectedSales) / spread;
     const pct = (actual.sales - expectedSales) / expectedSales;
 
-    const verdict = classify(z, pct);
+    const verdict = classify(z, pct, thresholds);
     if (!verdict) continue;
     candidates.push({
       detector: "sales_anomaly",
