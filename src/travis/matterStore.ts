@@ -156,7 +156,7 @@ export async function resolveClearedMatters(
 export async function listMatters(tenantId: string, sinceDate: string): Promise<MatterItem[]> {
   return queryAllPages<MatterItem>({
     TableName: MATTERS_TABLE,
-    KeyConditionExpression: "pk = :pk AND sk >= :since AND sk < :until",
+    KeyConditionExpression: "pk = :pk AND sk BETWEEN :since AND :until",
     // "MATTER$" va justo después de "MATTER#": cota superior de todos los SK de asuntos.
     ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":since": `MATTER#${sinceDate}`, ":until": "MATTER$" },
     ScanIndexForward: false,

@@ -10,7 +10,7 @@ test("el stack sintetiza con las piezas clave del pipeline multi-tenant", () => 
 
   template.resourceCountIs("AWS::DynamoDB::GlobalTable", 10); // Tickets + Tenants + Widgets + Agents + ActivationCodes + Reports + Conversations + AssistantUsage + SignupUsage + Matters
   template.resourceCountIs("AWS::SQS::Queue", 2); // DLQ del parseo + DLQ de la sincronización analítica — el trigger es el Stream, no una cola
-  template.resourceCountIs("AWS::Lambda::Function", 29); // pipeline + reportes guardados (3) + conversaciones del asistente (4) + dashboard + agentes (con el resultado de diagnósticos) + auth + perfil/onboarding + revisión de tickets + imagen de ticket
+  template.resourceCountIs("AWS::Lambda::Function", 30); // Travis (job horario) + pipeline + reportes guardados (3) + conversaciones del asistente (4) + dashboard + agentes (con el resultado de diagnósticos) + auth + perfil/onboarding + revisión de tickets + imagen de ticket
   template.resourceCountIs("AWS::Lambda::EventSourceMapping", 2); // parser + sincronización analítica, ambos suscriptos al Stream de Tickets
   template.resourceCountIs("AWS::Cognito::UserPool", 1);
   template.resourceCountIs("AWS::Cognito::UserPoolClient", 1);
@@ -37,6 +37,19 @@ test("el stack sintetiza con las piezas clave del pipeline multi-tenant", () => 
   template.hasResourceProperties("AWS::ApiGateway::Method", {
     HttpMethod: "PATCH",
     AuthorizationType: "COGNITO_USER_POOLS",
+  });
+});
+
+test("Travis corre cada hora, en dry-run (no guarda asuntos hasta que se apague el interruptor)", () => {
+  const app = new cdk.App();
+  const stack = new TicketParsingCloudStack(app, "TestStack");
+  const template = Template.fromStack(stack);
+
+  template.resourceCountIs("AWS::Events::Rule", 1);
+  template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(1 hour)" });
+  template.hasResourceProperties("AWS::Lambda::Function", {
+    Environment: { Variables: { TRAVIS_ENABLED: "true", TRAVIS_DRY_RUN: "true" } },
+    Timeout: 300,
   });
 });
 

@@ -83,8 +83,9 @@ export interface RecentTicket {
 export async function loadRecentTickets(tenantId: string, sinceIso: string): Promise<RecentTicket[]> {
   return queryAllPages<RecentTicket>({
     TableName: TICKETS_TABLE,
-    KeyConditionExpression: "pk = :pk AND sk >= :since AND sk < :until",
+    KeyConditionExpression: "pk = :pk AND sk BETWEEN :since AND :until",
     // "TICKET$" va justo después de "TICKET#": cota superior de todos los SK de ticket (excluye los DEDUP#).
+    // Un solo BETWEEN: DynamoDB no admite dos condiciones sobre la misma clave de ordenamiento.
     ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":since": `TICKET#${sinceIso}`, ":until": "TICKET$" },
     ProjectionExpression: "agentId, capturedAt, #status",
     ExpressionAttributeNames: { "#status": "status" },

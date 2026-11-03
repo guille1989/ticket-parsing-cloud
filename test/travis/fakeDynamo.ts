@@ -30,7 +30,8 @@ export function createFakeDynamo() {
       const { ExpressionAttributeValues: values = {}, KeyConditionExpression: condition = "", ScanIndexForward = true } = command.input;
       let rows = [...items.values()].filter((item) => item.pk === values[":pk"]);
       if (condition.includes("begins_with(sk, :prefix)")) rows = rows.filter((item) => item.sk.startsWith(values[":prefix"]));
-      else if (condition.includes("sk >= :since AND sk < :until")) rows = rows.filter((item) => item.sk >= values[":since"] && item.sk < values[":until"]);
+      else if (condition.includes("sk BETWEEN :since AND :until")) rows = rows.filter((item) => item.sk >= values[":since"] && item.sk <= values[":until"]);
+      else if (/sk\s*(>=|<)/.test(condition)) throw new Error("DynamoDB no admite dos condiciones sobre el SK: usar BETWEEN");
       else throw new Error(`condición de Query no soportada por el fake: ${condition}`);
       rows.sort((a, b) => (a.sk < b.sk ? -1 : 1));
       if (!ScanIndexForward) rows.reverse();

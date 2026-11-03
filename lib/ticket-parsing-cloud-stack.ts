@@ -5,6 +5,8 @@ import * as budgets from "aws-cdk-lib/aws-budgets";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as events from "aws-cdk-lib/aws-events";
+import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as glue from "aws-cdk-lib/aws-glue";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
@@ -1106,6 +1108,49 @@ export class TicketParsingCloudStack extends cdk.Stack {
     const reportById = reports.addResource("{reportId}");
     reportById.addMethod("GET", new apigateway.LambdaIntegration(reportsGetFn), dashboardAuth);
     reportById.addMethod("DELETE", new apigateway.LambdaIntegration(reportsDeleteFn), dashboardAuth);
+
+    // ---- Travis: el directivo digital del negocio -------------------------
+    //
+    // Un solo Lambda que EventBridge dispara cada hora (ver `travis/runner.ts`): a partir de la
+    // hora del briefing de cada negocio hace UNA consulta de Athena al día (historial → hábitos
+    // de los robots y ventas anómalas), y en cada pasada hace chequeos baratos de DynamoDB
+    // (robot caído, captura en cero, cola de revisión, tickets fallidos). Guarda los asuntos en
+    // la tabla Matters.
+    //
+    // Interruptores (se cambian acá y se despliega): arranca ENCENDIDO pero en DRY-RUN, es
+    // decir calcula y deja en CloudWatch lo que habría detectado sin guardar ningún asunto.
+    // Cuando los umbrales se vean bien con datos reales, `travisDryRun = false` lo activa de verdad.
+    const travisEnabled = true;
+    const travisDryRun = true;
+
+    const travisRunFn = new nodejs.NodejsFunction(this, "TravisRunFunction", {
+      entry: "src/travis/runHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      // Un negocio tarda unos segundos (Athena ~5 s una vez al día); el margen cubre varios negocios en serie.
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 256,
+      environment: {
+        TRAVIS_ENABLED: String(travisEnabled),
+        TRAVIS_DRY_RUN: String(travisDryRun),
+        TENANTS_TABLE: tenantsTable.tableName,
+        TICKETS_TABLE: ticketsTable.tableName,
+        AGENTS_TABLE: agentsTable.tableName,
+        MATTERS_TABLE: mattersTable.tableName,
+        ATHENA_WORKGROUP: athenaWorkGroupName,
+      },
+    });
+    grantAnalyticsQueryAccess(travisRunFn);
+    tenantsTable.grantReadData(travisRunFn);
+    ticketsTable.grantReadData(travisRunFn);
+    agentsTable.grantReadData(travisRunFn);
+    mattersTable.grantReadWriteData(travisRunFn);
+
+    new events.Rule(this, "TravisHourlyRule", {
+      schedule: events.Schedule.rate(cdk.Duration.hours(1)),
+      // Sin reintentos: el job no lanza excepciones y la pasada siguiente repite todo igual.
+      targets: [new targets.LambdaFunction(travisRunFn, { retryAttempts: 0 })],
+    });
 
     // ---- Outputs -------------------------------------------------------
 

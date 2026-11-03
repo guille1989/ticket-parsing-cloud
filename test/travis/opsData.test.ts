@@ -80,6 +80,8 @@ test("loadRecentTickets usa un rango sobre el SK cronológico, sin tocar los mar
   expect(tickets).toHaveLength(1);
   expect(mockDdbSend.mock.calls[0][0].input).toMatchObject({
     TableName: "TestTickets",
+    // Un solo BETWEEN sobre el SK: DynamoDB rechaza dos condiciones sobre la misma clave de ordenamiento.
+    KeyConditionExpression: "pk = :pk AND sk BETWEEN :since AND :until",
     ExpressionAttributeValues: { ":pk": "TENANT#t1", ":since": "TICKET#2026-11-03T12:00:00.000Z", ":until": "TICKET$" },
   });
 });
