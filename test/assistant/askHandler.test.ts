@@ -734,3 +734,61 @@ test("el prompt manda agrupar por agent para 'sucursal' y no por port, sin símb
   expect(system).toContain("**negrita**");
   expect(system).toContain("No pongas símbolo de moneda");
 });
+
+test("create_widget: KPI de un producto en una sucursal devuelve el widget con agentId y descriptionContains", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "create_widget", {
+        name: "Café con leche · Sol", visualization: "kpi", field: "subtotal", aggregation: "sum",
+        filters: { branch: "TPV Sol", descriptionContains: "cafe con leche" },
+      }),
+    )
+    .mockResolvedValueOnce(textResponse("Listo, añadí el KPI."));
+  mockRunAthenaQuery.mockResolvedValue([{ value: 1234.5 }]);
+  mockBranchAgents();
+
+  const result = await handler(eventWith({ question: "kpi de café con leche en sol" }, "tenant-x"));
+
+  expect(result.statusCode).toBe(200);
+  expect(JSON.parse(result.body).widget).toEqual({
+    name: "Café con leche · Sol",
+    visualization: "kpi",
+    metric: { field: "subtotal", aggregation: "sum" },
+    filters: { agentId: "agent-sol", descriptionContains: "cafe con leche" },
+  });
+  const [sql, params] = mockRunAthenaQuery.mock.calls[0];
+  expect(sql).toContain("agentid = ?");
+  expect(params).toEqual(expect.arrayContaining(["agent-sol", "cafe con leche"]));
+  const json = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult.content[0].json;
+  expect(json).toMatchObject({ ok: true, branch: "Horno Castizo · Sol", descriptionContains: "cafe con leche", preview: [{ value: 1234.5 }] });
+  expect(JSON.stringify(json)).not.toContain("agent-sol");
+});
+
+test.each([
+  ["total con filtro de producto", { visualization: "kpi", field: "total", aggregation: "sum", filters: { descriptionContains: "cafe" } }, /un valor por ticket/],
+  ["kpi con groupBy", { visualization: "kpi", field: "subtotal", aggregation: "sum", groupBy: "agent" }, /no admite groupBy/],
+  ["barras sin groupBy", { visualization: "bar", field: "subtotal", aggregation: "sum" }, /necesita groupBy/],
+  ["línea sin groupBy temporal", { visualization: "line", field: "subtotal", aggregation: "sum", groupBy: "agent" }, /groupBy temporal/],
+  ["rango de fechas", { visualization: "kpi", field: "subtotal", aggregation: "sum", filters: { dateFrom: "2026-10-01" } }, /solo admiten los filtros/],
+  ["sucursal inexistente", { visualization: "kpi", field: "subtotal", aggregation: "sum", filters: { branch: "Chueca" } }, /no existe la sucursal/],
+])("create_widget rechaza %s: no devuelve widget y el modelo recibe el error", async (_caso, input, message) => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "create_widget", { name: "X", ...input }))
+    .mockResolvedValueOnce(textResponse("No pude."));
+  mockBranchAgents();
+
+  const result = await handler(eventWith({ question: "kpi" }, "tenant-x"));
+
+  expect(JSON.parse(result.body).widget).toBeUndefined();
+  const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
+  expect(toolResult.status).toBe("error");
+  expect(JSON.stringify(toolResult.content)).toMatch(message);
+});
+
+test("create_widget: el prompt la describe y manda pasar las condiciones como filtros", async () => {
+  mockBedrockSend.mockResolvedValueOnce(textResponse("hola"));
+  await handler(eventWith({ question: "hola" }));
+  const input = mockBedrockSend.mock.calls[0][0].input;
+  expect(input.system[0].text).toContain('"create_widget"');
+  expect(input.toolConfig.tools.map((t: { toolSpec: { name: string } }) => t.toolSpec.name)).toContain("create_widget");
+});

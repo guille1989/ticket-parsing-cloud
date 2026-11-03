@@ -19,6 +19,8 @@ const PORT_PATTERN = /^[A-Za-z0-9_.-]+$/;
 const MAX_PORT_LENGTH = 64;
 const AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const MAX_AGENT_ID_LENGTH = 64;
+// Igual que MAX_DESCRIPTION_FILTER_LENGTH en assistant/askHandler.ts.
+const MAX_DESCRIPTION_LENGTH = 50;
 
 type WidgetInput = Omit<WidgetRecord, "tenantId" | "widgetId" | "createdAt">;
 type Validation = { ok: true; value: WidgetInput } | { ok: false; error: string };
@@ -109,6 +111,15 @@ function validateBody(body: unknown): Validation {
         return { ok: false, error: `filters.status inválido, se esperaba uno de: ${STATUSES.join(", ")}` };
       }
       filters.status = f.status;
+    }
+    if (f.descriptionContains !== undefined) {
+      if (typeof f.descriptionContains !== "string" || f.descriptionContains.trim().length === 0 || f.descriptionContains.length > MAX_DESCRIPTION_LENGTH) {
+        return { ok: false, error: `filters.descriptionContains inválido (texto no vacío, máx ${MAX_DESCRIPTION_LENGTH} caracteres)` };
+      }
+      if (isTicketLevelField(metric.field)) {
+        return { ok: false, error: `no se puede filtrar "${metric.field}" (un valor por ticket) por descripción de producto — usá "subtotal" o "quantity"` };
+      }
+      filters.descriptionContains = f.descriptionContains.trim();
     }
   }
 

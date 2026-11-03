@@ -234,7 +234,7 @@ export interface WidgetFilters {
   /**
    * Solo ítems cuya descripción contiene este texto (sin distinguir
    * mayúsculas). Hoy lo usa únicamente el asistente ("lo que diga
-   * horneadas") — `widgets/createHandler.ts` no lo acepta todavía.
+   * horneadas") y los widgets que crea (`widgets/createHandler.ts`).
    */
   descriptionContains?: string;
 }

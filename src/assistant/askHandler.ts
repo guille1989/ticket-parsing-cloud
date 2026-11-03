@@ -7,7 +7,7 @@ import { saveReport } from "./reportStore.js";
 import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { AGENTS_TABLE, ddb, TICKETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
-import type { AgentRecord, TicketRecord, TicketStatus, WidgetAggregation, WidgetFilters, WidgetRecord } from "../shared/types.js";
+import type { AgentRecord, TicketRecord, TicketStatus, WidgetAggregation, WidgetFilters, WidgetRecord, WidgetVisualization } from "../shared/types.js";
 import { runWidgetQuery as runAthenaQuery, type WidgetDataPoint } from "../widgets/athenaQuery.js";
 import { dateFilterError } from "../widgets/dateFilters.js";
 import { extractProductVolume } from "./productVolume.js";
@@ -47,12 +47,14 @@ const REPORT_MAX_TITLE_LENGTH = 100;
 
 const SYSTEM_PROMPT = `Sos el asistente de datos del dashboard de un negocio que usa InnoApp para capturar y analizar tickets de venta. Contestá siempre en español, en pocas oraciones, directo al grano.
 
-Tenés tres herramientas para consultar los datos REALES del negocio — nunca inventes números:
+Tenés herramientas para consultar los datos REALES del negocio — nunca inventes números:
 Las métricas de venta cuentan por defecto los tickets confirmados (parsed) y los pendientes de revisión (needs_review), este último un ticket leído por un modelo de IA que el negocio aún no confirmó; excluyen líneas anuladas al consultar productos. Un value null significa que no hay observaciones para esa métrica: no lo conviertas en cero ni calcules un porcentaje contra una base ausente. sampleCount, cuando aparece, indica el número de observaciones del promedio. Si el usuario pregunta por ventas confirmadas, filtrá por estado parsed; si una consulta explícita por estado incluye needs_review, aclaralo.
 - "run_widget_query": totales/promedios/conteos, opcionalmente agrupados por sucursal/estado/producto o por día. Usala para preguntas de agregados ("¿cuánto vendí?", "¿qué producto vendió más?", "comparame las sucursales", "¿qué día vendí más?").
 - "list_tickets": los tickets más recientes (fecha, sucursal, puerto, estado, total y, en facturas electrónicas, cliente y número de factura), opcionalmente filtrados por estado. Usala para preguntas puntuales sobre ventas concretas o para listados fila por fila, no para totales.
 
 - "build_report": arma un reporte descargable (varias secciones, cada una con su consulta). Usala SOLO cuando el usuario pida un reporte, informe o resumen para descargar. Las tablas las calcula la herramienta con datos reales; vos no transcribas números. Después de llamarla, contestá en pocas oraciones con los hallazgos principales y decí que el reporte está listo para descargar.
+
+- "create_widget": agrega un widget al dashboard. Usala cuando el usuario pida crear/agregar/hacer un KPI, gráfica o widget con condiciones (una sucursal, un producto). Pasá esas condiciones como filtros "branch" y "descriptionContains": nunca las ignores ni las metas solo en el título. Un widget de un producto usa "subtotal" (plata) o "quantity" (unidades), nunca "total". Escribí el producto sin tildes y con una raíz corta ("cafe con leche"). La herramienta devuelve "preview" con el valor actual: contale al usuario qué filtros quedaron aplicados y cuánto da hoy; si preview viene vacío o en cero, decilo y sugerí revisar el nombre del producto. Si la sucursal no existe o es ambigua, mostrale las opciones y no crees nada.
 
 Sucursales: cada robot ("agent") es una sucursal/local del negocio. Para "¿qué sucursal/local/sede…?", "comparame las sucursales" o "ventas por sucursal" agrupá por "agent": el resultado ya trae el nombre de cada sucursal, usalo tal cual en la respuesta. NO uses "port" para eso: "port" es el puerto/periférico (por ejemplo una caja registradora, TPV-CAJA1) y un mismo local puede tener varios; solo agrupá por "port" si piden explícitamente comparar cajas o puertos.
 Para los datos de UNA sola sucursal ("¿qué se vende más en la sucursal Sol?", "ventas de Chapinero en octubre") usá el filtro "branch" con el nombre que dijo el usuario, junto con el resto de la consulta (por ejemplo agrupado por producto). Sin ese filtro el resultado es de TODO el negocio: nunca atribuyas a una sucursal un resultado que no consultaste con "branch". Si la herramienta responde que la sucursal no existe o es ambigua, mostrale al usuario las sucursales que te devuelve y pedile que elija.
@@ -176,6 +178,30 @@ function buildTools(): Tool[] {
     },
     {
       toolSpec: {
+        name: "create_widget",
+        description:
+          "Agrega un widget (KPI, barras, línea o dona) al dashboard del usuario. Valida la consulta con datos reales y devuelve una vista previa del valor. Un KPI es un solo número (sin groupBy); bar/donut necesitan groupBy; line necesita groupBy 'day' u 'hour'. Los widgets no admiten rango de fechas ni estado: solo los filtros branch y descriptionContains.",
+        inputSchema: {
+          json: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Título del widget, descriptivo y corto, p. ej. 'Café con leche · Sol'." },
+              visualization: { type: "string", enum: WIDGET_VISUALIZATIONS },
+              field: queryProperties.field,
+              aggregation: queryProperties.aggregation,
+              groupBy: queryProperties.groupBy,
+              filters: {
+                type: "object",
+                properties: { branch: queryProperties.filters.properties.branch, descriptionContains: queryProperties.filters.properties.descriptionContains },
+              },
+            },
+            required: ["name", "visualization", "field", "aggregation"],
+          },
+        },
+      },
+    },
+    {
+      toolSpec: {
         name: "list_tickets",
         description: `Lista hasta ${LIST_TICKETS_MAX_LIMIT} tickets recientes del negocio, opcionalmente filtrados por estado. Cada ticket trae fecha, sucursal, puerto, estado, total y, si es factura electrónica, customerName/customerId/documentNumber. Para preguntas puntuales o listados, no para totales.`,
         inputSchema: {
@@ -201,7 +227,11 @@ function buildTools(): Tool[] {
  * un usuario, pero el mismo principio aplica: nunca confiar un nombre de
  * campo directo, siempre revalidar antes de generar SQL.
  */
-async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolContext): Promise<unknown> {
+async function parseQueryInput(
+  input: unknown,
+  tenantId: string,
+  ctx: ToolContext,
+): Promise<{ field: string; aggregation: string; groupBy?: string; filters?: WidgetFilters; branchLabel?: string }> {
   const raw = (input ?? {}) as Record<string, unknown>;
 
   const field = typeof raw.field === "string" ? raw.field : "";
@@ -257,6 +287,12 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
       filters.descriptionContains = f.descriptionContains.trim().slice(0, MAX_DESCRIPTION_FILTER_LENGTH);
     }
   }
+
+  return { field, aggregation, groupBy, filters, branchLabel };
+}
+
+async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolContext): Promise<unknown> {
+  const { field, aggregation, groupBy, filters, branchLabel } = await parseQueryInput(input, tenantId, ctx);
 
   const widget: WidgetRecord = {
     tenantId,
@@ -433,7 +469,67 @@ async function buildReportTool(input: unknown, tenantId: string, ctx: ToolContex
   return { ok: true, title, sections: sections.map((s) => ({ heading: s.heading, data: s.data, previous: s.previous })) };
 }
 
+/**
+ * Widget que el asistente propone para el dashboard. El servidor lo valida y lo
+ * prueba con una consulta real, pero lo crea el cliente por la ruta normal
+ * (`POST /widgets`), que vuelve a validarlo y refresca el tablero.
+ */
+export type WidgetDraft = {
+  name: string;
+  visualization: WidgetVisualization;
+  metric: { field: string; aggregation: string };
+  groupBy?: string;
+  filters?: { agentId?: string; descriptionContains?: string };
+};
+
+const WIDGET_VISUALIZATIONS: WidgetVisualization[] = ["kpi", "bar", "line", "donut"];
+const WIDGET_NAME_MAX_LENGTH = 100;
+
+async function createWidgetTool(input: unknown, tenantId: string, ctx: ToolContext): Promise<unknown> {
+  const raw = (input ?? {}) as Record<string, unknown>;
+  const name = typeof raw.name === "string" ? raw.name.trim().slice(0, WIDGET_NAME_MAX_LENGTH) : "";
+  if (!name) throw new Error("name inválido (string no vacío)");
+  if (typeof raw.visualization !== "string" || !WIDGET_VISUALIZATIONS.includes(raw.visualization as WidgetVisualization)) {
+    throw new Error(`visualization inválida. Válidas: ${WIDGET_VISUALIZATIONS.join(", ")}`);
+  }
+  const visualization = raw.visualization as WidgetVisualization;
+
+  const { field, aggregation, groupBy, filters, branchLabel } = await parseQueryInput(raw, tenantId, ctx);
+  // Mismas reglas que widgets/createHandler.ts: si no se cumplen, el cliente no podría crear el widget.
+  if (visualization === "kpi" && groupBy) throw new Error("un widget kpi no admite groupBy: omitilo o elegí bar/line/donut");
+  if (visualization !== "kpi" && !groupBy) throw new Error(`un widget ${visualization} necesita groupBy`);
+  if (visualization === "line" && !TEMPORAL_FIELDS.includes(groupBy as never)) throw new Error(`un widget line necesita groupBy temporal: ${TEMPORAL_FIELDS.join(", ")}`);
+  if (visualization !== "line" && groupBy && TEMPORAL_FIELDS.includes(groupBy as never)) throw new Error("groupBy temporal solo sirve para widgets line");
+  if (filters?.dateFrom || filters?.dateTo || filters?.port || filters?.status) {
+    throw new Error("los widgets del dashboard solo admiten los filtros branch y descriptionContains (el rango de fechas lo elige el usuario en el tablero)");
+  }
+
+  // Consulta de prueba: valida la combinación de campos y deja ver si el filtro
+  // encontró algo, en vez de crear un widget que nace vacío.
+  const preview = (await runWidgetQueryTool(raw, tenantId, ctx)) as { data: WidgetDataPoint[] };
+
+  const draftFilters: WidgetDraft["filters"] = {
+    ...(filters?.agentId ? { agentId: filters.agentId } : {}),
+    ...(filters?.descriptionContains ? { descriptionContains: filters.descriptionContains } : {}),
+  };
+  ctx.widget = {
+    name,
+    visualization,
+    metric: { field, aggregation: field === EVENT_COUNT_FIELD ? "count" : aggregation },
+    ...(groupBy ? { groupBy } : {}),
+    ...(Object.keys(draftFilters).length ? { filters: draftFilters } : {}),
+  };
+  return {
+    ok: true,
+    name,
+    ...(branchLabel ? { branch: branchLabel } : {}),
+    ...(filters?.descriptionContains ? { descriptionContains: filters.descriptionContains } : {}),
+    preview: preview.data,
+  };
+}
+
 type ToolContext = {
+  widget?: WidgetDraft;
   report?: Report;
   timeZone?: string;
   branches?: Promise<Map<string, string>>;
@@ -518,6 +614,7 @@ async function callTool(name: string, input: unknown, tenantId: string, ctx: Too
   if (name === "build_report") return buildReportTool(input, tenantId, ctx);
   if (name === "run_widget_query") return runWidgetQueryTool(input, tenantId, ctx);
   if (name === "list_tickets") return listTicketsTool(input, tenantId, ctx);
+  if (name === "create_widget") return createWidgetTool(input, tenantId, ctx);
   throw new Error(`herramienta desconocida: "${name}"`);
 }
 
@@ -687,7 +784,8 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
           return jsonResponse(502, { error: "el modelo no devolvió respuesta" });
         }
         logQa({ tenantId, question: validation.question, answer: text, toolCalls, turns: turn + 1, historyTurns: validation.history.length });
-        if (!toolContext.report) return jsonResponse(200, { answer: text });
+        const widgetPart = toolContext.widget ? { widget: toolContext.widget } : {};
+        if (!toolContext.report) return jsonResponse(200, { answer: text, ...widgetPart });
         // Si guardar falla, el reporte igual le llega al cliente (descargable en el momento), solo que no queda en "Reportes".
         let reportId: string | undefined;
         try {
@@ -695,7 +793,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
         } catch (err) {
           console.error("[assistant] no se pudo guardar el reporte:", err);
         }
-        return jsonResponse(200, { answer: text, report: toolContext.report, reportId });
+        return jsonResponse(200, { answer: text, report: toolContext.report, reportId, ...widgetPart });
       }
 
       const toolUseBlocks = (outputMessage.content ?? []).filter((block) => block.toolUse);

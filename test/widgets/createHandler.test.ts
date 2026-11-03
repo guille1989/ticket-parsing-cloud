@@ -186,6 +186,29 @@ test("rechaza filters.agentId con caracteres fuera de lo permitido", async () =>
   expect(result.statusCode).toBe(400);
 });
 
+test("crea un KPI de un producto (filters.descriptionContains, recortado)", async () => {
+  const result = await handler(
+    eventWith({
+      name: "Café con leche",
+      visualization: "kpi",
+      metric: { field: "subtotal", aggregation: "sum" },
+      filters: { descriptionContains: "  cafe con leche " },
+    }),
+  );
+
+  expect(result.statusCode).toBe(201);
+  expect(JSON.parse(result.body).filters).toEqual({ descriptionContains: "cafe con leche" });
+});
+
+test.each([
+  ["campo del ticket", { field: "total", aggregation: "sum" }, "cafe"],
+  ["texto vacío", { field: "subtotal", aggregation: "sum" }, "  "],
+  ["texto demasiado largo", { field: "subtotal", aggregation: "sum" }, "x".repeat(51)],
+])("rechaza filters.descriptionContains: %s", async (_caso, metric, descriptionContains) => {
+  const result = await handler(eventWith({ name: "X", visualization: "kpi", metric, filters: { descriptionContains } }));
+  expect(result.statusCode).toBe(400);
+});
+
 test("sin sesión de Cognito (sin claim de tenantId): 403, no toca DynamoDB", async () => {
   const result = await handler(eventWith({}, ""));
   expect(result.statusCode).toBe(403);
