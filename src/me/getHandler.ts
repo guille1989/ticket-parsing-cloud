@@ -13,5 +13,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
     createdAt: tenant.createdAt,
     // null, y no un objeto vacío, distingue tenants anteriores al flujo.
     onboarding: tenant.onboarding ?? null,
+    // Interruptores de funciones en beta, por negocio: ausente = apagado.
+    features: { advisorView: tenant.advisor?.betaView === true },
   });
 }

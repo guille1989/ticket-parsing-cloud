@@ -27,6 +27,11 @@ export interface AdvisorSettings {
   briefingHour?: number;
   /** Destinatarios de los avisos por correo; se editan desde la interfaz. */
   notifyEmails?: string[];
+  /**
+   * Interruptor de la beta: con `true` el dashboard de este negocio muestra la vista nueva del
+   * asistente (Innova). Ausente = apagado. Se cambia con `scripts/set-tenant-advisor-view.ts`.
+   */
+  betaView?: boolean;
 }
 
 export interface MatterRecord {

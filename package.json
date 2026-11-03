@@ -21,7 +21,8 @@
     "agent-command": "tsx scripts/agent-command.ts",
     "delete-agent": "tsx scripts/delete-agent.ts",
     "advisor-run": "tsx scripts/advisor-run.ts",
-    "set-tenant-timezone": "tsx scripts/set-tenant-timezone.ts"
+    "set-tenant-timezone": "tsx scripts/set-tenant-timezone.ts",
+    "set-tenant-advisor-view": "tsx scripts/set-tenant-advisor-view.ts"
   },
   "devDependencies": {
     "@swc/core": "^1.15.0",

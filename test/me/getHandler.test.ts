@@ -21,8 +21,30 @@ test("rechaza una petición sin tenant autenticado", async () => {
 test("devuelve el perfil público y el onboarding", async () => {
   mockGetTenant.mockResolvedValue({ tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", parserId: "p1", onboarding: { version: 1 } });
   const result = await handler(eventWith("t1"));
-  expect(JSON.parse(result.body)).toEqual({ tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", onboarding: { version: 1 } });
+  expect(JSON.parse(result.body)).toEqual({
+    tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", onboarding: { version: 1 }, features: { advisorView: false },
+  });
   expect(result.body).not.toContain("parserId");
+});
+
+test("la vista beta del asistente solo se enciende con betaView exactamente en true", async () => {
+  const base = { tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z" };
+  const advisorView = async (advisor?: Record<string, unknown>) => {
+    mockGetTenant.mockResolvedValue({ ...base, ...(advisor ? { advisor } : {}) });
+    return JSON.parse((await handler(eventWith("t1"))).body).features.advisorView;
+  };
+  expect(await advisorView()).toBe(false);
+  expect(await advisorView({ timeZone: "America/Bogota" })).toBe(false);
+  expect(await advisorView({ betaView: false })).toBe(false);
+  expect(await advisorView({ betaView: "true" })).toBe(false);
+  expect(await advisorView({ betaView: true })).toBe(true);
+});
+
+test("el resto de los ajustes del asesor no se filtran al navegador", async () => {
+  mockGetTenant.mockResolvedValue({ tenantId: "t1", businessName: "Café Uno", createdAt: "x", advisor: { betaView: true, notifyEmails: ["dueno@correo.com"], timeZone: "America/Bogota" } });
+  const body = (await handler(eventWith("t1"))).body;
+  expect(body).not.toContain("dueno@correo.com");
+  expect(body).not.toContain("America/Bogota");
 });
 
 test("un tenant anterior devuelve onboarding null", async () => {
