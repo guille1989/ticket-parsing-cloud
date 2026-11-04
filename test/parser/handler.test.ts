@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import type { DynamoDBRecord } from "aws-lambda";
 
@@ -43,7 +44,7 @@ function bedrockTextResponse(text: string) {
   return { output: { message: { content: [{ text }] } } };
 }
 
-import { handler } from "../../src/parser/handler";
+import { handler, reprocessTicket } from "../../src/parser/handler";
 
 const VALID_TICKET_TEXT = readFileSync(
   join(process.cwd(), "fixtures", "sample-tickets", "01-item-unico.txt"),
@@ -491,6 +492,96 @@ test("un ticket que ya no está pending (parsed/failed) no se reprocesa", async 
 
   expect(result.batchItemFailures).toEqual([]);
   expect(mockGetTenant).not.toHaveBeenCalled();
+});
+
+// La imagen del evento INSERT siempre dice `pending`, aunque el ticket ya haya
+// avanzado: si un humano lo descartó y el evento se re-entrega (reintento del
+// batch), el parseo no puede pisar el descarte — needs_review cuenta en la
+// analítica y el importe descartado volvería al panel.
+describe("re-entrega de un evento sobre un ticket que ya salió de pending", () => {
+  const alreadyMoved = () => new ConditionalCheckFailedException({ message: "condición falló", $metadata: {} });
+
+  test("la escritura del resultado está condicionada a status = pending", async () => {
+    mockGetTenant.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({ Body: { transformToString: async () => VALID_TICKET_TEXT } });
+    mockDdbSend.mockResolvedValue({});
+
+    await handler({ Records: [streamRecord("INSERT", pendingTicket())] });
+
+    const update = mockDdbSend.mock.calls[0][0].input;
+    expect(update.ConditionExpression).toBe("#status = :pending");
+    expect(update.ExpressionAttributeNames["#status"]).toBe("status");
+    expect(update.ExpressionAttributeValues[":pending"]).toBe("pending");
+  });
+
+  test("también la de failed", async () => {
+    mockGetTenant.mockResolvedValue(undefined);
+    mockDdbSend.mockResolvedValue({});
+
+    await handler({ Records: [streamRecord("INSERT", pendingTicket())] });
+
+    const update = mockDdbSend.mock.calls[0][0].input;
+    expect(update.ExpressionAttributeValues[":status"]).toBe("failed");
+    expect(update.ConditionExpression).toBe("#status = :pending");
+    expect(update.ExpressionAttributeValues[":pending"]).toBe("pending");
+  });
+
+  test("si el ticket ya no está pending, la condición falla y el evento se descarta sin error ni reintento", async () => {
+    mockGetTenant.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({ Body: { transformToString: async () => VALID_TICKET_TEXT } });
+    mockDdbSend.mockRejectedValue(alreadyMoved());
+
+    const result = await handler({ Records: [streamRecord("INSERT", pendingTicket())] });
+
+    // No es transitorio: reintentar no cambiaría nada.
+    expect(result.batchItemFailures).toEqual([]);
+    expect(mockDdbSend).toHaveBeenCalledTimes(1);
+  });
+
+  test("un fallo de DynamoDB que no es la condición sigue siendo transitorio y se reintenta", async () => {
+    mockGetTenant.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({ Body: { transformToString: async () => VALID_TICKET_TEXT } });
+    mockDdbSend.mockRejectedValue(new Error("ProvisionedThroughputExceededException"));
+
+    const result = await handler({ Records: [streamRecord("INSERT", pendingTicket())] });
+
+    expect(result.batchItemFailures).toEqual([{ itemIdentifier: "seq-1" }]);
+  });
+
+  test("el reproceso manual (reprocessTicket sin opciones) NO condiciona: sí puede sobreescribir un ticket que ya salió de pending", async () => {
+    mockGetTenant.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({ Body: { transformToString: async () => VALID_TICKET_TEXT } });
+    mockDdbSend.mockResolvedValue({});
+
+    await reprocessTicket({
+      tenantId: "t1",
+      ticketId: "tk1",
+      capturedAt: "2026-07-27T12:00:00.000Z",
+      rawS3Key: "tenants/t1/tk1.txt",
+      port: "COM3",
+    } as never);
+
+    const update = mockDdbSend.mock.calls[0][0].input;
+    expect(update.ConditionExpression).toBeUndefined();
+    expect(update.ExpressionAttributeValues[":pending"]).toBeUndefined();
+    expect(update.ExpressionAttributeValues[":status"]).toBe("parsed");
+  });
+
+  test("el reproceso manual no traga un ConditionalCheckFailedException (no hay condición que pueda fallar, así que sería un bug real)", async () => {
+    mockGetTenant.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({ Body: { transformToString: async () => VALID_TICKET_TEXT } });
+    mockDdbSend.mockRejectedValue(alreadyMoved());
+
+    await expect(
+      reprocessTicket({
+        tenantId: "t1",
+        ticketId: "tk1",
+        capturedAt: "2026-07-27T12:00:00.000Z",
+        rawS3Key: "tenants/t1/tk1.txt",
+        port: "COM3",
+      } as never),
+    ).rejects.toThrow();
+  });
 });
 
 test("un error transitorio (ej. DynamoDB caído) se reporta como batch item failure, no tira el batch entero", async () => {

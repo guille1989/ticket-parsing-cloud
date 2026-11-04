@@ -1,4 +1,4 @@
-import { AttributeValue } from "@aws-sdk/client-dynamodb";
+import { AttributeValue, ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
@@ -71,8 +71,26 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
     rawKind: item.rawKind,
   };
 
-  await reprocessTicket(message);
+  // Del Stream: solo se escribe si el ticket SIGUE en pending. La imagen del
+  // evento es la del INSERT, así que una re-entrega (reintento del batch, que
+  // reprocesa los registros posteriores al primer fallo) llega con `pending`
+  // aunque el ticket ya haya avanzado — p. ej. un humano lo descartó en la
+  // revisión. Sin esta condición, el parseo lo pisaría y el importe descartado
+  // volvería a las estadísticas.
+  await reprocessTicket(message, { onlyIfPending: true });
 }
+
+export interface ReprocessOptions {
+  /**
+   * Solo escribir si el ticket sigue en `pending` (el camino automático del
+   * Stream). El reproceso manual (`scripts/reparse-ticket.ts`) NO lo pone: ahí
+   * se quiere sobreescribir un ticket que ya salió de `pending`.
+   */
+  onlyIfPending?: boolean;
+}
+
+/** El mensaje más la política de escritura, para no pasar las opciones por cada función interna. */
+type ParseJob = ParseJobMessage & { onlyIfPending: boolean };
 
 /**
  * El parseo en sí — separado de `processRecord` (que solo sabe desarmar un
@@ -83,7 +101,11 @@ async function processRecord(record: DynamoDBRecord): Promise<void> {
  * un ticket viejo después de arreglar un bug de parseo/prompt, sin
  * necesidad de que el agente lo vuelva a subir.
  */
-export async function reprocessTicket(message: ParseJobMessage): Promise<void> {
+export async function reprocessTicket(message: ParseJobMessage, options: ReprocessOptions = {}): Promise<void> {
+  await parseTicket({ ...message, onlyIfPending: options.onlyIfPending === true });
+}
+
+async function parseTicket(message: ParseJob): Promise<void> {
   const tenant = await getTenant(message.tenantId);
   if (!tenant) {
     // No es transitorio: el tenant no existe (se borró, o el mensaje está
@@ -205,7 +227,7 @@ export async function reprocessTicket(message: ParseJobMessage): Promise<void> {
  * llega directo a `parsed`. Lo que no es una venta (o no cierra) queda
  * `failed` con el motivo a la vista.
  */
-async function reprocessUblInvoice(message: ParseJobMessage): Promise<void> {
+async function reprocessUblInvoice(message: ParseJob): Promise<void> {
   const raw = await s3.send(new GetObjectCommand({ Bucket: RAW_BUCKET, Key: message.rawS3Key }));
   const bytes = Buffer.from((await raw.Body?.transformToByteArray()) ?? new Uint8Array());
   const result = parseUblInvoice(decodeXmlBytes(bytes));
@@ -225,22 +247,52 @@ function coherentOrNull(candidate: ParsedTicket | null): { ticket: ParsedTicket 
 /** Campos que solo traen las facturas electrónicas: se escriben únicamente cuando el parseo los encontró. */
 const OPTIONAL_STRING_FIELDS = ["documentNumber", "docType", "customerName", "customerId", "purchaseOrder", "paymentDueDate"] as const;
 
+/**
+ * Escribe el resultado del parseo. En el camino automático (`onlyIfPending`) la
+ * escritura es condicional a que el ticket siga en `pending`: si ya avanzó
+ * (parsed, needs_review, discarded...), el evento es una re-entrega y se
+ * descarta sin tocarlo. No es un error transitorio — reintentar no cambiaría
+ * nada — así que no se propaga para que el batch no lo reintente.
+ */
+async function writeGuarded(message: ParseJob, command: UpdateCommand, what: string): Promise<void> {
+  try {
+    await ddb.send(command);
+  } catch (err) {
+    if (!message.onlyIfPending || !(err instanceof ConditionalCheckFailedException)) throw err;
+    console.log(
+      `[parser] ticket ${message.ticketId} (tenant ${message.tenantId}) ya no está pending: ` +
+        `se ignora la re-entrega del evento y no se escribe ${what}`,
+    );
+  }
+}
+
+/** Condición extra de las escrituras automáticas; vacía en el reproceso manual. */
+function pendingGuard(message: ParseJob): { ConditionExpression?: string; extraValues: Record<string, string> } {
+  return message.onlyIfPending
+    ? { ConditionExpression: "#status = :pending", extraValues: { ":pending": "pending" } }
+    : { extraValues: {} };
+}
+
 async function markParsed(
-  message: ParseJobMessage,
+  message: ParseJob,
   parsed: ParsedTicket,
   parsedBy: NonNullable<TicketRecord["parsedBy"]>,
   status: "parsed" | "needs_review",
 ): Promise<void> {
   const optional = OPTIONAL_STRING_FIELDS.filter((field) => parsed[field] !== undefined);
-  await ddb.send(
+  const guard = pendingGuard(message);
+  await writeGuarded(
+    message,
     new UpdateCommand({
       TableName: TICKETS_TABLE,
       Key: ticketKey(message.tenantId, message.capturedAt, message.ticketId),
       UpdateExpression:
         "SET #status = :status, parsedAt = :parsedAt, #items = :items, #total = :total, #tax = :tax, discount = :discount, tip = :tip, parsedBy = :parsedBy, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk" +
         optional.map((field) => `, ${field} = :${field}`).join(""),
+      ConditionExpression: guard.ConditionExpression,
       ExpressionAttributeNames: { "#status": "status", "#total": "total", "#items": "items", "#tax": "tax" },
       ExpressionAttributeValues: {
+        ...guard.extraValues,
         ":status": status,
         ":parsedAt": new Date().toISOString(),
         ":items": parsed.items,
@@ -253,22 +305,28 @@ async function markParsed(
         ...prefixed(ticketStatusGsiKey(message.tenantId, status, message.capturedAt)),
       },
     }),
+    status,
   );
 }
 
-async function markFailed(message: ParseJobMessage, reason: string): Promise<void> {
-  await ddb.send(
+async function markFailed(message: ParseJob, reason: string): Promise<void> {
+  const guard = pendingGuard(message);
+  await writeGuarded(
+    message,
     new UpdateCommand({
       TableName: TICKETS_TABLE,
       Key: ticketKey(message.tenantId, message.capturedAt, message.ticketId),
       UpdateExpression: "SET #status = :status, failReason = :reason, gsi1pk = :gsi1pk, gsi1sk = :gsi1sk",
+      ConditionExpression: guard.ConditionExpression,
       ExpressionAttributeNames: { "#status": "status" },
       ExpressionAttributeValues: {
+        ...guard.extraValues,
         ":status": "failed",
         ":reason": reason,
         ...prefixed(ticketStatusGsiKey(message.tenantId, "failed", message.capturedAt)),
       },
     }),
+    "failed",
   );
 }
 
