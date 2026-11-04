@@ -1,4 +1,4 @@
-import { validateBody } from "../../src/ingest/handler";
+import { MAX_RAW_ESCPOS_BYTES, validateBody } from "../../src/ingest/handler";
 
 const VALID_BODY = {
   ticketId: "5f2b9c3a-1111-4444-8888-abcdefabcdef",
@@ -105,9 +105,26 @@ test("rechaza rawBase64 que no es base64 canónico", () => {
   expect(validateBody({ ...BASE_NO_RAW, rawBase64: "abc", rawEncoding: "escpos" }).ok).toBe(false); // largo no múltiplo de 4
 });
 
-test("rechaza rawBase64 que decodifica por encima del límite de 6 MB", () => {
-  const tooBig = Buffer.alloc(6 * 1024 * 1024 + 3).toString("base64");
+test("rechaza rawBase64 que decodifica por encima del límite de 4 MiB", () => {
+  const tooBig = Buffer.alloc(4 * 1024 * 1024 + 3).toString("base64");
   expect(validateBody({ ...BASE_NO_RAW, rawBase64: tooBig, rawEncoding: "escpos" }).ok).toBe(false);
+});
+
+test("un archivo de 5 MiB (que en base64 pasaría de 6 MB) se rechaza", () => {
+  const fiveMiB = Buffer.alloc(5 * 1024 * 1024).toString("base64");
+  expect(validateBody({ ...BASE_NO_RAW, rawBase64: fiveMiB, rawEncoding: "escpos" }).ok).toBe(false);
+});
+
+// Lo que la validación acepta tiene que poder llegar: la invocación síncrona de
+// Lambda admite 6 MB para todo el evento, y el agente manda los bytes en base64
+// dentro de un JSON.
+test("el tamaño máximo aceptado cabe en los 6 MB de una invocación de Lambda, con margen para el resto del evento", () => {
+  const atLimit = Buffer.alloc(MAX_RAW_ESCPOS_BYTES);
+  const body = { ...BASE_NO_RAW, rawBase64: atLimit.toString("base64"), rawEncoding: "escpos" };
+
+  expect(validateBody(body).ok).toBe(true);
+  // 6 MB como máximo conservador (decimal), menos 100 KB para encabezados y contexto del evento.
+  expect(JSON.stringify(body).length).toBeLessThan(6_000_000 - 100_000);
 });
 
 describe("rawEncoding ubl (factura electrónica)", () => {

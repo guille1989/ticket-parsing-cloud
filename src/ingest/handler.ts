@@ -79,10 +79,14 @@ const ISO_8601_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 // de esto — cota generosa para no bloquear un caso real, pero sí evitar que
 // un body gigante llegue a escribirse en S3.
 const MAX_RAW_TEXT_BYTES = 64 * 1024;
-// El `.SPL` de un ticket con logo raster ronda los 200 KB; 6 MB cubre con
-// margen cualquier ticket real y queda por debajo del límite de payload de
-// API Gateway (10 MB). Va alineado con `SPOOL_MAX_JOB_BYTES` del agente.
-const MAX_RAW_ESCPOS_BYTES = 6 * 1024 * 1024;
+// El `.SPL` de un ticket con logo raster ronda los 200 KB. El tope real no es el
+// de API Gateway (10 MB) sino el de la invocación síncrona de Lambda: 6 MB para
+// TODO el evento. Como el agente manda los bytes en base64 dentro de un JSON
+// (×4/3), 4 MiB crudos son ~5,6 MB en el cable — cabe con margen para el resto
+// del evento y los encabezados. Con 6 MiB crudos (el valor anterior) el cuerpo
+// llegaba a 8 MB y la validación aceptaba archivos que nunca podían llegar.
+// Va alineado con `SPOOL_MAX_JOB_BYTES` del agente.
+export const MAX_RAW_ESCPOS_BYTES = 4 * 1024 * 1024;
 // El XML de una factura electrónica ronda los 10-20 KB (con firma digital); 1 MB
 // deja margen para una con muchas líneas sin aceptar cualquier cosa.
 const MAX_RAW_UBL_BYTES = 1024 * 1024;
