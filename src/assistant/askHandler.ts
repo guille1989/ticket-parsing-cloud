@@ -41,6 +41,13 @@ const TICKET_STATUSES: TicketStatus[] = ["pending", "parsed", "needs_review", "f
 const ASSISTANT_MAX_GROUPS = 50;
 const LIST_TICKETS_DEFAULT_LIMIT = 10;
 const LIST_TICKETS_MAX_LIMIT = 15;
+// Páginas de 1 MB de Dynamo que recorre la búsqueda por cliente antes de rendirse.
+const CUSTOMER_SEARCH_MAX_PAGES = 30;
+
+/** Minúsculas y sin tildes, para que "castaño" y "CASTANO" coincidan. */
+function normalizeSearchText(text: string): string {
+  return text.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+}
 const MAX_DESCRIPTION_FILTER_LENGTH = 50;
 const REPORT_MAX_SECTIONS = 6;
 const REPORT_MAX_TITLE_LENGTH = 100;
@@ -54,12 +61,12 @@ Las métricas de venta cuentan por defecto los tickets confirmados (parsed) y lo
 
 - "build_report": arma un reporte descargable (varias secciones, cada una con su consulta). Usala SOLO cuando el usuario pida un reporte, informe o resumen para descargar. Las tablas las calcula la herramienta con datos reales; vos no transcribas números. Después de llamarla, contestá en pocas oraciones con los hallazgos principales y decí que el reporte está listo para descargar.
 
-- "create_widget": agrega un widget al dashboard. Usala cuando el usuario pida crear/agregar/hacer un KPI, gráfica o widget con condiciones (una sucursal, un producto). Pasá esas condiciones como filtros "branch" y "descriptionContains": nunca las ignores ni las metas solo en el título. Un widget de un producto usa "subtotal" (plata) o "quantity" (unidades), nunca "total". Escribí el producto sin tildes y con una raíz corta ("cafe con leche"). La herramienta devuelve "preview" con el valor actual: contale al usuario qué filtros quedaron aplicados y cuánto da hoy; si preview viene vacío o en cero, decilo y sugerí revisar el nombre del producto. Si la sucursal no existe o es ambigua, mostrale las opciones y no crees nada.
+- "create_widget": agrega un widget al dashboard. Usala cuando el usuario pida crear/agregar/hacer un KPI, gráfica o widget con condiciones (una sucursal, un producto). Pasá esas condiciones como filtros "branch" y "descriptionContains": nunca las ignores ni las metas solo en el título. Un widget de un producto usa "subtotal" (plata) o "quantity" (unidades), nunca "total". Si piden ventas Y cantidad de un producto en un mismo seguimiento, creá UN solo KPI con field "subtotal" y secondaryField "quantity" (la tarjeta muestra la plata grande y las unidades al lado); no lo uses en KPIs de ventas totales. Un widget "line" solo admite groupBy day/hour y "bar"/"donut" solo categorías: si lo pedido no se puede crear tal cual, decilo en vez de cambiarlo en silencio. Cada respuesta crea un solo widget. Escribí el producto sin tildes y con una raíz corta ("cafe con leche"). La herramienta devuelve "preview" con el valor actual: contale al usuario qué filtros quedaron aplicados y cuánto da hoy; si preview viene vacío o en cero, decilo y sugerí revisar el nombre del producto. Si la sucursal no existe o es ambigua, mostrale las opciones y no crees nada.
 
 Sucursales: cada robot ("agent") es una sucursal/local del negocio. Para "¿qué sucursal/local/sede…?", "comparame las sucursales" o "ventas por sucursal" agrupá por "agent": el resultado ya trae el nombre de cada sucursal, usalo tal cual en la respuesta. NO uses "port" para eso: "port" es el puerto/periférico (por ejemplo una caja registradora, TPV-CAJA1) y un mismo local puede tener varios; solo agrupá por "port" si piden explícitamente comparar cajas o puertos.
 Para los datos de UNA sola sucursal ("¿qué se vende más en la sucursal Sol?", "ventas de Chapinero en octubre") usá el filtro "branch" con el nombre que dijo el usuario, junto con el resto de la consulta (por ejemplo agrupado por producto). Sin ese filtro el resultado es de TODO el negocio: nunca atribuyas a una sucursal un resultado que no consultaste con "branch". Si la herramienta responde que la sucursal no existe o es ambigua, mostrale al usuario las sucursales que te devuelve y pedile que elija.
 
-Clientes: si el negocio factura con factura electrónica, las ventas traen el cliente. Para "¿qué cliente compró más?" o "ventas por cliente" agrupá por "customer" (con "total" o "subtotal"). Si todo sale como "sin dato", ese negocio no registra clientes: decilo. Para una lista de ventas/facturas con el nombre del cliente en una columna, usá "list_tickets": cada ticket trae customerName, customerId y documentNumber (solo las facturas electrónicas los tienen; si un ticket no los trae, ponelo como "sin dato" y no digas que el sistema no captura clientes).
+Clientes: si el negocio factura con factura electrónica, las ventas traen el cliente. Para "¿qué cliente compró más?" o "ventas por cliente" agrupá por "customer" (con "total" o "subtotal"). Si todo sale como "sin dato", ese negocio no registra clientes: decilo. Para una lista de ventas/facturas con el nombre del cliente en una columna, usá "list_tickets": cada ticket trae customerName, customerId y documentNumber (solo las facturas electrónicas los tienen; si un ticket no los trae, ponelo como "sin dato" y no digas que el sistema no captura clientes). Para las facturas de UN cliente concreto ("¿qué facturas son de X?") usá "list_tickets" con "customerContains" (un fragmento del nombre): busca en todo el historial. "list_tickets" sin ese filtro solo trae los más recientes, así que NUNCA concluyas que un cliente no existe porque no salió en esa lista; si un cliente salió en una consulta agrupada por "customer", existe.
 
 Formato de la respuesta: texto plano. Podés resaltar con **negrita** lo más importante (el nombre de la sucursal o producto y la cifra clave). Si piden una lista o una tabla con columnas, armala como tabla markdown (| col | col | con la fila |---|---|); fuera de eso, nada de #, tablas ni viñetas con asteriscos. No pongas símbolo de moneda ($, €…) porque no sabés la moneda del negocio: escribí solo el número (con separador de miles y hasta 2 decimales).
 
@@ -189,6 +196,13 @@ function buildTools(): Tool[] {
               visualization: { type: "string", enum: WIDGET_VISUALIZATIONS },
               field: queryProperties.field,
               aggregation: queryProperties.aggregation,
+              secondaryField: {
+                type: "string",
+                enum: [...NUMERIC_FIELDS, EVENT_COUNT_FIELD],
+                description:
+                  "Solo para un KPI: segunda cifra que se muestra junto a la principal con los mismos filtros. Usala cuando pidan ventas Y cantidad de un producto: field 'subtotal' (plata) + secondaryField 'quantity' (unidades). Omitila en el resto de los KPIs, p. ej. ventas totales.",
+              },
+              secondaryAggregation: { ...queryProperties.aggregation, description: "Cómo agregar secondaryField (por defecto 'sum')." },
               groupBy: queryProperties.groupBy,
               filters: {
                 type: "object",
@@ -209,6 +223,10 @@ function buildTools(): Tool[] {
             type: "object",
             properties: {
               status: { type: "string", enum: TICKET_STATUSES },
+              customerContains: {
+                type: "string",
+                description: "Solo las facturas cuyo cliente contiene este texto (sin distinguir mayúsculas ni tildes), buscando en todo el historial y no solo en lo reciente (opcional).",
+              },
               limit: {
                 type: "number",
                 description: `Máximo de tickets a devolver (por defecto ${LIST_TICKETS_DEFAULT_LIMIT}, tope ${LIST_TICKETS_MAX_LIMIT}).`,
@@ -337,29 +355,43 @@ async function listTicketsTool(input: unknown, tenantId: string, ctx: ToolContex
       ? Math.min(raw.limit, LIST_TICKETS_MAX_LIMIT)
       : LIST_TICKETS_DEFAULT_LIMIT;
 
-  const result = status
-    ? await ddb.send(
-        new QueryCommand({
-          TableName: TICKETS_TABLE,
-          IndexName: "status-index",
-          KeyConditionExpression: "gsi1pk = :gsi1pk",
-          ExpressionAttributeValues: { ":gsi1pk": `TENANT#${tenantId}#STATUS#${status}` },
-          ScanIndexForward: false,
-          Limit: limit,
-        }),
-      )
-    : await ddb.send(
-        new QueryCommand({
-          TableName: TICKETS_TABLE,
-          KeyConditionExpression: "pk = :pk",
-          ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}` },
-          ScanIndexForward: false,
-          Limit: limit,
-        }),
-      );
+  const customerContains =
+    typeof raw.customerContains === "string" && raw.customerContains.trim() ? normalizeSearchText(raw.customerContains.trim()) : undefined;
+
+  const queryPage = (startKey?: Record<string, unknown>, pageLimit?: number) =>
+    ddb.send(
+      new QueryCommand({
+        TableName: TICKETS_TABLE,
+        ...(status ? { IndexName: "status-index" } : {}),
+        KeyConditionExpression: status ? "gsi1pk = :gsi1pk" : "pk = :pk",
+        ExpressionAttributeValues: status ? { ":gsi1pk": `TENANT#${tenantId}#STATUS#${status}` } : { ":pk": `TENANT#${tenantId}` },
+        ScanIndexForward: false,
+        ...(pageLimit ? { Limit: pageLimit } : {}),
+        ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+      }),
+    );
+
+  let items: TicketRecord[];
+  if (!customerContains) {
+    items = ((await queryPage(undefined, limit)).Items as TicketRecord[] | undefined) ?? [];
+  } else {
+    // Dynamo no filtra por cliente antes del Limit: se recorre el historial por
+    // páginas (más recientes primero) hasta juntar `limit` coincidencias.
+    items = [];
+    let startKey: Record<string, unknown> | undefined;
+    for (let page = 0; page < CUSTOMER_SEARCH_MAX_PAGES && items.length < limit; page++) {
+      const res = await queryPage(startKey);
+      for (const t of (res.Items as TicketRecord[] | undefined) ?? []) {
+        if (t.customerName && normalizeSearchText(t.customerName).includes(customerContains)) items.push(t);
+        if (items.length >= limit) break;
+      }
+      startKey = res.LastEvaluatedKey;
+      if (!startKey) break;
+    }
+  }
 
   const names = await branchNames(tenantId, ctx);
-  const tickets = ((result.Items as TicketRecord[] | undefined) ?? []).map((t) => ({
+  const tickets = items.map((t) => ({
     ticketId: t.ticketId,
     capturedAt: t.capturedAt,
     status: t.status,
@@ -478,6 +510,7 @@ export type WidgetDraft = {
   name: string;
   visualization: WidgetVisualization;
   metric: { field: string; aggregation: string };
+  secondaryMetric?: { field: string; aggregation: string };
   groupBy?: string;
   filters?: { agentId?: string; descriptionContains?: string };
 };
@@ -508,6 +541,16 @@ async function createWidgetTool(input: unknown, tenantId: string, ctx: ToolConte
   // encontró algo, en vez de crear un widget que nace vacío.
   const preview = (await runWidgetQueryTool(raw, tenantId, ctx)) as { data: WidgetDataPoint[] };
 
+  let secondaryMetric: WidgetDraft["secondaryMetric"];
+  let secondaryPreview: WidgetDataPoint[] | undefined;
+  if (raw.secondaryField !== undefined) {
+    if (visualization !== "kpi") throw new Error("secondaryField solo sirve para un widget kpi");
+    const secondaryRaw = { ...raw, field: raw.secondaryField, aggregation: raw.secondaryAggregation ?? "sum" };
+    const parsed = await parseQueryInput(secondaryRaw, tenantId, ctx);
+    secondaryMetric = { field: parsed.field, aggregation: parsed.field === EVENT_COUNT_FIELD ? "count" : parsed.aggregation };
+    secondaryPreview = ((await runWidgetQueryTool(secondaryRaw, tenantId, ctx)) as { data: WidgetDataPoint[] }).data;
+  }
+
   const draftFilters: WidgetDraft["filters"] = {
     ...(filters?.agentId ? { agentId: filters.agentId } : {}),
     ...(filters?.descriptionContains ? { descriptionContains: filters.descriptionContains } : {}),
@@ -516,6 +559,7 @@ async function createWidgetTool(input: unknown, tenantId: string, ctx: ToolConte
     name,
     visualization,
     metric: { field, aggregation: field === EVENT_COUNT_FIELD ? "count" : aggregation },
+    ...(secondaryMetric ? { secondaryMetric } : {}),
     ...(groupBy ? { groupBy } : {}),
     ...(Object.keys(draftFilters).length ? { filters: draftFilters } : {}),
   };
@@ -525,6 +569,7 @@ async function createWidgetTool(input: unknown, tenantId: string, ctx: ToolConte
     ...(branchLabel ? { branch: branchLabel } : {}),
     ...(filters?.descriptionContains ? { descriptionContains: filters.descriptionContains } : {}),
     preview: preview.data,
+    ...(secondaryPreview ? { secondaryPreview } : {}),
   };
 }
 

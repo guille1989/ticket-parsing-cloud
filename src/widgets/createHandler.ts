@@ -6,7 +6,7 @@ import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent }
 import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
-import type { WidgetAggregation, WidgetFilters, WidgetRecord, WidgetVisualization } from "../shared/types.js";
+import type { WidgetAggregation, WidgetFilters, WidgetMetric, WidgetRecord, WidgetVisualization } from "../shared/types.js";
 import { AGGREGATIONS, CATEGORICAL_FIELDS, TEMPORAL_FIELDS, isItemLevelGroupBy, isTicketLevelField, isValidAggregation, isValidGroupByField, isValidMetricField } from "./fields.js";
 import { dateFilterError } from "./dateFilters.js";
 
@@ -39,17 +39,19 @@ function validateBody(body: unknown): Validation {
   }
   const visualization = b.visualization as WidgetVisualization;
 
-  if (!b.metric || typeof b.metric !== "object") {
-    return { ok: false, error: "metric inválido, se esperaba un objeto { field, aggregation }" };
+  const parsedMetric = parseMetric(b.metric, "metric");
+  if ("error" in parsedMetric) return { ok: false, error: parsedMetric.error };
+  const metric = parsedMetric;
+
+  let secondaryMetric: WidgetMetric | undefined;
+  if (b.secondaryMetric !== undefined) {
+    if (visualization !== "kpi") {
+      return { ok: false, error: "secondaryMetric solo está disponible para widgets kpi" };
+    }
+    const parsedSecondary = parseMetric(b.secondaryMetric, "secondaryMetric");
+    if ("error" in parsedSecondary) return { ok: false, error: parsedSecondary.error };
+    secondaryMetric = parsedSecondary;
   }
-  const metricInput = b.metric as Record<string, unknown>;
-  if (typeof metricInput.field !== "string" || !isValidMetricField(metricInput.field)) {
-    return { ok: false, error: "metric.field inválido" };
-  }
-  if (typeof metricInput.aggregation !== "string" || !isValidAggregation(metricInput.aggregation)) {
-    return { ok: false, error: `metric.aggregation inválida, se esperaba una de: ${AGGREGATIONS.join(", ")}` };
-  }
-  const metric = { field: metricInput.field, aggregation: metricInput.aggregation as WidgetAggregation };
 
   // KPI es un número solo, sin agrupar — bar/donut necesitan agrupar por
   // algo, si no no hay nada que dibujar.
@@ -116,14 +118,30 @@ function validateBody(body: unknown): Validation {
       if (typeof f.descriptionContains !== "string" || f.descriptionContains.trim().length === 0 || f.descriptionContains.length > MAX_DESCRIPTION_LENGTH) {
         return { ok: false, error: `filters.descriptionContains inválido (texto no vacío, máx ${MAX_DESCRIPTION_LENGTH} caracteres)` };
       }
-      if (isTicketLevelField(metric.field)) {
-        return { ok: false, error: `no se puede filtrar "${metric.field}" (un valor por ticket) por descripción de producto — usá "subtotal" o "quantity"` };
+      for (const m of [metric, secondaryMetric]) {
+        if (m && isTicketLevelField(m.field)) {
+          return { ok: false, error: `no se puede filtrar "${m.field}" (un valor por ticket) por descripción de producto — usá "subtotal" o "quantity"` };
+        }
       }
       filters.descriptionContains = f.descriptionContains.trim();
     }
   }
 
-  return { ok: true, value: { name: b.name.trim(), visualization, metric, groupBy, filters } };
+  return { ok: true, value: { name: b.name.trim(), visualization, metric, ...(secondaryMetric ? { secondaryMetric } : {}), groupBy, filters } };
+}
+
+function parseMetric(input: unknown, label: string): WidgetMetric | { error: string } {
+  if (!input || typeof input !== "object") {
+    return { error: `${label} inválido, se esperaba un objeto { field, aggregation }` };
+  }
+  const m = input as Record<string, unknown>;
+  if (typeof m.field !== "string" || !isValidMetricField(m.field)) {
+    return { error: `${label}.field inválido` };
+  }
+  if (typeof m.aggregation !== "string" || !isValidAggregation(m.aggregation)) {
+    return { error: `${label}.aggregation inválida, se esperaba una de: ${AGGREGATIONS.join(", ")}` };
+  }
+  return { field: m.field, aggregation: m.aggregation as WidgetAggregation };
 }
 
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {

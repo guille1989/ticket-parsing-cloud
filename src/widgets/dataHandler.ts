@@ -53,11 +53,15 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   if (mergedDateError) return jsonResponse(400, { error: mergedDateError });
 
   let query;
+  let secondaryQuery;
   try {
     // `?tz=America/Bogota` (zona del navegador): agrupa y filtra por día/hora local. Inválida o ausente → UTC.
     const tzParam = event.queryStringParameters?.tz;
     const timeZone = tzParam && isValidTimeZone(tzParam) ? tzParam : undefined;
     query = buildWidgetQuery({ ...widget, filters: mergedFilters }, undefined, timeZone);
+    if (widget.secondaryMetric) {
+      secondaryQuery = buildWidgetQuery({ ...widget, metric: widget.secondaryMetric, filters: mergedFilters }, undefined, timeZone);
+    }
   } catch (err) {
     // No debería pasar nunca si createHandler validó bien al guardar, pero
     // si un registro corrupto llegó hasta acá, mejor un 500 claro que
@@ -66,7 +70,10 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
     return jsonResponse(500, { error: "el widget tiene una configuración inválida" });
   }
 
-  const data = await runWidgetQuery(query.sql, query.params, ATHENA_WORKGROUP);
+  const [data, secondaryData] = await Promise.all([
+    runWidgetQuery(query.sql, query.params, ATHENA_WORKGROUP),
+    secondaryQuery ? runWidgetQuery(secondaryQuery.sql, secondaryQuery.params, ATHENA_WORKGROUP) : undefined,
+  ]);
 
-  return jsonResponse(200, { widgetId, visualization: widget.visualization, data });
+  return jsonResponse(200, { widgetId, visualization: widget.visualization, data, ...(secondaryData ? { secondaryData } : {}) });
 }

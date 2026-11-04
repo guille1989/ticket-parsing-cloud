@@ -252,6 +252,11 @@ export interface WidgetRecord {
   name: string;
   visualization: WidgetVisualization;
   metric: WidgetMetric;
+  /**
+   * Solo KPI: segunda cifra que se calcula con los mismos filtros y se muestra
+   * junto a la principal (p. ej. ventas en plata + unidades de un producto).
+   */
+  secondaryMetric?: WidgetMetric;
   /** Campo categórico para agrupar (bar/donut) — ausente para un KPI simple. */
   groupBy?: string;
   filters?: WidgetFilters;

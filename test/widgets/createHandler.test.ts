@@ -40,6 +40,50 @@ test("crea un KPI válido sin groupBy", async () => {
   expect(mockDdbSend).toHaveBeenCalledTimes(1);
 });
 
+test("crea un KPI con segunda métrica (plata + unidades de un producto)", async () => {
+  const result = await handler(
+    eventWith({
+      name: "Agua 5 L",
+      visualization: "kpi",
+      metric: { field: "subtotal", aggregation: "sum" },
+      secondaryMetric: { field: "quantity", aggregation: "sum" },
+      filters: { descriptionContains: "5 litros" },
+    }),
+  );
+
+  expect(result.statusCode).toBe(201);
+  expect(JSON.parse(result.body).secondaryMetric).toEqual({ field: "quantity", aggregation: "sum" });
+});
+
+test("rechaza secondaryMetric en un widget que no es kpi", async () => {
+  const result = await handler(
+    eventWith({
+      name: "X",
+      visualization: "bar",
+      metric: { field: "subtotal", aggregation: "sum" },
+      secondaryMetric: { field: "quantity", aggregation: "sum" },
+      groupBy: "description",
+    }),
+  );
+
+  expect(result.statusCode).toBe(400);
+  expect(mockDdbSend).not.toHaveBeenCalled();
+});
+
+test("rechaza una secondaryMetric de ticket con filtro por descripción", async () => {
+  const result = await handler(
+    eventWith({
+      name: "X",
+      visualization: "kpi",
+      metric: { field: "subtotal", aggregation: "sum" },
+      secondaryMetric: { field: "total", aggregation: "sum" },
+      filters: { descriptionContains: "agua" },
+    }),
+  );
+
+  expect(result.statusCode).toBe(400);
+});
+
 test("crea un widget de barras con groupBy y filtros", async () => {
   const result = await handler(
     eventWith({
