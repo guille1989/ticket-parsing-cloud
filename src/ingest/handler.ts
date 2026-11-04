@@ -265,13 +265,17 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (!(err instanceof ConditionalCheckFailedException)) {
       throw err;
     }
-    // Con el marcador de 400 días, un fallo transitorio de S3 más abajo dejaría
-    // la factura bloqueada para siempre: el reintento del agente (mismo
-    // ticketId) chocaría con su propio marcador. Si el marcador es de este mismo
-    // ticketId es un reintento, no un duplicado, y se sigue — S3 y el ticket
-    // son idempotentes.
+    // Un fallo transitorio de S3 (o del PutCommand del ticket) más abajo deja el
+    // marcador escrito sin ticket: el reintento del agente (mismo ticketId)
+    // chocaría con su propio marcador y se descartaría como duplicado, y el
+    // agente da por enviado cualquier 2xx — el ticket se perdería. Con UBL el
+    // marcador dura 400 días; con texto/ESC-POS, la ventana de
+    // DEDUP_WINDOW_SECONDS. Si el marcador es de este mismo ticketId es un
+    // reintento, no un duplicado, y se sigue — S3 y el ticket son idempotentes.
+    // Un reenvío de Loggro (mismo contenido, job nuevo) trae otro ticketId, así
+    // que sigue descartándose.
     const existing = err.Item ? (unmarshall(err.Item) as { ticketId?: string }) : undefined;
-    const isOwnRetry = rawKind === "ubl" && existing?.ticketId === ticketId;
+    const isOwnRetry = existing?.ticketId === ticketId;
     if (!isOwnRetry) {
       console.log(
         `[ingest] ticket duplicado descartado (mismo contenido en los últimos ${dedupTtlSeconds}s): ` +

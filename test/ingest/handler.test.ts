@@ -142,6 +142,52 @@ test("contenido idéntico al de un ticket reciente del mismo puerto: se descarta
   expect(mockDdbSend).toHaveBeenCalledTimes(1);
 });
 
+// El marcador se escribe antes que S3 y el ticket: si S3 falla, el agente
+// reintenta con el MISMO ticketId y choca con su propio marcador. Descartarlo
+// como duplicado (202) hace que el agente lo dé por enviado y se pierda.
+test("reintento del agente (mismo ticketId) tras un fallo de S3, texto: no lo toma por duplicado", async () => {
+  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+  mockS3Send.mockResolvedValue({});
+  mockDdbSend.mockRejectedValueOnce(markerConflict(VALID_BODY.ticketId)).mockResolvedValue({});
+
+  const result = await handler(eventWith("key1", VALID_BODY));
+
+  expect(result.statusCode).toBe(202);
+  expect(JSON.parse(result.body)).toEqual({ ticketId: VALID_BODY.ticketId });
+  expect(mockS3Send).toHaveBeenCalledTimes(1);
+  // marcador (rechazado) + ticket
+  expect(mockDdbSend).toHaveBeenCalledTimes(2);
+  expect(mockDdbSend.mock.calls[1][0].input.Item.status).toBe("pending");
+});
+
+test("reintento del agente (mismo ticketId) tras un fallo de S3, ESC/POS: no lo toma por duplicado", async () => {
+  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+  mockS3Send.mockResolvedValue({});
+  mockDdbSend.mockRejectedValueOnce(markerConflict(VALID_BODY.ticketId)).mockResolvedValue({});
+
+  const bytes = Buffer.from("\x1b@VENTA\x1dV\x00", "latin1");
+  const { rawText: _drop, ...bodyNoText } = VALID_BODY;
+  const result = await handler(
+    eventWith("key1", { ...bodyNoText, rawBase64: bytes.toString("base64"), rawEncoding: "escpos" }),
+  );
+
+  expect(result.statusCode).toBe(202);
+  expect(JSON.parse(result.body)).toEqual({ ticketId: VALID_BODY.ticketId });
+  expect(mockS3Send).toHaveBeenCalledTimes(1);
+  expect(mockDdbSend).toHaveBeenCalledTimes(2);
+});
+
+test("mismo contenido con OTRO ticketId (reenvío de Loggro): sigue siendo duplicado", async () => {
+  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+  mockDdbSend.mockRejectedValueOnce(markerConflict("otro-ticket-id"));
+
+  const result = await handler(eventWith("key1", VALID_BODY));
+
+  expect(JSON.parse(result.body)).toEqual({ ticketId: VALID_BODY.ticketId, duplicate: true });
+  expect(mockS3Send).not.toHaveBeenCalled();
+  expect(mockDdbSend).toHaveBeenCalledTimes(1);
+});
+
 test("captura de spool (rawBase64/escpos): guarda los BYTES en S3 como .escpos y marca rawKind", async () => {
   mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
   mockS3Send.mockResolvedValue({});
