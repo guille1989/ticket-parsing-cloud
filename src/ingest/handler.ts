@@ -232,11 +232,16 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     dedupHash = createHash("sha256").update(`ubl\n${identity.issuerId}\n${identity.documentNumber}`, "utf-8").digest("hex");
     dedupTtlSeconds = DEDUP_UBL_WINDOW_SECONDS;
   } else {
-    // Hash sobre puerto + contenido crudo: dos tickets de un mismo puerto con
-    // bytes idénticos dentro de la ventana son, en la práctica, el mismo
-    // envío duplicado (ver comentario de DEDUP_WINDOW_SECONDS), no dos ventas
-    // que coincidieron.
+    // Hash sobre agente + puerto + contenido crudo: dos tickets del mismo puerto
+    // de un mismo agente con bytes idénticos dentro de la ventana son, en la
+    // práctica, el mismo envío duplicado (ver comentario de
+    // DEDUP_WINDOW_SECONDS), no dos ventas que coincidieron. El agente entra en
+    // la huella porque dos cajas del mismo negocio pueden tener el mismo nombre
+    // de puerto (COM3, o la misma impresora) y emitir un ticket idéntico: sin
+    // él, la segunda se descartaría como duplicado de la primera. Con la
+    // api-key compartida del tenant no hay agente (`agentId` vacío).
     dedupHash = createHash("sha256")
+      .update(`${agentId ?? ""}\n`, "utf-8")
       .update(validBody.port, "utf-8")
       .update(rawKind === "escpos" ? (validBody.rawContent as Buffer) : Buffer.from(validBody.rawContent as string, "utf-8"))
       .digest("hex");
@@ -244,6 +249,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   // Escritura condicional = "primero en llegar gana"; quien pierde la carrera
   // se descarta sin tocar S3 ni la tabla de tickets.
+  const nowSeconds = Math.floor(Date.now() / 1000);
   try {
     await ddb.send(
       new PutCommand({
@@ -252,9 +258,16 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
           ...dedupKey(tenantId, dedupHash),
           ticketId,
           createdAt: new Date().toISOString(),
-          ttl: Math.floor(Date.now() / 1000) + dedupTtlSeconds,
+          ttl: nowSeconds + dedupTtlSeconds,
         },
-        ConditionExpression: "attribute_not_exists(pk)",
+        // DynamoDB borra los ítems vencidos por TTL en segundo plano y puede
+        // tardar días: un marcador vencido que sigue en la tabla no cuenta. Sin
+        // comprobar `ttl` acá, la ventana de 5 minutos dependería de ese borrado
+        // y el mismo contenido llegado días después se descartaría. (`ttl` es
+        // palabra reservada de DynamoDB, de ahí el alias.)
+        ConditionExpression: "attribute_not_exists(pk) OR #ttl < :now",
+        ExpressionAttributeNames: { "#ttl": "ttl" },
+        ExpressionAttributeValues: { ":now": nowSeconds },
         // Si el marcador ya existe, DynamoDB devuelve su contenido dentro del propio
         // error: así se sabe de quién es sin una lectura aparte (este Lambda solo
         // tiene permiso de escritura sobre la tabla).

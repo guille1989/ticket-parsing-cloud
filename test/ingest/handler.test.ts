@@ -117,7 +117,7 @@ test("request válido: guarda en S3, escritura condicional en DynamoDB, responde
   // 2 escrituras: el marcador de deduplicación de contenido y el ticket en sí.
   expect(mockDdbSend).toHaveBeenCalledTimes(2);
   const dedupCall = mockDdbSend.mock.calls[0][0].input;
-  expect(dedupCall.ConditionExpression).toBe("attribute_not_exists(pk)");
+  expect(dedupCall.ConditionExpression).toBe("attribute_not_exists(pk) OR #ttl < :now");
   expect(dedupCall.Item.sk).toMatch(/^DEDUP#/);
   const ddbCall = mockDdbSend.mock.calls[1][0].input;
   expect(ddbCall.ConditionExpression).toBe("attribute_not_exists(pk)");
@@ -140,6 +140,110 @@ test("contenido idéntico al de un ticket reciente del mismo puerto: se descarta
   expect(JSON.parse(result.body)).toEqual({ ticketId: VALID_BODY.ticketId, duplicate: true });
   expect(mockS3Send).not.toHaveBeenCalled();
   expect(mockDdbSend).toHaveBeenCalledTimes(1);
+});
+
+// DynamoDB borra los ítems vencidos por TTL en segundo plano y puede tardar
+// días. Un marcador de 5 minutos que ya venció pero sigue en la tabla no debe
+// seguir descartando contenido idéntico.
+test("el marcador de dedup solo bloquea si no venció: la condición compara ttl con la hora actual", async () => {
+  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+  mockS3Send.mockResolvedValue({});
+  mockDdbSend.mockResolvedValue({});
+
+  const before = Math.floor(Date.now() / 1000);
+  await handler(eventWith("key1", VALID_BODY));
+  const after = Math.floor(Date.now() / 1000);
+
+  const dedupCall = mockDdbSend.mock.calls[0][0].input;
+  expect(dedupCall.ConditionExpression).toBe("attribute_not_exists(pk) OR #ttl < :now");
+  expect(dedupCall.ExpressionAttributeNames).toEqual({ "#ttl": "ttl" });
+  expect(dedupCall.ExpressionAttributeValues[":now"]).toBeGreaterThanOrEqual(before);
+  expect(dedupCall.ExpressionAttributeValues[":now"]).toBeLessThanOrEqual(after);
+  // El marcador nuevo vence 5 minutos después de ese mismo instante.
+  expect(dedupCall.Item.ttl - dedupCall.ExpressionAttributeValues[":now"]).toBe(300);
+});
+
+test("la condición de vencimiento también aplica al marcador de una factura electrónica", async () => {
+  mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+  mockS3Send.mockResolvedValue({});
+  mockDdbSend.mockResolvedValue({});
+
+  const xml = readFileSync(join(process.cwd(), "fixtures", "ubl", "fe-erp-38267.xml"));
+  const { rawText: _drop, ...bodyNoText } = VALID_BODY;
+  await handler(eventWith("key1", { ...bodyNoText, rawBase64: xml.toString("base64"), rawEncoding: "ubl" }));
+
+  const dedupCall = mockDdbSend.mock.calls[0][0].input;
+  expect(dedupCall.ConditionExpression).toBe("attribute_not_exists(pk) OR #ttl < :now");
+});
+
+// Dos cajas del mismo negocio pueden llamar igual a su puerto y emitir un ticket
+// idéntico: no son el mismo envío duplicado.
+describe("la huella de texto/ESC-POS incluye al agente", () => {
+  const agent = (agentId: string) => ({
+    tenantId: "t1",
+    agentId,
+    name: agentId,
+    apiKeyId: `key-${agentId}`,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  const markerSk = async (apiKeyId: string, body: unknown, resolved: unknown) => {
+    mockResolveAgentByApiKeyId.mockResolvedValue(resolved);
+    mockDdbSend.mockClear();
+    await handler(eventWith(apiKeyId, body));
+    return mockDdbSend.mock.calls[0][0].input.Item.sk as string;
+  };
+
+  test("mismo puerto y mismo contenido desde dos agentes distintos: huellas distintas", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend.mockResolvedValue({});
+
+    const a = await markerSk("key-a1", VALID_BODY, agent("a1"));
+    const b = await markerSk("key-a2", VALID_BODY, agent("a2"));
+
+    expect(a).not.toBe(b);
+  });
+
+  test("mismo agente reenviando el mismo contenido: misma huella (sigue deduplicando el reenvío de Loggro)", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend.mockResolvedValue({});
+
+    const first = await markerSk("key-a1", VALID_BODY, agent("a1"));
+    const again = await markerSk("key-a1", { ...VALID_BODY, ticketId: "6a3c0d4b-2222-4444-8888-abcdefabcdef" }, agent("a1"));
+
+    expect(again).toBe(first);
+  });
+
+  test("también en ESC/POS", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend.mockResolvedValue({});
+
+    const bytes = Buffer.from("\x1b@VENTA\x1dV\x00", "latin1");
+    const { rawText: _drop, ...bodyNoText } = VALID_BODY;
+    const escpos = { ...bodyNoText, rawBase64: bytes.toString("base64"), rawEncoding: "escpos" };
+
+    const a = await markerSk("key-a1", escpos, agent("a1"));
+    const b = await markerSk("key-a2", escpos, agent("a2"));
+
+    expect(a).not.toBe(b);
+  });
+
+  test("una factura electrónica sigue deduplicando entre agentes: el número de factura es global", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend.mockResolvedValue({});
+
+    const xml = readFileSync(join(process.cwd(), "fixtures", "ubl", "fe-erp-38267.xml"));
+    const { rawText: _drop, ...bodyNoText } = VALID_BODY;
+    const ubl = { ...bodyNoText, rawBase64: xml.toString("base64"), rawEncoding: "ubl" };
+
+    const a = await markerSk("key-a1", ubl, agent("a1"));
+    const b = await markerSk("key-a2", ubl, agent("a2"));
+
+    expect(a).toBe(b);
+  });
 });
 
 // El marcador se escribe antes que S3 y el ticket: si S3 falla, el agente
