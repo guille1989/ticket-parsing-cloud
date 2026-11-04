@@ -70,3 +70,25 @@ test("recorre todas las páginas de DynamoDB, no solo la primera", async () => {
   expect(JSON.parse(result.body).widgets.map((w: { widgetId: string }) => w.widgetId)).toEqual(["w1", "w2"]);
   expect(mockDdbSend.mock.calls[1][0].input.ExclusiveStartKey).toEqual({ pk: "TENANT#t1", sk: "WIDGET#w1" });
 });
+
+test("devuelve la secondaryMetric de un KPI", async () => {
+  mockDdbSend.mockResolvedValue({
+    Items: [
+      {
+        pk: "TENANT#t1",
+        sk: "WIDGET#w1",
+        tenantId: "t1",
+        widgetId: "w1",
+        name: "Agua 5 L",
+        visualization: "kpi",
+        metric: { field: "subtotal", aggregation: "sum" },
+        secondaryMetric: { field: "quantity", aggregation: "sum" },
+        createdAt: "2026-07-29T20:00:00.000Z",
+      },
+    ],
+  });
+
+  const result = await handler(eventWith("t1"));
+
+  expect(JSON.parse(result.body).widgets[0].secondaryMetric).toEqual({ field: "quantity", aggregation: "sum" });
+});

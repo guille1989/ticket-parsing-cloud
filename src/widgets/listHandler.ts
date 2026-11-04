@@ -12,6 +12,7 @@ function toPublicWidget(item: WidgetRecord) {
     name: item.name,
     visualization: item.visualization,
     metric: item.metric,
+    secondaryMetric: item.secondaryMetric,
     groupBy: item.groupBy,
     filters: item.filters,
     createdAt: item.createdAt,
