@@ -4,6 +4,7 @@ import {
   isItemLevelGroupBy,
   isTemporalGroupByField,
   isTicketLevelField,
+  isTimeOfDayGroupBy,
   isValidAggregation,
   isValidGroupByField,
   isValidMetricField,
@@ -241,9 +242,10 @@ function buildDirectQuery(
     return { sql: `SELECT ${selection} FROM ${from} WHERE ${whereClause}`, params };
   }
   const groupColumn = groupByExpression(groupBy as never, timeZone);
-  const temporal = isTemporalGroupByField(groupBy);
-  const orderBy = temporal ? "label ASC" : "value DESC";
-  const limit = temporal ? MAX_TIME_POINTS : maxGroups;
+  // Tiempo (día/hora) y momento del día/semana salen ordenados por etiqueta: es una curva, no un ranking.
+  const byLabel = isTemporalGroupByField(groupBy) || isTimeOfDayGroupBy(groupBy);
+  const orderBy = byLabel ? "label ASC" : "value DESC";
+  const limit = byLabel ? MAX_TIME_POINTS : maxGroups;
   return {
     sql:
       `SELECT ${groupColumn} AS label, ${selection} ` +
@@ -275,11 +277,12 @@ function buildTicketLevelQuery(
   }
 
   const groupColumn = groupByExpression(groupBy as never, timeZone);
-  const temporal = isTemporalGroupByField(groupBy);
-  const orderBy = temporal ? "label ASC" : "value DESC";
-  const limit = temporal ? MAX_TIME_POINTS : maxGroups;
-  const innerGroupSelect = temporal ? `${groupColumn} AS group_label` : groupColumn;
-  const outerGroupColumn = temporal ? "group_label" : groupColumn;
+  // La expresión de día/hora/momento usa `capturedat`, que la sub-consulta no expone: se le pone alias.
+  const byLabel = isTemporalGroupByField(groupBy) || isTimeOfDayGroupBy(groupBy);
+  const orderBy = byLabel ? "label ASC" : "value DESC";
+  const limit = byLabel ? MAX_TIME_POINTS : maxGroups;
+  const innerGroupSelect = byLabel ? `${groupColumn} AS group_label` : groupColumn;
+  const outerGroupColumn = byLabel ? "group_label" : groupColumn;
   const inner =
     `SELECT ticketid, ${innerGroupSelect}, MAX(${ticketValue}) AS ${column} ` +
     `FROM ${from} WHERE ${whereClause} GROUP BY ticketid, ${groupColumn}`;

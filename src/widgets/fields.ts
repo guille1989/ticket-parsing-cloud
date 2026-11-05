@@ -28,8 +28,32 @@ export function isTicketLevelField(field: string): boolean {
 /** Pseudo-campo: cuenta tickets (eventos), no filas de ítem — ver queryBuilder.ts. */
 export const EVENT_COUNT_FIELD = "event_count";
 
-export const CATEGORICAL_FIELDS = ["port", "agent", "status", "parsedBy", "description", "customer", "volume", "paymentMethod"] as const;
+export const CATEGORICAL_FIELDS = [
+  "port",
+  "agent",
+  "status",
+  "parsedBy",
+  "description",
+  "customer",
+  "volume",
+  "paymentMethod",
+  "hourOfDay",
+  "weekday",
+] as const;
 export type CategoricalField = (typeof CATEGORICAL_FIELDS)[number];
+
+/**
+ * Agrupaciones por momento del día/semana, juntando TODOS los días: "hourOfDay" =
+ * hora 00–23 y "weekday" = 1 (lunes) a 7 (domingo), en la zona horaria del
+ * negocio. Son las que responden "¿a qué hora/qué día vendo más?". Distintas de
+ * "hour"/"day" (temporales), que dan una fila por cada fecha y hora concretas.
+ * Dependen de la zona horaria, así que `groupByExpression` las arma con ella, y
+ * salen ordenadas por etiqueta (la curva del día/semana), no por valor.
+ */
+export const TIME_OF_DAY_FIELDS = ["hourOfDay", "weekday"] as const;
+export function isTimeOfDayGroupBy(field: string | undefined): boolean {
+  return field !== undefined && (TIME_OF_DAY_FIELDS as readonly string[]).includes(field);
+}
 
 /** Agrupaciones por ÍTEM (un valor por línea de producto, no por ticket). */
 export function isItemLevelGroupBy(field: string | undefined): boolean {
@@ -82,6 +106,9 @@ const CATEGORICAL_COLUMN_BY_FIELD: Record<CategoricalField, string> = {
   customer: "customername",
   // Un valor por ticket (como "customer"); los tickets sin dato salen como NULL.
   paymentMethod: "paymentmethod",
+  // Hora/día de la semana en UTC; con zona horaria las reemplaza `groupByExpression`.
+  hourOfDay: "substr(capturedat, 12, 2)",
+  weekday: "format_datetime(from_iso8601_timestamp(capturedat), 'e')",
   volume: VOLUME_EXPRESSION,
 };
 
@@ -143,6 +170,11 @@ export function groupByExpression(field: GroupByField, timeZone?: string): strin
     throw new Error(`zona horaria inválida: "${timeZone}"`);
   }
   if (field === "day") return localDateExpression(timeZone);
+  if (field === "hourOfDay" || field === "weekday") {
+    if (isUtc(timeZone)) return categoricalColumn(field);
+    const pattern = field === "hourOfDay" ? "HH" : "e"; // 'e' = día ISO de la semana, 1 = lunes
+    return `format_datetime(at_timezone(from_iso8601_timestamp(capturedat), '${timeZone}'), '${pattern}')`;
+  }
   if (field === "hour") {
     return isUtc(timeZone)
       ? "replace(substr(capturedat, 1, 13), 'T', ' ')"

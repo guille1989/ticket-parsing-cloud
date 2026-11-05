@@ -463,6 +463,81 @@ test("run_widget_query: descriptionContains (\"lo que diga horneadas\") llega al
   expect(params).toEqual(["tenant-x", "2026", "2026", "2026-10-01", "2026-10-31T23:59:59.999Z", "horne"]);
 });
 
+describe("horas pico", () => {
+  test("el prompt manda agrupar por hourOfDay (no por hour) y a no inventar patrones fuera de las filas", async () => {
+    mockBedrockSend.mockResolvedValue(textResponse("ok"));
+    await handler(eventWith({ question: "hola" }));
+
+    const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+    expect(systemText).toContain('agrupá por "hourOfDay"');
+    expect(systemText).toContain('NUNCA uses "hour" ni "day" para esto');
+    expect(systemText).toContain("no inventes patrones");
+  });
+
+  test("la herramienta ofrece hourOfDay y weekday, y avisa que hour/day son una fila por fecha", async () => {
+    mockBedrockSend.mockResolvedValue(textResponse("ok"));
+    await handler(eventWith({ question: "hola" }));
+
+    const tools = mockBedrockSend.mock.calls[0][0].input.toolConfig.tools as Array<{ toolSpec: { name: string; inputSchema: { json: any } } }>;
+    const query = tools.find((t) => t.toolSpec.name === "run_widget_query")!.toolSpec.inputSchema.json.properties.groupBy;
+    expect(query.enum).toEqual(expect.arrayContaining(["hourOfDay", "weekday", "hour", "day"]));
+    expect(query.description).toContain("UNA FILA POR CADA FECHA/HORA");
+  });
+
+  test("groupBy hour con cientos de filas: el resultado trae una nota que manda a hourOfDay y a no sumar a mano", async () => {
+    mockBedrockSend
+      .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", groupBy: "hour" }))
+      .mockResolvedValueOnce(textResponse("ok"));
+    mockRunAthenaQuery.mockResolvedValue(Array.from({ length: 264 }, (_, i) => ({ label: `2026-09-${String((i % 28) + 1).padStart(2, "0")} ${String(i % 24).padStart(2, "0")}`, value: 100 })));
+
+    await handler(eventWith({ question: "horas pico" }));
+
+    const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
+    const payload = toolResult.content[0].json ?? JSON.parse(toolResult.content[0].text);
+    expect(payload.note).toContain("Son 264 filas");
+    expect(payload.note).toContain('groupBy "hourOfDay"');
+    expect(payload.note).toContain("NO las sumes");
+  });
+
+  test("groupBy hour con pocas filas (un día) o hourOfDay: sin nota", async () => {
+    mockBedrockSend
+      .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", groupBy: "hour", filters: { dateFrom: "2026-11-05", dateTo: "2026-11-05" } }))
+      .mockResolvedValueOnce(textResponse("ok"));
+    mockRunAthenaQuery.mockResolvedValue([{ label: "2026-11-05 11", value: 9500 }]);
+
+    await handler(eventWith({ question: "hoy por hora" }));
+
+    const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
+    const payload = toolResult.content[0].json ?? JSON.parse(toolResult.content[0].text);
+    expect(payload.note).toBeUndefined();
+  });
+
+  test("el prompt aclara que 'horas pico de un día' es un día típico, con el período cubierto y las horas en orden", async () => {
+    mockBedrockSend.mockResolvedValue(textResponse("ok"));
+    await handler(eventWith({ question: "hola" }));
+
+    const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+    expect(systemText).toContain("es un día típico");
+    expect(systemText).toContain("qué período cubre la tabla");
+    expect(systemText).toContain("de menor a mayor (de cuando abre a cuando cierra)");
+    expect(systemText).toContain("no omitas ni repitas filas");
+  });
+
+  test("run_widget_query con groupBy hourOfDay llega al SQL en la zona del negocio, una fila por hora del día", async () => {
+    mockBedrockSend
+      .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", groupBy: "hourOfDay" }))
+      .mockResolvedValueOnce(textResponse("La hora pico es 17:00."));
+    mockRunAthenaQuery.mockResolvedValue([{ label: "16", value: 100 }, { label: "17", value: 300 }]);
+
+    const result = await handler(eventWith({ question: "horas pico", timeZone: "America/Bogota" }, "tenant-x"));
+
+    expect(result.statusCode).toBe(200);
+    const sql = mockRunAthenaQuery.mock.calls[0][0] as string;
+    expect(sql).toContain("'America/Bogota'), 'HH')");
+    expect(sql).toContain("ORDER BY label ASC");
+  });
+});
+
 describe("zona horaria del negocio", () => {
   /** El tenant se lee con un GetCommand; las escrituras (rate limit) siguen devolviendo {}. */
   function mockTenant(tenant: Record<string, unknown> | undefined) {

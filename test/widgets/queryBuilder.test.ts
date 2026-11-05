@@ -220,6 +220,56 @@ test("groupBy hour con zona: convierte con at_timezone y la zona va inlineada", 
   expect(sql).toContain("format_datetime(at_timezone(from_iso8601_timestamp(capturedat), 'America/Bogota'), 'yyyy-MM-dd HH')");
 });
 
+// --- groupBy "hourOfDay" / "weekday": la hora/día de la semana juntando todos los días ---
+
+test("groupBy hourOfDay con zona: hora 00–23 local, UNA fila por hora del día (no por fecha) y orden por etiqueta", () => {
+  const { sql } = buildWidgetQuery(
+    widget({ visualization: "bar", groupBy: "hourOfDay", metric: { field: "event_count", aggregation: "count" } }),
+    50,
+    "America/Bogota",
+  );
+
+  expect(sql).toContain("format_datetime(at_timezone(from_iso8601_timestamp(capturedat), 'America/Bogota'), 'HH') AS label");
+  expect(sql).not.toContain("yyyy-MM-dd");
+  expect(sql).toContain("GROUP BY format_datetime(at_timezone(from_iso8601_timestamp(capturedat), 'America/Bogota'), 'HH') ORDER BY label ASC");
+});
+
+test("groupBy hourOfDay sin zona: la hora UTC del ISO", () => {
+  const { sql } = buildWidgetQuery(widget({ visualization: "bar", groupBy: "hourOfDay", metric: { field: "subtotal", aggregation: "sum" } }));
+
+  expect(sql).toContain("substr(capturedat, 12, 2) AS label");
+  expect(sql).toContain("ORDER BY label ASC");
+});
+
+test("groupBy hourOfDay con una métrica de ticket (total): la sub-consulta usa alias (la expresión necesita capturedat) y suma cada ticket una vez", () => {
+  const { sql } = buildWidgetQuery(
+    widget({ visualization: "bar", groupBy: "hourOfDay", metric: { field: "total", aggregation: "sum" } }),
+    50,
+    "America/Bogota",
+  );
+
+  expect(sql).toContain("'HH') AS group_label, MAX(total) AS total FROM");
+  expect(sql).toContain("GROUP BY ticketid,");
+  expect(sql).toContain("SELECT group_label AS label, SUM(total) AS value");
+  expect(sql).toContain("GROUP BY group_label ORDER BY label ASC");
+});
+
+test("groupBy weekday: día ISO de la semana ('e': 1 = lunes) en la zona del negocio", () => {
+  const { sql } = buildWidgetQuery(
+    widget({ visualization: "bar", groupBy: "weekday", metric: { field: "event_count", aggregation: "count" } }),
+    50,
+    "America/Bogota",
+  );
+
+  expect(sql).toContain("format_datetime(at_timezone(from_iso8601_timestamp(capturedat), 'America/Bogota'), 'e') AS label");
+  expect(sql).toContain("ORDER BY label ASC");
+});
+
+test("hourOfDay/weekday con una zona inválida: se rechaza antes de generar SQL", () => {
+  const w = widget({ visualization: "bar", groupBy: "hourOfDay", metric: { field: "subtotal", aggregation: "sum" } });
+  expect(() => buildWidgetQuery(w, undefined, "America/Bogota'); DROP TABLE x;--")).toThrow(/zona horaria inválida/);
+});
+
 test("groupBy day con zona: fecha local, y los filtros de fecha comparan la fecha local", () => {
   const { sql, params } = buildWidgetQuery(
     widget({

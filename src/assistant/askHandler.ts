@@ -72,6 +72,8 @@ Clientes: si el negocio factura con factura electrónica, las ventas traen el cl
 
 Medio de pago: las ventas de los negocios cuyo ticket lo imprime traen con qué pagó el cliente (Efectivo, QR, Datafono, Tarjeta, Nequi, Daviplata, Transferencia, Rappi, Mixto u Otro). Para "¿cuánto vendí en efectivo vs QR?" o "ventas por medio de pago" agrupá por "paymentMethod" (con "total" para ventas del negocio, o "event_count" para cantidad de tickets). Para UN medio concreto ("¿cuánto pagaron con datafono?", "ventas en QR") usá el filtro "paymentMethod" con ese valor. NUNCA busques un medio de pago con "descriptionContains": no es un producto. Si el filtro o la agrupación no devuelve nada para un medio, la respuesta es que NO hay ventas pagadas con ese medio (decilo así, en cero); nunca la contestes con el total de otra consulta ni vuelvas a consultar sin el filtro de medio de pago para "encontrar" algo. Si preguntan por un medio y la agrupación solo muestra otros, decí cuáles medios hay y que ese no aparece. Los tickets anteriores a que se capturara este dato (o que no lo traen) salen como "sin dato": mencionalo, no lo repartas entre los demás medios. "list_tickets" trae paymentMethod en cada ticket.
 
+Horas pico y días fuertes: para "¿a qué hora vendo más?", "horas pico" o "en qué horario…" agrupá por "hourOfDay" (hora 00–23 en la zona del negocio, juntando todos los días); para "¿qué día de la semana vendo más?" agrupá por "weekday" (1 = lunes … 7 = domingo). Hacé una consulta con "total" (plata) y otra con "event_count" (tickets) y armá la tabla con TODAS las horas (o días) que devolvió la herramienta, en orden, marcando las más fuertes. NUNCA uses "hour" ni "day" para esto: dan una fila por cada fecha y hora concreta (cientos de filas) y terminás eligiendo y ordenando filas vos mismo, donde se cometen errores. "Las horas pico de un día" o "cuándo se mueve más el negocio en un día" es un día típico: usá "hourOfDay" con todo el historial (o el período que pidan), no un día puntual como "hoy"; solo usá una fecha concreta si el usuario la nombra. Decí qué período cubre la tabla (desde qué fecha). Las horas sin ventas no aparecen en el resultado: aclaralo en vez de inventarlas. Armá la tabla con las horas de menor a mayor (de cuando abre a cuando cierra) y las columnas que dio la herramienta, y no omitas ni repitas filas. Decí solo lo que está en las filas devueltas: no inventes patrones ("poco movimiento después de las 20") que no estén en la tabla, y la hora pico es la de mayor valor.
+
 Formato de la respuesta: texto plano. Podés resaltar con **negrita** lo más importante (el nombre de la sucursal o producto y la cifra clave). Si piden una lista o una tabla con columnas, armala como tabla markdown (| col | col | con la fila |---|---|); fuera de eso, nada de #, tablas ni viñetas con asteriscos. No pongas símbolo de moneda ($, €…) porque no sabés la moneda del negocio: escribí solo el número (con separador de miles y hasta 2 decimales).
 
 No pidas aclaraciones si la pregunta se puede contestar con una suposición razonable: consultá, contestá y decí en una frase qué supusiste. Supuestos por defecto:
@@ -127,7 +129,7 @@ function widgetQueryProperties() {
         // (isValidGroupByField), solo faltaba ofrecerlo.
         enum: [...CATEGORICAL_FIELDS, ...TEMPORAL_FIELDS],
         description:
-          "Campo para desglosar el resultado (opcional, omitir para un solo total). 'agent' desglosa por sucursal/local (devuelve el nombre de cada una). 'port' desglosa por puerto/periférico (caja), NO por sucursal. 'volume' agrupa por la medida del nombre del producto (350 ML, 600 ML, 20 L…); solo con 'subtotal', 'quantity', 'unitPrice' o 'event_count'. 'day' agrupa por fecha (YYYY-MM-DD) y 'hour' por hora (YYYY-MM-DD HH, 24h), ordenados de lo más viejo a lo más nuevo.",
+          "Campo para desglosar el resultado (opcional, omitir para un solo total). 'agent' desglosa por sucursal/local (devuelve el nombre de cada una). 'port' desglosa por puerto/periférico (caja), NO por sucursal. 'volume' agrupa por la medida del nombre del producto (350 ML, 600 ML, 20 L…); solo con 'subtotal', 'quantity', 'unitPrice' o 'event_count'. 'day' agrupa por fecha (YYYY-MM-DD) y 'hour' por hora (YYYY-MM-DD HH, 24h), ordenados de lo más viejo a lo más nuevo: son UNA FILA POR CADA FECHA/HORA concreta, para ver la evolución en el tiempo, NO para buscar horas pico. 'hourOfDay' agrupa por hora del día (00–23) juntando todos los días y 'weekday' por día de la semana (1 = lunes … 7 = domingo), ambos en la zona horaria del negocio y ordenados por etiqueta: son los que responden '¿a qué hora/qué día vendo más?'.",
       },
       filters: {
         type: "object",
@@ -366,12 +368,25 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
     filters?.paymentMethod && data.every((row) => !row.value)
       ? { note: `No hay ventas pagadas con ${filters.paymentMethod} en este periodo (cero). Respondé eso; no vuelvas a consultar sin el filtro de medio de pago.` }
       : {};
+  // "hour"/"day" dan una fila por cada fecha (y hora): cientos de filas que el modelo terminaba
+  // sumando y ordenando de cabeza, con errores (en una prueba real su tabla "por hora" sumaba 72%
+  // del total real). Se le dice en el propio resultado qué usar en cambio.
+  const rowsPerDateNote =
+    (groupBy === "hour" && data.length > 24) || (groupBy === "day" && data.length > 31)
+      ? {
+          note:
+            `Son ${data.length} filas, una por cada fecha${groupBy === "hour" ? " y hora" : ""}. NO las sumes, ordenes ni agrupes vos: los totales los calcula la herramienta. ` +
+            `Para horas pico o "a qué hora se vende más" consultá de nuevo con groupBy "hourOfDay" (hora del día, todos los días juntos); ` +
+            `para "qué día de la semana se vende más", con groupBy "weekday". Usá estas filas solo para mostrar la evolución en el tiempo.`,
+        }
+      : {};
   const meta = {
     metric: field,
     aggregation,
     ...(groupBy ? { groupBy } : {}),
     ...(Object.keys(metaFilters).length ? { filters: metaFilters } : {}),
     ...noSalesNote,
+    ...rowsPerDateNote,
   };
   if (groupBy === "description") return { ...meta, data: data.map((row) => ({ ...row, volume: extractProductVolume(row.label) })) };
   if (groupBy !== "agent") return { ...meta, data };
