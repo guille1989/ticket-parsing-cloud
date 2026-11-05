@@ -802,9 +802,15 @@ export class TicketParsingCloudStack extends cdk.Stack {
       entry: "src/agents/heartbeatHandler.ts",
       runtime: nodeRuntime,
       bundling: sharedBundling,
-      timeout: cdk.Duration.seconds(10),
-      environment: { AGENTS_TABLE: agentsTable.tableName },
+      // Presign + GetObject del manifiesto pueden sumar latencia; 15s da margen.
+      timeout: cdk.Duration.seconds(15),
+      environment: {
+        AGENTS_TABLE: agentsTable.tableName,
+        AGENT_RELEASES_BUCKET: agentReleasesBucket.bucketName,
+      },
     });
+    // Lectura del artefacto/manifiesto para firmar URLs en la señal OTA (Fase 1).
+    agentReleasesBucket.grantRead(agentsHeartbeatFn);
 
     const agentsUpdateLocationFn = new nodejs.NodejsFunction(this, "AgentsUpdateLocationFunction", {
       entry: "src/agents/updateLocationHandler.ts",

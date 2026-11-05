@@ -154,6 +154,16 @@ export interface ParseJobMessage {
  * original), cada agente tiene su propia api-key — así se puede identificar,
  * nombrar y revocar un robot puntual sin afectar al resto del negocio.
  */
+/** Estado OTA reportado por el agent (Fase 1). No es un scriptId de diagnósticos. */
+export type AgentUpdateStatus =
+  | "idle"
+  | "downloading"
+  | "verifying"
+  | "pending_apply"
+  | "ok"
+  | "rolled_back"
+  | "error";
+
 export interface AgentRecord {
   tenantId: string;
   agentId: string;
@@ -168,6 +178,14 @@ export interface AgentRecord {
     lat?: number;
     lng?: number;
   };
+  /**
+   * Override de policy OTA para este agent (Fase 1: pin / canary corta).
+   * Si está ausente, hereda `OTA#GLOBAL` / `POLICY.desiredVersion`.
+   */
+  desiredVersion?: string;
+  updateStatus?: AgentUpdateStatus;
+  updateStatusAt?: string;
+  updateError?: string;
 }
 
 /**
