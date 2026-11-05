@@ -180,6 +180,22 @@ export function validateBody(body: unknown): BodyValidation {
   return { ok: true, value: { ...common, rawKind: "text", rawContent: b.rawText } };
 }
 
+/**
+ * Huella de un envío de impresora: cada campo se codifica con su longitud, así
+ * que dónde termina uno y empieza el otro nunca es ambiguo. Concatenarlos a
+ * secas hacía que (puerto "COM", texto "3ABC") y (puerto "COM3", texto "ABC")
+ * dieran la misma huella.
+ */
+function contentFingerprint(...fields: (string | Buffer)[]): string {
+  const hash = createHash("sha256");
+  for (const field of fields) {
+    const bytes = typeof field === "string" ? Buffer.from(field, "utf-8") : field;
+    hash.update(`${bytes.length}:`, "utf-8");
+    hash.update(bytes);
+  }
+  return hash.digest("hex");
+}
+
 export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
   const apiKeyId = event.requestContext.identity?.apiKeyId;
   if (!apiKeyId) {
@@ -243,17 +259,26 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // la huella porque dos cajas del mismo negocio pueden tener el mismo nombre
     // de puerto (COM3, o la misma impresora) y emitir un ticket idéntico: sin
     // él, la segunda se descartaría como duplicado de la primera. Con la
-    // api-key compartida del tenant no hay agente (`agentId` vacío).
-    dedupHash = createHash("sha256")
-      .update(`${agentId ?? ""}\n`, "utf-8")
-      .update(validBody.port, "utf-8")
-      .update(rawKind === "escpos" ? (validBody.rawContent as Buffer) : Buffer.from(validBody.rawContent as string, "utf-8"))
-      .digest("hex");
+    // api-key compartida del tenant no hay agente (`agentId` vacío). El tipo
+    // (texto / ESC-POS) también entra: los mismos bytes como texto y como
+    // ESC-POS no son el mismo envío.
+    dedupHash = contentFingerprint(
+      rawKind,
+      agentId ?? "",
+      validBody.port,
+      rawKind === "escpos" ? (validBody.rawContent as Buffer) : Buffer.from(validBody.rawContent as string, "utf-8"),
+    );
   }
 
   // Escritura condicional = "primero en llegar gana"; quien pierde la carrera
   // se descarta sin tocar S3 ni la tabla de tickets.
   const nowSeconds = Math.floor(Date.now() / 1000);
+  // La fecha con la que se registra el ticket. `capturedAt` forma parte de su
+  // clave en DynamoDB, así que un reintento tiene que reusar la del primer
+  // intento aunque el agente mande otra (p. ej. si cambió la fecha de
+  // modificación del XML): con otra fecha sería otra clave y un segundo registro
+  // de la misma venta. Se guarda en el marcador y se recupera en el reintento.
+  let capturedAt = validBody.capturedAt;
   try {
     await ddb.send(
       new PutCommand({
@@ -261,6 +286,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
         Item: {
           ...dedupKey(tenantId, dedupHash),
           ticketId,
+          capturedAt: validBody.capturedAt,
           createdAt: new Date().toISOString(),
           ttl: nowSeconds + dedupTtlSeconds,
         },
@@ -291,7 +317,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // reintento, no un duplicado, y se sigue — S3 y el ticket son idempotentes.
     // Un reenvío de Loggro (mismo contenido, job nuevo) trae otro ticketId, así
     // que sigue descartándose.
-    const existing = err.Item ? (unmarshall(err.Item) as { ticketId?: string }) : undefined;
+    const existing = err.Item ? (unmarshall(err.Item) as { ticketId?: string; capturedAt?: string }) : undefined;
     const isOwnRetry = existing?.ticketId === ticketId;
     if (!isOwnRetry) {
       console.log(
@@ -299,6 +325,11 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
           `tenant=${tenantId} port=${validBody.port} ticketId=${ticketId}`,
       );
       return { statusCode: 202, body: JSON.stringify({ ticketId, duplicate: true }) };
+    }
+    // Los marcadores escritos antes de guardar `capturedAt` no lo traen: ahí se
+    // queda la del envío. Un valor con forma inválida tampoco se usa.
+    if (typeof existing?.capturedAt === "string" && ISO_8601_PATTERN.test(existing.capturedAt)) {
+      capturedAt = existing.capturedAt;
     }
   }
 
@@ -319,12 +350,12 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     ticketId,
     port: validBody.port,
     agentId,
-    capturedAt: validBody.capturedAt,
+    capturedAt,
     status: "pending",
     rawS3Key,
     rawKind,
-    ...ticketKey(tenantId, validBody.capturedAt, ticketId),
-    ...ticketStatusGsiKey(tenantId, "pending", validBody.capturedAt),
+    ...ticketKey(tenantId, capturedAt, ticketId),
+    ...ticketStatusGsiKey(tenantId, "pending", capturedAt),
   };
 
   try {

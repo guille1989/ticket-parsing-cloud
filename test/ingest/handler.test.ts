@@ -246,6 +246,120 @@ describe("la huella de texto/ESC-POS incluye al agente", () => {
   });
 });
 
+// La huella codifica cada campo con su longitud: concatenarlos a secas hacía que
+// (puerto "COM", texto "3ABC") y (puerto "COM3", texto "ABC") dieran la misma.
+describe("huella de texto/ESC-POS: sin colisiones entre campos", () => {
+  const sk = async (body: unknown) => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend.mockReset();
+    mockDdbSend.mockResolvedValue({});
+    await handler(eventWith("key1", body));
+    return mockDdbSend.mock.calls[0][0].input.Item.sk as string;
+  };
+
+  test("puerto COM + texto 3ABC no colisiona con puerto COM3 + texto ABC", async () => {
+    const a = await sk({ ...VALID_BODY, port: "COM", rawText: "3ABC" });
+    const b = await sk({ ...VALID_BODY, port: "COM3", rawText: "ABC" });
+    expect(a).not.toBe(b);
+  });
+
+  test("los mismos bytes como texto y como ESC/POS no son el mismo envío", async () => {
+    const { rawText: _drop, ...bodyNoText } = VALID_BODY;
+    const text = await sk({ ...VALID_BODY, rawText: "ABC" });
+    const escpos = await sk({ ...bodyNoText, rawBase64: Buffer.from("ABC").toString("base64"), rawEncoding: "escpos" });
+    expect(text).not.toBe(escpos);
+  });
+
+  test("el mismo puerto y contenido sigue dando la misma huella (el reenvío de Loggro se deduplica)", async () => {
+    const a = await sk(VALID_BODY);
+    const b = await sk({ ...VALID_BODY, ticketId: "6a3c0d4b-2222-4444-8888-abcdefabcdef" });
+    expect(a).toBe(b);
+  });
+});
+
+// `capturedAt` compone la clave del ticket en DynamoDB. Si el reintento de un
+// mismo envío (mismo ticketId) llegara con otra fecha, sería otra clave y un
+// segundo registro de la misma venta: se reusa la fecha del primer intento,
+// guardada en el marcador.
+describe("reintento propio: la fecha del primer intento manda", () => {
+  const FIRST = "2026-07-27T23:00:00.000Z";
+  const LATER = "2026-07-28T09:30:00.000Z";
+  const conflictWith = (item: Record<string, unknown>) =>
+    new ConditionalCheckFailedException({ message: "ya existe", $metadata: {}, Item: marshall(item) as never });
+
+  test("el marcador guarda capturedAt", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend.mockResolvedValue({});
+
+    await handler(eventWith("key1", { ...VALID_BODY, capturedAt: FIRST }));
+
+    expect(mockDdbSend.mock.calls[0][0].input.Item.capturedAt).toBe(FIRST);
+  });
+
+  test("mismo ticketId con otra fecha: el registro se crea con la fecha del marcador, no con la nueva", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend
+      .mockRejectedValueOnce(conflictWith({ pk: "TENANT#t1", sk: "DEDUP#x", ticketId: VALID_BODY.ticketId, capturedAt: FIRST }))
+      .mockResolvedValue({});
+
+    const result = await handler(eventWith("key1", { ...VALID_BODY, capturedAt: LATER }));
+
+    expect(result.statusCode).toBe(202);
+    const record = mockDdbSend.mock.calls[1][0].input.Item;
+    expect(record.capturedAt).toBe(FIRST);
+    expect(record.sk).toBe(`TICKET#${FIRST}#${VALID_BODY.ticketId}`);
+    expect(record.gsi1sk).toContain(FIRST);
+    expect(JSON.stringify(record)).not.toContain(LATER);
+  });
+
+  test("marcador anterior sin capturedAt: se usa la fecha del envío", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend
+      .mockRejectedValueOnce(conflictWith({ pk: "TENANT#t1", sk: "DEDUP#x", ticketId: VALID_BODY.ticketId }))
+      .mockResolvedValue({});
+
+    await handler(eventWith("key1", { ...VALID_BODY, capturedAt: LATER }));
+
+    expect(mockDdbSend.mock.calls[1][0].input.Item.capturedAt).toBe(LATER);
+  });
+
+  test("un capturedAt inválido en el marcador no se usa para armar la clave", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend
+      .mockRejectedValueOnce(conflictWith({ pk: "TENANT#t1", sk: "DEDUP#x", ticketId: VALID_BODY.ticketId, capturedAt: "no es una fecha" }))
+      .mockResolvedValue({});
+
+    await handler(eventWith("key1", { ...VALID_BODY, capturedAt: LATER }));
+
+    expect(mockDdbSend.mock.calls[1][0].input.Item.capturedAt).toBe(LATER);
+  });
+
+  test("sin reintento (primer envío): la fecha es la del envío", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockS3Send.mockResolvedValue({});
+    mockDdbSend.mockResolvedValue({});
+
+    await handler(eventWith("key1", { ...VALID_BODY, capturedAt: LATER }));
+
+    expect(mockDdbSend.mock.calls[1][0].input.Item.capturedAt).toBe(LATER);
+  });
+
+  test("otro ticketId con ese marcador sigue siendo un duplicado, con cualquier fecha", async () => {
+    mockResolveTenantByApiKeyId.mockResolvedValue(validTenant);
+    mockDdbSend.mockRejectedValueOnce(conflictWith({ pk: "TENANT#t1", sk: "DEDUP#x", ticketId: "otro-id", capturedAt: FIRST }));
+
+    const result = await handler(eventWith("key1", { ...VALID_BODY, capturedAt: LATER }));
+
+    expect(JSON.parse(result.body)).toEqual({ ticketId: VALID_BODY.ticketId, duplicate: true });
+    expect(mockS3Send).not.toHaveBeenCalled();
+  });
+});
+
 // El marcador se escribe antes que S3 y el ticket: si S3 falla, el agente
 // reintenta con el MISMO ticketId y choca con su propio marcador. Descartarlo
 // como duplicado (202) hace que el agente lo dé por enviado y se pierda.
