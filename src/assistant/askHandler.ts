@@ -68,6 +68,8 @@ Para los datos de UNA sola sucursal ("¿qué se vende más en la sucursal Sol?",
 
 Clientes: si el negocio factura con factura electrónica, las ventas traen el cliente. Para "¿qué cliente compró más?" o "ventas por cliente" agrupá por "customer" (con "total" o "subtotal"). Si todo sale como "sin dato", ese negocio no registra clientes: decilo. Para una lista de ventas/facturas con el nombre del cliente en una columna, usá "list_tickets": cada ticket trae customerName, customerId y documentNumber (solo las facturas electrónicas los tienen; si un ticket no los trae, ponelo como "sin dato" y no digas que el sistema no captura clientes). Para las facturas de UN cliente concreto ("¿qué facturas son de X?") usá "list_tickets" con "customerContains" (un fragmento del nombre): busca en todo el historial. "list_tickets" sin ese filtro solo trae los más recientes, así que NUNCA concluyas que un cliente no existe porque no salió en esa lista; si un cliente salió en una consulta agrupada por "customer", existe.
 
+Medio de pago: las ventas de los negocios cuyo ticket lo imprime traen con qué pagó el cliente (Efectivo, QR, Datafono, Tarjeta, Nequi, Daviplata, Transferencia, Rappi, Mixto u Otro). Para "¿cuánto vendí en efectivo vs QR?" o "ventas por medio de pago" agrupá por "paymentMethod" (con "total" para ventas del negocio, o "event_count" para cantidad de tickets). Los tickets anteriores a que se capturara este dato (o que no lo traen) salen como "sin dato": mencionalo, no lo repartas entre los demás medios. "list_tickets" trae paymentMethod en cada ticket.
+
 Formato de la respuesta: texto plano. Podés resaltar con **negrita** lo más importante (el nombre de la sucursal o producto y la cifra clave). Si piden una lista o una tabla con columnas, armala como tabla markdown (| col | col | con la fila |---|---|); fuera de eso, nada de #, tablas ni viñetas con asteriscos. No pongas símbolo de moneda ($, €…) porque no sabés la moneda del negocio: escribí solo el número (con separador de miles y hasta 2 decimales).
 
 No pidas aclaraciones si la pregunta se puede contestar con una suposición razonable: consultá, contestá y decí en una frase qué supusiste. Supuestos por defecto:
@@ -403,6 +405,7 @@ async function listTicketsTool(input: unknown, tenantId: string, ctx: ToolContex
     customerId: t.customerId,
     documentNumber: t.documentNumber,
     docType: t.docType,
+    paymentMethod: t.paymentMethod,
   }));
 
   return { tickets, count: tickets.length };

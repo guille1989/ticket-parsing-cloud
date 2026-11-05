@@ -20,6 +20,7 @@ Reglas estrictas:
 - Montos como número entero sin símbolo ni separador de miles.
 - Si el texto NO es una venta sino un reporte de caja ("Informe Diario", "Cierre de caja", "Cuadre de caja", "Arqueo", "Informe Z") que lista medios de pago con su cantidad de transacciones y el total del día, respondé exactamente {"notASale":true}.
 - NUNCA metas como ítem un medio de pago ni las líneas de pago que suelen venir después del total: "Efectivo" (lo que pagó el cliente), "QR", "Datafono", "Tarjeta", "Nequi", "Daviplata", "Transferencia", "Cambio"/"Vuelto", "Medio de pago". No son productos, no tienen cantidad ni precio unitario real.
+- "paymentMethod": con qué pagó el cliente, copiado del valor de la línea "Medio de pago" (ej. "QR", "Efectivo", "Datafono"); NO de "Forma de pago" (Contado/Crédito) ni del monto de "Efectivo" recibido. Si el texto no lo trae, null. No lo deduzcas.
 - "tax": el impuesto/IVA total si el ticket lo desglosa, si no null. "taxBase": la base gravable total si el ticket la imprime, si no null. Debe cumplirse: suma de subtotales de ítems = total, O suma de subtotales + tax = total. El efectivo recibido y el cambio nunca forman parte de esta cuenta.
 - "timestamp" en ISO 8601 si hay fecha/hora en el texto, si no null.
 - Respondé SOLO el JSON.`;

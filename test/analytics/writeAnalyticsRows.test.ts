@@ -95,6 +95,12 @@ test("discount/tip ausentes se escriben como null, no undefined (evita romper el
   expect(row.tip).toBeNull();
 });
 
+test("el medio de pago va en cada fila (null si el ticket no lo trae)", () => {
+  expect(JSON.parse(buildAnalyticsBody(ctx, ticket()).trim()).paymentMethod).toBeNull();
+  const rows = buildAnalyticsBody(ctx, ticket({ paymentMethod: "QR" })).trim().split("\n");
+  expect(rows.every((line) => JSON.parse(line).paymentMethod === "QR")).toBe(true);
+});
+
 test("marca cada fila como venta y lleva los datos de la factura electrónica (null si no los hay)", () => {
   const plain = JSON.parse(buildAnalyticsBody(ctx, ticket()).trim());
   expect(plain).toMatchObject({ docType: "sale", customerName: null, customerId: null, purchaseOrder: null, paymentDueDate: null });

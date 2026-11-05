@@ -16,7 +16,7 @@ export type ReconTicket = Pick<
   TicketRecord,
   "tenantId" | "ticketId" | "capturedAt" | "port" | "agentId" | "status" | "parsedBy" | "items" | "total" | "tax" | "discount" | "tip"
 > &
-  Partial<Pick<TicketRecord, "docType" | "customerName" | "customerId" | "purchaseOrder" | "paymentDueDate">>;
+  Partial<Pick<TicketRecord, "docType" | "customerName" | "customerId" | "purchaseOrder" | "paymentDueDate" | "paymentMethod">>;
 
 /** Estados cuya venta debe contar en las estadísticas. */
 const COUNTABLE = new Set<TicketRecord["status"]>(["parsed", "needs_review"]);
@@ -59,6 +59,7 @@ export function analyticsInputsFromTicket(
       customerId: ticket.customerId,
       purchaseOrder: ticket.purchaseOrder,
       paymentDueDate: ticket.paymentDueDate,
+      paymentMethod: ticket.paymentMethod,
     },
   };
 }

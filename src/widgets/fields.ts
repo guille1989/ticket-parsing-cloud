@@ -28,7 +28,7 @@ export function isTicketLevelField(field: string): boolean {
 /** Pseudo-campo: cuenta tickets (eventos), no filas de ítem — ver queryBuilder.ts. */
 export const EVENT_COUNT_FIELD = "event_count";
 
-export const CATEGORICAL_FIELDS = ["port", "agent", "status", "parsedBy", "description", "customer", "volume"] as const;
+export const CATEGORICAL_FIELDS = ["port", "agent", "status", "parsedBy", "description", "customer", "volume", "paymentMethod"] as const;
 export type CategoricalField = (typeof CATEGORICAL_FIELDS)[number];
 
 /** Agrupaciones por ÍTEM (un valor por línea de producto, no por ticket). */
@@ -80,6 +80,8 @@ const CATEGORICAL_COLUMN_BY_FIELD: Record<CategoricalField, string> = {
   description: "description",
   // Solo las facturas electrónicas traen cliente; el resto queda en NULL.
   customer: "customername",
+  // Un valor por ticket (como "customer"); los tickets sin dato salen como NULL.
+  paymentMethod: "paymentmethod",
   volume: VOLUME_EXPRESSION,
 };
 

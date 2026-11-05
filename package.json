@@ -17,6 +17,7 @@
     "reparse-ticket": "tsx scripts/reparse-ticket.ts",
     "reconcile-analytics": "tsx scripts/reconcile-analytics.ts",
     "backfill-ubl-fields": "tsx scripts/backfill-ubl-fields.ts",
+    "backfill-payment-method": "tsx scripts/backfill-payment-method.ts",
     "admin": "tsx scripts/admin-console/server.ts",
     "agent-command": "tsx scripts/agent-command.ts",
     "delete-agent": "tsx scripts/delete-agent.ts",

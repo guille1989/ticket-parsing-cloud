@@ -245,7 +245,7 @@ function coherentOrNull(candidate: ParsedTicket | null): { ticket: ParsedTicket 
 }
 
 /** Campos que solo traen las facturas electrónicas: se escriben únicamente cuando el parseo los encontró. */
-const OPTIONAL_STRING_FIELDS = ["documentNumber", "docType", "customerName", "customerId", "purchaseOrder", "paymentDueDate"] as const;
+const OPTIONAL_STRING_FIELDS = ["documentNumber", "docType", "customerName", "customerId", "purchaseOrder", "paymentDueDate", "paymentMethod"] as const;
 
 /**
  * Escribe el resultado del parseo. En el camino automático (`onlyIfPending`) la

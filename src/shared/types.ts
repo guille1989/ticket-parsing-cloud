@@ -100,6 +100,8 @@ export interface TicketRecord {
   purchaseOrder?: string;
   /** `YYYY-MM-DD`. */
   paymentDueDate?: string;
+  /** Medio de pago normalizado (Efectivo, QR, Datafono…) — ver `ParsedTicket.paymentMethod`. */
+  paymentMethod?: string;
   parsedAt?: string;
   items?: ParsedItem[];
   total?: number;

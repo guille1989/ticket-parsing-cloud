@@ -71,6 +71,7 @@ export function buildAnalyticsBody(ctx: AnalyticsTicketContext, parsed: ParsedTi
       customerId: parsed.customerId ?? null,
       purchaseOrder: parsed.purchaseOrder ?? null,
       paymentDueDate: parsed.paymentDueDate ?? null,
+      paymentMethod: parsed.paymentMethod ?? null,
     }),
   );
 

@@ -48,6 +48,12 @@ export interface ParsedTicket {
   purchaseOrder?: string;
   /** Solo facturas electrónicas: fecha límite de pago, `YYYY-MM-DD`. */
   paymentDueDate?: string;
+  /**
+   * Con qué pagó el cliente ("Medio de pago" del ticket), normalizado a un
+   * conjunto cerrado (ver `PAYMENT_METHODS` en `bedrockShared.ts`) para que se
+   * pueda agrupar. Ausente = el ticket no lo trae o no se pudo leer.
+   */
+  paymentMethod?: string;
 }
 
 export interface TicketParser {

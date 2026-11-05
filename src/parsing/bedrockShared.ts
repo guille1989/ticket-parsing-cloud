@@ -6,7 +6,39 @@ import type { ParsedItem, ParsedTicket } from "./types.js";
  * parseo/validación del JSON que devuelve.
  */
 export const TICKET_JSON_SHAPE =
-  '{"items":[{"description":string,"quantity":number,"unitPrice":number,"subtotal":number,"voided":boolean}],"total":number,"tax":number|null,"taxBase":number|null,"discount":number|null,"tip":number|null,"timestamp":string|null}';
+  '{"items":[{"description":string,"quantity":number,"unitPrice":number,"subtotal":number,"voided":boolean}],"total":number,"tax":number|null,"taxBase":number|null,"discount":number|null,"tip":number|null,"paymentMethod":string|null,"timestamp":string|null}';
+
+/**
+ * Valores posibles de `paymentMethod`. Se le pide al modelo que copie el
+ * texto del ticket y acá se lleva a este conjunto cerrado: sin eso "QR",
+ * "qr ", "Código QR" y "Pago QR" serían cuatro barras distintas en un gráfico.
+ */
+export const PAYMENT_METHODS = ["Efectivo", "QR", "Datafono", "Tarjeta", "Nequi", "Daviplata", "Transferencia", "Rappi", "Mixto", "Otro"] as const;
+
+const PAYMENT_METHOD_PATTERNS: Array<[(typeof PAYMENT_METHODS)[number], RegExp]> = [
+  ["Efectivo", /\befectivo\b|\bcash\b/],
+  ["QR", /\bqr\b/],
+  ["Datafono", /\bdatafono\b/],
+  ["Tarjeta", /\btarjeta\b|\bcredito\b|\bdebito\b/],
+  ["Nequi", /\bnequi\b/],
+  ["Daviplata", /\bdaviplata\b/],
+  ["Transferencia", /\btransferencia\b|\bpse\b/],
+  ["Rappi", /\brappi\b/],
+];
+
+/**
+ * Lleva el "Medio de pago" leído a uno de `PAYMENT_METHODS`. `undefined` si no
+ * hay texto (el ticket no lo trae). Dos medios distintos en el mismo texto
+ * ("Efectivo y QR") = "Mixto"; texto que no se reconoce = "Otro".
+ */
+export function normalizePaymentMethod(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const text = normalizeDescription(raw);
+  if (!text) return undefined;
+  const found = PAYMENT_METHOD_PATTERNS.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+  if (found.length === 0) return "Otro";
+  return found.length === 1 ? found[0] : "Mixto";
+}
 
 /**
  * El modelo leyó bien el documento pero no es una venta — típicamente el
@@ -168,6 +200,7 @@ function validateShape(raw: Record<string, unknown>): ParsedTicket | NotASale | 
     taxBase: typeof raw.taxBase === "number" ? raw.taxBase : undefined,
     discount: typeof raw.discount === "number" ? raw.discount : undefined,
     tip: typeof raw.tip === "number" ? raw.tip : undefined,
+    paymentMethod: normalizePaymentMethod(raw.paymentMethod),
     timestamp,
   };
 }

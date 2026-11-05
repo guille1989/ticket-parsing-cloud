@@ -18,17 +18,17 @@ beforeEach(() => {
     tenant TEXT, year TEXT, ticketid TEXT, capturedat TEXT, port TEXT,
     agentid TEXT, parsedby TEXT, status TEXT, description TEXT,
     quantity REAL, unitprice REAL, subtotal REAL, voided INTEGER,
-    total REAL, discount REAL, tip REAL, tax REAL, doctype TEXT, customername TEXT
+    total REAL, discount REAL, tip REAL, tax REAL, doctype TEXT, customername TEXT, paymentmethod TEXT
   )`);
 });
 afterEach(() => db.close());
 
 function addTicket(ticketid: string, parsed: ParsedTicket, status = "parsed", capturedat = "2026-07-01T12:00:00.000Z") {
-  const insert = db.prepare("INSERT INTO ticket_analytics.ticket_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const insert = db.prepare("INSERT INTO ticket_analytics.ticket_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   for (const item of parsed.items) {
     insert.run("t1", capturedat.slice(0, 4), ticketid, capturedat, "COM3", "a1", "deterministic", status,
       item.description, item.quantity, item.unitPrice, item.subtotal, item.voided ? 1 : 0,
-      parsed.total, parsed.discount ?? null, parsed.tip ?? null, parsed.tax ?? null, parsed.docType ?? null, parsed.customerName ?? null);
+      parsed.total, parsed.discount ?? null, parsed.tip ?? null, parsed.tax ?? null, parsed.docType ?? null, parsed.customerName ?? null, parsed.paymentMethod ?? null);
   }
 }
 
@@ -120,6 +120,28 @@ test("solo las ventas cuentan: una compra o nota crédito no suma, y las filas s
   expect(query("total")).toEqual([{ value: 20 }]);
   expect(query("event_count")).toEqual([{ value: 2 }]);
   expect(query("subtotal", "sum", { groupBy: "description" })).toEqual([{ label: "Agua", value: 20 }]);
+});
+
+test("agrupar por medio de pago suma cada ticket una sola vez (aunque tenga varios ítems) y deja sin dato a los viejos", () => {
+  const ticket: ParsedTicket = { total: 10, timestamp: "2026-07-01T12:00:00.000Z", items: [
+    { description: "Agua", quantity: 1, unitPrice: 5, subtotal: 5 },
+    { description: "Hielo", quantity: 1, unitPrice: 5, subtotal: 5 },
+  ] };
+  addTicket("q1", { ...ticket, paymentMethod: "QR" });
+  addTicket("q2", { ...ticket, total: 30, paymentMethod: "QR" });
+  addTicket("e1", { ...ticket, total: 7, paymentMethod: "Efectivo" });
+  addTicket("viejo", { ...ticket, total: 3 });
+
+  expect(query("total", "sum", { groupBy: "paymentMethod" })).toEqual(expect.arrayContaining([
+    { label: "QR", value: 40 },
+    { label: "Efectivo", value: 7 },
+    { label: null, value: 3 },
+  ]));
+  expect(query("event_count", "count", { groupBy: "paymentMethod" })).toEqual(expect.arrayContaining([
+    { label: "QR", value: 2 },
+    { label: "Efectivo", value: 1 },
+    { label: null, value: 1 },
+  ]));
 });
 
 test("agrupar por cliente reparte el total por comprador y deja sin dato a las ventas sin cliente", () => {

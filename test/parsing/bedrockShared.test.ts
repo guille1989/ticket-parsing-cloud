@@ -1,4 +1,4 @@
-import { isNonProductLine, isNotASale, NOT_A_SALE, parseTicketJson } from "../../src/parsing/bedrockShared";
+import { isNonProductLine, isNotASale, normalizePaymentMethod, NOT_A_SALE, parseTicketJson } from "../../src/parsing/bedrockShared";
 import { checkEconomicCoherence } from "../../src/parsing/economicCoherence";
 import type { ParsedTicket } from "../../src/parsing/types";
 
@@ -73,6 +73,46 @@ describe("factura real con una línea de pago metida como ítem", () => {
   test("'Cambio' (el vuelto) tampoco es un producto", () => {
     const text = modelJson([item("TINTO", 1, 2500), item("Cambio", 1, 7500)], 2500);
     expect(asTicket(parseTicketJson(text)).items.map((i) => i.description)).toEqual(["TINTO"]);
+  });
+});
+
+describe("medio de pago", () => {
+  const withPayment = (paymentMethod: unknown) =>
+    JSON.stringify({
+      items: [item("Empanada de Carne", 2, 3050)],
+      total: 6100,
+      tax: null,
+      discount: null,
+      tip: null,
+      paymentMethod,
+      timestamp: "2026-09-11T23:41:31.000Z",
+    });
+
+  test("se lee el medio de pago de la factura (QR) sin tocar los ítems ni el total", () => {
+    const ticket = asTicket(parseTicketJson(withPayment("QR")));
+    expect(ticket.paymentMethod).toBe("QR");
+    expect(ticket.items.map((i) => i.description)).toEqual(["Empanada de Carne"]);
+    expect(checkEconomicCoherence(ticket).ok).toBe(true);
+  });
+
+  test("sin medio de pago (null o ausente) queda sin dato", () => {
+    expect(asTicket(parseTicketJson(withPayment(null))).paymentMethod).toBeUndefined();
+    expect(asTicket(parseTicketJson(modelJson([item("TINTO", 1, 2500)], 2500))).paymentMethod).toBeUndefined();
+  });
+
+  test.each([
+    ["qr ", "QR"],
+    ["Código QR", "QR"],
+    ["EFECTIVO", "Efectivo"],
+    ["Datáfono", "Datafono"],
+    ["Tarjeta de crédito", "Tarjeta"],
+    ["Transferencia bancaria", "Transferencia"],
+    ["Efectivo y QR", "Mixto"],
+    ["Bono de la casa", "Otro"],
+    ["   ", undefined],
+    [42, undefined],
+  ])("normalizePaymentMethod(%p) = %p", (raw, expected) => {
+    expect(normalizePaymentMethod(raw)).toBe(expected);
   });
 });
 

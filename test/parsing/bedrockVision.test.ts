@@ -9,7 +9,7 @@ jest.mock("@aws-sdk/client-bedrock-runtime", () => {
 });
 
 import { NOT_A_SALE } from "../../src/parsing/bedrockShared";
-import { tryBedrockVision } from "../../src/parsing/bedrockVision";
+import { tryBedrockPaymentMethod, tryBedrockVision } from "../../src/parsing/bedrockVision";
 import { UNATTRIBUTED_DESCRIPTION } from "../../src/parsing/taxSection";
 
 function bedrockTextResponse(text: string) {
@@ -56,6 +56,38 @@ test("manda cada franja como un bloque de imagen PNG y devuelve el ticket", asyn
   expect(images).toHaveLength(2);
   expect(images[0].image.format).toBe("png");
   expect(images[0].image.source.bytes).toBe(tiles[0]);
+});
+
+describe("tryBedrockPaymentMethod", () => {
+  test("lee y normaliza el medio de pago, y conserva el texto leído para auditar", async () => {
+    mockBedrockSend.mockResolvedValue(bedrockTextResponse('{"paymentMethod":"QR "}'));
+
+    const result = await tryBedrockPaymentMethod(tiles, "test-model");
+
+    expect(result).toEqual({ raw: "QR", paymentMethod: "QR" });
+    const input = mockBedrockSend.mock.calls[0][0].input;
+    expect(input.messages[0].content.filter((b: Record<string, unknown>) => "image" in b)).toHaveLength(2);
+  });
+
+  test.each([
+    ['{"paymentMethod":null}'],
+    ['{"paymentMethod":"  "}'],
+    ["no es json"],
+    ["{roto"],
+  ])("sin dato o respuesta ilegible (%s): raw null y sin medio de pago", async (text) => {
+    mockBedrockSend.mockResolvedValue(bedrockTextResponse(text));
+    expect(await tryBedrockPaymentMethod(tiles, "test-model")).toEqual({ raw: null });
+  });
+
+  test("texto que no se reconoce queda como Otro pero con el texto crudo a la vista", async () => {
+    mockBedrockSend.mockResolvedValue(bedrockTextResponse('{"paymentMethod":"Bono de la casa"}'));
+    expect(await tryBedrockPaymentMethod(tiles, "test-model")).toEqual({ raw: "Bono de la casa", paymentMethod: "Otro" });
+  });
+
+  test("sin franjas no llama a Bedrock", async () => {
+    expect(await tryBedrockPaymentMethod([], "test-model")).toEqual({ raw: null });
+    expect(mockBedrockSend).not.toHaveBeenCalled();
+  });
 });
 
 test("throttling una vez y después éxito: reintenta con backoff", async () => {

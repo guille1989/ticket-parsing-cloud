@@ -270,6 +270,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
             { name: "customerid", type: "string" },
             { name: "purchaseorder", type: "string" },
             { name: "paymentduedate", type: "string" },
+            { name: "paymentmethod", type: "string" },
           ],
         },
       },
