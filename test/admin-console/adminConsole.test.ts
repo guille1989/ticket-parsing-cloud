@@ -57,6 +57,7 @@ describe("datos", () => {
       { agentId: "a2", online: false, canDiagnose: false },
     ]);
     expect(send.mock.calls[0][0].input.ExpressionAttributeValues).toEqual({ ":pk": "TENANT#t1", ":prefix": "AGENT#" });
+    expect(data.versionCounts(agents)).toEqual({ "0.5.0": 1, "0.4.0": 1 });
   });
 
   test("createCommand crea un pending con TTL en la clave CMD# del agente", async () => {

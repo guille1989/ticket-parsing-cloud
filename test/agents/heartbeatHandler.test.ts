@@ -60,3 +60,10 @@ test("valida coordenadas antes de escribir", async () => {
   expect(result.statusCode).toBe(400);
   expect(mockDdbSend).not.toHaveBeenCalled();
 });
+
+test("rechaza version vacía o solo espacios", async () => {
+  mockResolveAgent.mockResolvedValue({ tenantId: "t1", agentId: "a1" });
+  const result = await handler(event("key-1", { version: "   " }));
+  expect(result.statusCode).toBe(400);
+  expect(mockDdbSend).not.toHaveBeenCalled();
+});

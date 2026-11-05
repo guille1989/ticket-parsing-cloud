@@ -69,7 +69,8 @@ export function createApp(data: AdminData, port: number, htmlPath: string) {
       if (agents && method === "GET") {
         const [, tenantId] = agents;
         assertId(tenantId);
-        return send(res, 200, { agents: await data.listAgents(tenantId) });
+        const listed = await data.listAgents(tenantId);
+        return send(res, 200, { agents: listed, versionCounts: data.versionCounts(listed) });
       }
 
       const commands = /^\/api\/tenants\/([^/]+)\/agents\/([^/]+)\/commands$/.exec(path);

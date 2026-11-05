@@ -27,10 +27,17 @@ async function main(): Promise<void> {
   if (args.length === 0) {
     for (const tenant of await data.listTenants()) {
       console.log(`${tenant.businessName}  [${tenant.status}]  ${tenant.tenantId}`);
-      for (const agent of await data.listAgents(tenant.tenantId)) {
+      const agents = await data.listAgents(tenant.tenantId);
+      for (const agent of agents) {
         const flag = agent.online ? "● en línea" : `○ visto ${ago(agent.lastSeenAt)}`;
         console.log(`    ${agent.name.padEnd(24)} v${(agent.version ?? "?").padEnd(8)} ${flag}${agent.canDiagnose ? "" : "   (sin diagnósticos: requiere v0.5.0)"}`);
       }
+      const counts = data.versionCounts(agents);
+      const summary = Object.entries(counts)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([version, n]) => `${version}×${n}`)
+        .join(", ");
+      if (summary) console.log(`    versions: ${summary}`);
     }
     console.log(`\nScripts: ${Object.keys(data.catalog).join(", ")}`);
     return;
