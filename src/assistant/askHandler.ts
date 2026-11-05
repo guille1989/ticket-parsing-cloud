@@ -6,6 +6,7 @@ import { checkAssistantRateLimit } from "./rateLimit.js";
 import { saveReport } from "./reportStore.js";
 import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { AGENTS_TABLE, ddb, TICKETS_TABLE } from "../shared/dynamo.js";
+import { getBusinessTimeZone } from "../shared/businessTimeZone.js";
 import { jsonResponse } from "../shared/http.js";
 import type { AgentRecord, TicketRecord, TicketStatus, WidgetAggregation, WidgetFilters, WidgetRecord, WidgetVisualization } from "../shared/types.js";
 import { PAYMENT_METHODS, resolvePaymentMethodFilter } from "../parsing/bedrockShared.js";
@@ -93,9 +94,19 @@ Si una herramienta devuelve un error, no adivines por qué falló ni le atribuya
  * El modelo no sabe qué día es: sin esto, "ventas de octubre" terminaba en
  * "¿octubre de qué año?" (2026-10-16). UTC, igual que el agrupado por "day".
  */
-function buildSystemPrompt(now: Date, timeZone?: string): string {
+function buildSystemPrompt(now: Date, timeZone?: string, zoneOwner: "business" | "user" = "user"): string {
   if (timeZone) {
     const localDate = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+    if (zoneOwner === "business") {
+      // Las horas son las del local aunque el usuario consulte desde otro país. Sin esta
+      // aclaración el modelo "confirmaba" otra zona (le dijo "hora colombiana" a horas de Madrid).
+      return (
+        `${SYSTEM_PROMPT}\n\nHoy es ${localDate} (zona horaria del negocio: ${timeZone}). ` +
+        `Todas las fechas y horas de las consultas están en la hora local del negocio (${timeZone}), sin importar desde dónde consulte el usuario. ` +
+        `Al nombrar una hora, es la hora del negocio. No conviertas horas a otra zona ni afirmes que están en otra: ` +
+        `si el usuario pregunta por otra zona horaria, explicale que las horas están en la del negocio (${timeZone}).`
+      );
+    }
     return `${SYSTEM_PROMPT}\n\nHoy es ${localDate} (zona horaria del usuario: ${timeZone}). Las fechas y horas de las consultas están en esa zona.`;
   }
   return `${SYSTEM_PROMPT}\n\nHoy es ${now.toISOString().slice(0, 10)} (fecha UTC).`;
@@ -822,8 +833,13 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
     return jsonResponse(429, { error: message });
   }
 
+  // La hora pico de un local se mira en la hora del local, no en la del navegador de quien
+  // consulta (que puede estar en otro país). La del navegador queda de respaldo.
+  const businessTimeZone = await getBusinessTimeZone(tenantId);
+  const timeZone = businessTimeZone ?? validation.timeZone;
+
   const modelId = process.env.BEDROCK_MODEL_ID!;
-  const systemPrompt = buildSystemPrompt(new Date(), validation.timeZone);
+  const systemPrompt = buildSystemPrompt(new Date(), timeZone, businessTimeZone ? "business" : "user");
   const tools = buildTools();
   const messages: Message[] = [
     ...validation.history.map((turn): Message => ({ role: turn.role, content: [{ text: turn.text }] })),
@@ -833,7 +849,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   // qué input, sin importar si tuvieron éxito (un intento de herramienta
   // inexistente también es una señal útil, ver logQa()).
   const toolCalls: ToolCallLog[] = [];
-  const toolContext: ToolContext = { timeZone: validation.timeZone };
+  const toolContext: ToolContext = { timeZone };
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {

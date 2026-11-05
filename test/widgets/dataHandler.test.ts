@@ -48,6 +48,47 @@ beforeEach(() => {
   mockRunWidgetQuery.mockReset();
 });
 
+describe("zona horaria de las horas del dashboard", () => {
+  const hourlyWidget = { ...validWidget, visualization: "line", metric: { field: "total", aggregation: "sum" }, groupBy: "hour" };
+
+  /** widgets -> el widget; tenants (nombre de tabla vacío en el test) -> el tenant dado. */
+  function mockStores(tenant: Record<string, unknown>) {
+    mockDdbSend.mockImplementation(async (command: { input: { TableName: string } }) =>
+      command.input.TableName === "TestWidgets" ? { Item: hourlyWidget } : { Item: { tenantId: "t1", ...tenant } },
+    );
+    mockRunWidgetQuery.mockResolvedValue([]);
+  }
+
+  test("con zona del negocio, agrupa por hora en esa zona aunque el navegador mande otra (dueño en Colombia mirando desde Europa)", async () => {
+    mockStores({ advisor: { timeZone: "America/Bogota" } });
+
+    const result = await handler(eventWith("w1", { tz: "Europe/Madrid" }));
+
+    expect(result.statusCode).toBe(200);
+    const sql = mockRunWidgetQuery.mock.calls[0][0] as string;
+    expect(sql).toContain("America/Bogota");
+    expect(sql).not.toContain("Europe/Madrid");
+  });
+
+  test("sin zona del negocio usa la del navegador (?tz=), como siempre", async () => {
+    mockStores({});
+
+    await handler(eventWith("w1", { tz: "Europe/Madrid" }));
+
+    expect(mockRunWidgetQuery.mock.calls[0][0]).toContain("Europe/Madrid");
+  });
+
+  test("sin ninguna de las dos, UTC", async () => {
+    mockStores({});
+
+    await handler(eventWith("w1"));
+
+    const sql = mockRunWidgetQuery.mock.calls[0][0] as string;
+    expect(sql).not.toContain("at_timezone");
+    expect(sql).toContain("substr(capturedat, 1, 13)");
+  });
+});
+
 test("corre la consulta de Athena para el widget guardado y devuelve los datos", async () => {
   mockDdbSend.mockResolvedValue({ Item: validWidget });
   mockRunWidgetQuery.mockResolvedValue([

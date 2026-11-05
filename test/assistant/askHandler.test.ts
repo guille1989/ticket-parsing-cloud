@@ -463,6 +463,61 @@ test("run_widget_query: descriptionContains (\"lo que diga horneadas\") llega al
   expect(params).toEqual(["tenant-x", "2026", "2026", "2026-10-01", "2026-10-31T23:59:59.999Z", "horne"]);
 });
 
+describe("zona horaria del negocio", () => {
+  /** El tenant se lee con un GetCommand; las escrituras (rate limit) siguen devolviendo {}. */
+  function mockTenant(tenant: Record<string, unknown> | undefined) {
+    mockDdbSend.mockImplementation(async (command: { constructor: { name: string } }) =>
+      command.constructor.name === "GetCommand" ? { Item: tenant } : {},
+    );
+  }
+  const hourlyQuestion = (extra: Record<string, unknown> = {}) =>
+    eventWith({ question: "¿cuáles son las horas pico?", timeZone: "Europe/Madrid", ...extra }, "tenant-x");
+
+  test("con zona del negocio: el prompt y el SQL usan la del negocio, no la del navegador (el bug de las 'horas colombianas' de Madrid)", async () => {
+    mockTenant({ tenantId: "tenant-x", advisor: { timeZone: "America/Bogota" } });
+    mockBedrockSend
+      .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "event_count", aggregation: "count", groupBy: "hour" }))
+      .mockResolvedValueOnce(textResponse("El pico es 17:00."));
+    mockRunAthenaQuery.mockResolvedValue([{ label: "2026-10-01 17", value: 3 }]);
+
+    const result = await handler(hourlyQuestion());
+
+    expect(result.statusCode).toBe(200);
+    const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+    expect(systemText).toContain("zona horaria del negocio: America/Bogota");
+    expect(systemText).toContain("No conviertas horas a otra zona");
+    expect(systemText).not.toContain("zona horaria del usuario");
+    const sql = mockRunAthenaQuery.mock.calls[0][0] as string;
+    expect(sql).toContain("America/Bogota");
+    expect(sql).not.toContain("Europe/Madrid");
+  });
+
+  test("sin zona del negocio: la del navegador, como antes", async () => {
+    mockTenant({ tenantId: "tenant-x" });
+    mockBedrockSend
+      .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "event_count", aggregation: "count", groupBy: "hour" }))
+      .mockResolvedValueOnce(textResponse("ok"));
+    mockRunAthenaQuery.mockResolvedValue([]);
+
+    await handler(hourlyQuestion());
+
+    const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+    expect(systemText).toContain("zona horaria del usuario: Europe/Madrid");
+    expect(mockRunAthenaQuery.mock.calls[0][0]).toContain("Europe/Madrid");
+  });
+
+  test("la fecha de 'hoy' también es la del negocio", async () => {
+    mockTenant({ tenantId: "tenant-x", advisor: { timeZone: "Pacific/Kiritimati" } }); // UTC+14: ya es otro día
+    mockBedrockSend.mockResolvedValue(textResponse("ok"));
+
+    await handler(hourlyQuestion({ timeZone: "Pacific/Pago_Pago" })); // UTC-11
+
+    const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+    const kiritimati = new Intl.DateTimeFormat("en-CA", { timeZone: "Pacific/Kiritimati" }).format(new Date());
+    expect(systemText).toContain(`Hoy es ${kiritimati} (zona horaria del negocio: Pacific/Kiritimati)`);
+  });
+});
+
 describe("medio de pago", () => {
   test("filters.paymentMethod (\"datafono\") llega al SQL como el valor exacto guardado", async () => {
     mockBedrockSend

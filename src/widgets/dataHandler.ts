@@ -2,6 +2,7 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
+import { getBusinessTimeZone } from "../shared/businessTimeZone.js";
 import { ATHENA_WORKGROUP, ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import type { WidgetRecord } from "../shared/types.js";
@@ -54,10 +55,13 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
 
   let query;
   let secondaryQuery;
+  // Zona del NEGOCIO (si la tiene configurada): las horas del dashboard son las del local, no las del
+  // navegador de quien mira (que puede estar en otro país). Sin zona del negocio, `?tz=` (navegador).
+  const businessTimeZone = await getBusinessTimeZone(tenantId);
   try {
-    // `?tz=America/Bogota` (zona del navegador): agrupa y filtra por día/hora local. Inválida o ausente → UTC.
+    // `?tz=America/Bogota`: agrupa y filtra por día/hora local. Inválida o ausente → UTC.
     const tzParam = event.queryStringParameters?.tz;
-    const timeZone = tzParam && isValidTimeZone(tzParam) ? tzParam : undefined;
+    const timeZone = businessTimeZone ?? (tzParam && isValidTimeZone(tzParam) ? tzParam : undefined);
     query = buildWidgetQuery({ ...widget, filters: mergedFilters }, undefined, timeZone);
     if (widget.secondaryMetric) {
       secondaryQuery = buildWidgetQuery({ ...widget, metric: widget.secondaryMetric, filters: mergedFilters }, undefined, timeZone);
