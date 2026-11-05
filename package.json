@@ -23,6 +23,7 @@
     "admin": "tsx scripts/admin-console/server.ts",
     "agent-command": "tsx scripts/agent-command.ts",
     "publish-agent-release": "tsx scripts/publish-agent-release.ts",
+    "set-desired-agent-version": "tsx scripts/set-desired-agent-version.ts",
     "delete-agent": "tsx scripts/delete-agent.ts",
     "advisor-run": "tsx scripts/advisor-run.ts",
     "set-tenant-timezone": "tsx scripts/set-tenant-timezone.ts",
@@ -48,6 +49,7 @@
     "@aws-sdk/client-dynamodb": "^3.1090.0",
     "@aws-sdk/client-s3": "^3.1090.0",
     "@aws-sdk/lib-dynamodb": "^3.1090.0",
+    "@aws-sdk/s3-request-presigner": "^3.1162.0",
     "@aws-sdk/util-dynamodb": "^3.996.0",
     "aws-cdk-lib": "^2.261.0",
     "constructs": "^10.5.0"

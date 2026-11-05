@@ -4,13 +4,31 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from "aws-lambda";
 import { resolveAgentByApiKeyId } from "../shared/agent.js";
 import { agentKey, AGENTS_TABLE, commandKey, commandSkPrefix, ddb } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
-import type { AgentCommandRecord } from "../shared/types.js";
+import type { AgentCommandRecord, AgentUpdateStatus } from "../shared/types.js";
 import { COMMAND_MAX_AGE_MS } from "./commandCatalog.js";
+import {
+  buildUpdateSignal,
+  loadGlobalDesiredVersion,
+  resolveDesiredVersion,
+  type AgentUpdateSignal,
+} from "./otaPolicy.js";
+
+const UPDATE_STATUSES = new Set<AgentUpdateStatus>([
+  "idle",
+  "downloading",
+  "verifying",
+  "pending_apply",
+  "ok",
+  "rolled_back",
+  "error",
+]);
 
 interface HeartbeatBody {
   name?: string;
   version?: string;
   location?: { label?: string; city?: string; lat?: number; lng?: number };
+  updateStatus?: AgentUpdateStatus;
+  updateError?: string;
 }
 
 function parseBody(raw: string | null): HeartbeatBody | undefined {
@@ -28,6 +46,14 @@ function parseBody(raw: string | null): HeartbeatBody | undefined {
       if (l.city !== undefined && (typeof l.city !== "string" || l.city.length > 120)) return undefined;
       if (l.lat !== undefined && (typeof l.lat !== "number" || !Number.isFinite(l.lat) || l.lat < -90 || l.lat > 90)) return undefined;
       if (l.lng !== undefined && (typeof l.lng !== "number" || !Number.isFinite(l.lng) || l.lng < -180 || l.lng > 180)) return undefined;
+    }
+    if (body.updateStatus !== undefined) {
+      if (typeof body.updateStatus !== "string" || !UPDATE_STATUSES.has(body.updateStatus as AgentUpdateStatus)) {
+        return undefined;
+      }
+    }
+    if (body.updateError !== undefined) {
+      if (typeof body.updateError !== "string" || body.updateError.length > 500) return undefined;
     }
     return body;
   } catch {
@@ -101,11 +127,34 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     values[`:${field}`] = typeof value === "string" ? value.trim() : value;
     updates.push(`#${field} = :${field}`);
   }
+  if (body.updateStatus !== undefined) {
+    names["#updateStatus"] = "updateStatus";
+    names["#updateStatusAt"] = "updateStatusAt";
+    values[":updateStatus"] = body.updateStatus;
+    values[":updateStatusAt"] = now;
+    updates.push("#updateStatus = :updateStatus", "#updateStatusAt = :updateStatusAt");
+    if (body.updateError !== undefined) {
+      names["#updateError"] = "updateError";
+      values[":updateError"] = body.updateError.trim();
+      updates.push("#updateError = :updateError");
+    } else if (body.updateStatus !== "error") {
+      updates.push("REMOVE updateError");
+    }
+  }
+
+  // DynamoDB no admite SET y REMOVE en la misma UpdateExpression mezclados mal;
+  // si hay REMOVE, lo separamos.
+  const setParts = updates.filter((u) => !u.startsWith("REMOVE "));
+  const removeParts = updates.filter((u) => u.startsWith("REMOVE ")).map((u) => u.slice("REMOVE ".length));
+  let updateExpression = `SET ${setParts.join(", ")}`;
+  if (removeParts.length > 0) {
+    updateExpression += ` REMOVE ${removeParts.join(", ")}`;
+  }
 
   await ddb.send(new UpdateCommand({
     TableName: AGENTS_TABLE,
     Key: agentKey(agent.tenantId, agent.agentId),
-    UpdateExpression: `SET ${updates.join(", ")}`,
+    UpdateExpression: updateExpression,
     ExpressionAttributeNames: names,
     ExpressionAttributeValues: values,
   }));
@@ -118,6 +167,25 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
   } catch (err) {
     console.error("No se pudieron consultar los comandos pendientes del agente", err);
   }
-  if (commands.length === 0) return { statusCode: 204, body: "" };
-  return jsonResponse(200, { commands });
+
+  let update: AgentUpdateSignal | undefined;
+  try {
+    const reported = typeof body.version === "string" ? body.version.trim() : "";
+    const globalDesired = await loadGlobalDesiredVersion();
+    const desired = resolveDesiredVersion(agent.desiredVersion, globalDesired);
+    if (desired && reported && desired !== reported) {
+      update = await buildUpdateSignal(desired);
+      if (!update) {
+        console.error(`OTA: no se pudo armar señal para desiredVersion=${desired}`);
+      }
+    }
+  } catch (err) {
+    console.error("No se pudo resolver la señal OTA del heartbeat", err);
+  }
+
+  if (commands.length === 0 && !update) return { statusCode: 204, body: "" };
+  return jsonResponse(200, {
+    ...(commands.length > 0 ? { commands } : {}),
+    ...(update ? { update } : {}),
+  });
 }

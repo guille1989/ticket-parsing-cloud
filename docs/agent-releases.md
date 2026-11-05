@@ -1,9 +1,10 @@
 # Agent releases (S3) — prerrequisito OTA
 
-Hosting del artefacto del **print-capture-agent** (`app.mjs`) para futuras
-actualizaciones OTA. Fase 0: bucket + convención + script de publicación.
-**Todavía no** hay auto-download en el agent ni señal `desiredVersion` en
-heartbeat (eso es Fase 1).
+Hosting del artefacto del **print-capture-agent** (`app.mjs`) para OTA.
+Fase 0: bucket + convención + script de publicación. Fase 1: el heartbeat
+autenticado puede devolver `{ update: { desiredVersion, url, sha256 } }`
+(URL firmada de corta vida) cuando hay `desiredVersion` distinta a la
+reportada.
 
 ## Bucket
 
@@ -64,11 +65,21 @@ El `app.mjs` sale de `agent-status-viewer` → `prepare-pilot.ps1`
 ## ACL / quién lee
 
 - Escritura: rol/usuario del pipeline de release (ops).
-- Lectura agents: **no** pública. Fase 1 entregará URL firmada de corta vida
-  o el hash vía respuesta de heartbeat autenticada con API key.
+- Lectura agents: **no** pública. Fase 1: Lambda de heartbeat tiene
+  `s3:GetObject` y firma una URL (~15 min) embebida en la respuesta.
+
+## Policy `desiredVersion` (Fase 1 — simple)
+
+| Ámbito | Dónde | Cómo setear |
+|--------|-------|-------------|
+| Global | DynamoDB Agents `pk=OTA#GLOBAL` `sk=POLICY` | `npm run set-desired-agent-version -- --version X.Y.Z --apply` |
+| Kill-switch | Misma fila, sin `desiredVersion` | `npm run set-desired-agent-version -- --clear --apply` |
+| Override agent | `AgentRecord.desiredVersion` | `… --tenant … --agent … --version … --apply` |
+
+Canary multi-tenant / porcentajes = Fase 2.
 
 ## Métricas
 
-El heartbeat ya persiste `version` en `Agents`. Admin CLI/consola muestran
-cada agent y un **resumen por versión** del tenant. Dashboard Cognito lista
-`version` por robot. Contadores `updateStatus` / `desiredVersion` = Fase 1+.
+El heartbeat persiste `version` y, si el agent lo manda, `updateStatus` /
+`updateStatusAt` / `updateError`. Admin CLI/consola muestran resumen por
+versión. Contadores de rollout por cohorte = Fase 2.
