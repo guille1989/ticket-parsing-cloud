@@ -253,6 +253,27 @@ test.each([
   expect(result.statusCode).toBe(400);
 });
 
+test("crea un KPI por medio de pago (filters.paymentMethod) normalizando al valor exacto; sirve con total", async () => {
+  const result = await handler(
+    eventWith({
+      name: "Ventas en QR",
+      visualization: "kpi",
+      metric: { field: "total", aggregation: "sum" },
+      filters: { paymentMethod: "qr" },
+    }),
+  );
+
+  expect(result.statusCode).toBe(201);
+  expect(JSON.parse(result.body).filters).toEqual({ paymentMethod: "QR" });
+});
+
+test.each([["bitcoin"], [""], [7], ["Otro medio"]])("rechaza filters.paymentMethod inválido: %p", async (paymentMethod) => {
+  const result = await handler(
+    eventWith({ name: "X", visualization: "kpi", metric: { field: "total", aggregation: "sum" }, filters: { paymentMethod } }),
+  );
+  expect(result.statusCode).toBe(400);
+});
+
 test("sin sesión de Cognito (sin claim de tenantId): 403, no toca DynamoDB", async () => {
   const result = await handler(eventWith({}, ""));
   expect(result.statusCode).toBe(403);

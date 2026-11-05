@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
+import { PAYMENT_METHODS, resolvePaymentMethodFilter } from "../parsing/bedrockShared.js";
 import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
@@ -113,6 +114,13 @@ function validateBody(body: unknown): Validation {
         return { ok: false, error: `filters.status inválido, se esperaba uno de: ${STATUSES.join(", ")}` };
       }
       filters.status = f.status;
+    }
+    if (f.paymentMethod !== undefined) {
+      const method = resolvePaymentMethodFilter(f.paymentMethod);
+      if (!method) {
+        return { ok: false, error: `filters.paymentMethod inválido, se esperaba uno de: ${PAYMENT_METHODS.join(", ")}` };
+      }
+      filters.paymentMethod = method;
     }
     if (f.descriptionContains !== undefined) {
       if (typeof f.descriptionContains !== "string" || f.descriptionContains.trim().length === 0 || f.descriptionContains.length > MAX_DESCRIPTION_LENGTH) {

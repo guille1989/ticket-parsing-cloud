@@ -15,6 +15,19 @@ export const TICKET_JSON_SHAPE =
  */
 export const PAYMENT_METHODS = ["Efectivo", "QR", "Datafono", "Tarjeta", "Nequi", "Daviplata", "Transferencia", "Rappi", "Mixto", "Otro"] as const;
 
+/**
+ * Para FILTRAR (no para leer un ticket): lleva lo que escribió quien consulta
+ * ("datafono", "Datáfono", "qr") al valor exacto guardado, o `undefined` si no
+ * es uno de `PAYMENT_METHODS`. A diferencia de `normalizePaymentMethod`, un
+ * texto desconocido NO cae en "Otro": filtrar por algo que no existe tiene que
+ * fallar a la vista, no devolver las ventas de "Otro".
+ */
+export function resolvePaymentMethodFilter(raw: unknown): (typeof PAYMENT_METHODS)[number] | undefined {
+  if (typeof raw !== "string") return undefined;
+  const text = normalizeDescription(raw);
+  return PAYMENT_METHODS.find((method) => normalizeDescription(method) === text);
+}
+
 const PAYMENT_METHOD_PATTERNS: Array<[(typeof PAYMENT_METHODS)[number], RegExp]> = [
   ["Efectivo", /\befectivo\b|\bcash\b/],
   ["QR", /\bqr\b/],

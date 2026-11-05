@@ -182,6 +182,12 @@ function buildWhere(widget: WidgetRecord, timeZone?: string): { whereClause: str
     conditions.push("agentid = ?");
     params.push(widget.filters.agentId);
   }
+  // Valor exacto de PAYMENT_METHODS (se valida al crear el widget / en la
+  // consulta del asistente). Es un dato del ticket, igual en todas sus filas.
+  if (widget.filters?.paymentMethod) {
+    conditions.push("paymentmethod = ?");
+    params.push(widget.filters.paymentMethod);
+  }
   if (widget.filters?.status) {
     conditions.push("status = ?");
     params.push(widget.filters.status);

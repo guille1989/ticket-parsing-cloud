@@ -8,6 +8,7 @@ import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { AGENTS_TABLE, ddb, TICKETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import type { AgentRecord, TicketRecord, TicketStatus, WidgetAggregation, WidgetFilters, WidgetRecord, WidgetVisualization } from "../shared/types.js";
+import { PAYMENT_METHODS, resolvePaymentMethodFilter } from "../parsing/bedrockShared.js";
 import { runWidgetQuery as runAthenaQuery, type WidgetDataPoint } from "../widgets/athenaQuery.js";
 import { dateFilterError } from "../widgets/dateFilters.js";
 import { extractProductVolume } from "./productVolume.js";
@@ -68,7 +69,7 @@ Para los datos de UNA sola sucursal ("¿qué se vende más en la sucursal Sol?",
 
 Clientes: si el negocio factura con factura electrónica, las ventas traen el cliente. Para "¿qué cliente compró más?" o "ventas por cliente" agrupá por "customer" (con "total" o "subtotal"). Si todo sale como "sin dato", ese negocio no registra clientes: decilo. Para una lista de ventas/facturas con el nombre del cliente en una columna, usá "list_tickets": cada ticket trae customerName, customerId y documentNumber (solo las facturas electrónicas los tienen; si un ticket no los trae, ponelo como "sin dato" y no digas que el sistema no captura clientes). Para las facturas de UN cliente concreto ("¿qué facturas son de X?") usá "list_tickets" con "customerContains" (un fragmento del nombre): busca en todo el historial. "list_tickets" sin ese filtro solo trae los más recientes, así que NUNCA concluyas que un cliente no existe porque no salió en esa lista; si un cliente salió en una consulta agrupada por "customer", existe.
 
-Medio de pago: las ventas de los negocios cuyo ticket lo imprime traen con qué pagó el cliente (Efectivo, QR, Datafono, Tarjeta, Nequi, Daviplata, Transferencia, Rappi, Mixto u Otro). Para "¿cuánto vendí en efectivo vs QR?" o "ventas por medio de pago" agrupá por "paymentMethod" (con "total" para ventas del negocio, o "event_count" para cantidad de tickets). Los tickets anteriores a que se capturara este dato (o que no lo traen) salen como "sin dato": mencionalo, no lo repartas entre los demás medios. "list_tickets" trae paymentMethod en cada ticket.
+Medio de pago: las ventas de los negocios cuyo ticket lo imprime traen con qué pagó el cliente (Efectivo, QR, Datafono, Tarjeta, Nequi, Daviplata, Transferencia, Rappi, Mixto u Otro). Para "¿cuánto vendí en efectivo vs QR?" o "ventas por medio de pago" agrupá por "paymentMethod" (con "total" para ventas del negocio, o "event_count" para cantidad de tickets). Para UN medio concreto ("¿cuánto pagaron con datafono?", "ventas en QR") usá el filtro "paymentMethod" con ese valor. NUNCA busques un medio de pago con "descriptionContains": no es un producto. Si el filtro o la agrupación no devuelve nada para un medio, la respuesta es que NO hay ventas pagadas con ese medio (decilo así, en cero); nunca la contestes con el total de otra consulta ni vuelvas a consultar sin el filtro de medio de pago para "encontrar" algo. Si preguntan por un medio y la agrupación solo muestra otros, decí cuáles medios hay y que ese no aparece. Los tickets anteriores a que se capturara este dato (o que no lo traen) salen como "sin dato": mencionalo, no lo repartas entre los demás medios. "list_tickets" trae paymentMethod en cada ticket.
 
 Formato de la respuesta: texto plano. Podés resaltar con **negrita** lo más importante (el nombre de la sucursal o producto y la cifra clave). Si piden una lista o una tabla con columnas, armala como tabla markdown (| col | col | con la fila |---|---|); fuera de eso, nada de #, tablas ni viñetas con asteriscos. No pongas símbolo de moneda ($, €…) porque no sabés la moneda del negocio: escribí solo el número (con separador de miles y hasta 2 decimales).
 
@@ -79,7 +80,7 @@ No pidas aclaraciones si la pregunta se puede contestar con una suposición razo
 - "Las horneadas", "lo que diga empanadas" y parecidos son un tipo de producto: usá el filtro "descriptionContains" con una raíz corta de la palabra, una consulta por cada tipo. La suma la hace la herramienta, no la calcules vos.
 - "Envases", "botellas", "presentaciones", "tamaños", "tipos" o "referencias" vendidas NO son una palabra que aparezca en los nombres: el tipo de envase/presentación viene dentro del nombre del producto (por ejemplo "AGUA TRATADA 350 ML SIN GAS", "AGUA TRATADA 600 ML BALA CON GAS"). NUNCA filtres con "descriptionContains" por una categoría genérica como "envase", "botella" o "producto". Agrupá por "description" con "quantity" (sum) —y si piden plata, también "subtotal"— en el periodo pedido, y presentá cada producto como una fila: el nombre del producto es el tipo de envase y la cantidad es el número de envases/unidades. Cada fila agrupada por producto trae "volume" (la medida que figura en el nombre, ej. "350 ML"; ausente si no tiene): si piden el volumen separado, ponelo en su propia columna (Producto | Volumen | Unidades) copiando "volume" tal cual, sin calcularlo vos. Si piden totales POR VOLUMEN (todo lo de 350 ML junto, con y sin gas), agrupá por "volume" (con "quantity" o "subtotal"): la herramienta ya suma por medida; las filas "(sin dato)" son productos sin medida en el nombre. Nunca sumes filas por volumen vos.
 - Si piden el "total del ticket"/"total de la factura" desglosado por producto, volumen o medida, ese total no se puede repartir entre los ítems: usá "subtotal" (valor de las líneas, antes de los impuestos del ticket) y decí explícitamente en la respuesta que usaste subtotal y por qué. El encabezado de la columna de cifras nombra la métrica real que devolvió la herramienta (campo "metric": "Subtotal", "Unidades"…), no la que pidió el usuario.
-- Cada cifra de una tabla se copia tal cual del resultado de la herramienta. Nunca multipliques, dividas ni derives importes (por ejemplo cantidad × precio) ni inventes precios: si te falta una cifra, volvé a consultar. Solo usá "descriptionContains" si el usuario nombra una palabra concreta que sí figura en los productos (una medida, "bala", "con gas"). Si el resultado viene vacío, volvé a consultar sin filtro de producto antes de decir que no hay datos.
+- Cada cifra de una tabla se copia tal cual del resultado de la herramienta. Nunca multipliques, dividas ni derives importes (por ejemplo cantidad × precio) ni inventes precios: si te falta una cifra, volvé a consultar. Solo usá "descriptionContains" si el usuario nombra una palabra concreta que sí figura en los productos (una medida, "bala", "con gas"). Si el resultado viene vacío con un filtro de producto ("descriptionContains"), volvé a consultar sin ese filtro antes de decir que no hay datos. Esa regla es SOLO para el filtro de producto: con "paymentMethod" (o "branch") un resultado vacío o en cero es la respuesta.
 Pedí aclaración solo si no hay ninguna interpretación razonable.
 
 Si la pregunta no tiene que ver con los datos del negocio (tickets, ventas, robots), respondé brevemente que solo podés ayudar con eso. Basá la respuesta únicamente en lo que devolvió la herramienta — si no hay datos, decilo en vez de inventar. Cuando uses datos reales, mencioná brevemente sobre qué te basaste (ej. cantidad de tickets).
@@ -128,6 +129,12 @@ function widgetQueryProperties() {
             type: "string",
             description:
               "Solo los datos de esta sucursal/local, por su nombre tal cual lo dijo el usuario, p. ej. 'Sol' (opcional). Sin este filtro la consulta abarca todas las sucursales.",
+          },
+          paymentMethod: {
+            type: "string",
+            enum: [...PAYMENT_METHODS],
+            description:
+              "Solo las ventas pagadas con este medio de pago (opcional). Es la forma de preguntar por efectivo, QR, datafono, etc.: NUNCA uses 'descriptionContains' para eso, un medio de pago no es un producto. Si no hay ventas con ese medio, el resultado viene en cero/vacío y eso ES la respuesta: no hay ventas pagadas así.",
           },
           descriptionContains: {
             type: "string",
@@ -189,7 +196,7 @@ function buildTools(): Tool[] {
       toolSpec: {
         name: "create_widget",
         description:
-          "Agrega un widget (KPI, barras, línea o dona) al dashboard del usuario. Valida la consulta con datos reales y devuelve una vista previa del valor. Un KPI es un solo número (sin groupBy); bar/donut necesitan groupBy; line necesita groupBy 'day' u 'hour'. Los widgets no admiten rango de fechas ni estado: solo los filtros branch y descriptionContains.",
+          "Agrega un widget (KPI, barras, línea o dona) al dashboard del usuario. Valida la consulta con datos reales y devuelve una vista previa del valor. Un KPI es un solo número (sin groupBy); bar/donut necesitan groupBy; line necesita groupBy 'day' u 'hour'. Los widgets no admiten rango de fechas ni estado: solo los filtros branch, descriptionContains y paymentMethod.",
         inputSchema: {
           json: {
             type: "object",
@@ -208,7 +215,11 @@ function buildTools(): Tool[] {
               groupBy: queryProperties.groupBy,
               filters: {
                 type: "object",
-                properties: { branch: queryProperties.filters.properties.branch, descriptionContains: queryProperties.filters.properties.descriptionContains },
+                properties: {
+                  branch: queryProperties.filters.properties.branch,
+                  descriptionContains: queryProperties.filters.properties.descriptionContains,
+                  paymentMethod: queryProperties.filters.properties.paymentMethod,
+                },
               },
             },
             required: ["name", "visualization", "field", "aggregation"],
@@ -302,6 +313,11 @@ async function parseQueryInput(
       filters.agentId = match.agentId;
       branchLabel = match.label;
     }
+    if (f.paymentMethod !== undefined) {
+      const method = resolvePaymentMethodFilter(f.paymentMethod);
+      if (!method) throw new Error(`paymentMethod inválido: "${String(f.paymentMethod)}". Válidos: ${PAYMENT_METHODS.join(", ")}`);
+      filters.paymentMethod = method;
+    }
     if (f.descriptionContains !== undefined && (typeof f.descriptionContains !== "string" || !f.descriptionContains.trim())) throw new Error("descriptionContains inválido");
     if (typeof f.descriptionContains === "string" && f.descriptionContains.trim()) {
       filters.descriptionContains = f.descriptionContains.trim().slice(0, MAX_DESCRIPTION_FILTER_LENGTH);
@@ -332,7 +348,20 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
   // El agentId es interno: al modelo se le devuelve el nombre de la sucursal consultada.
   const { agentId: _agentId, ...visibleFilters } = filters ?? {};
   const metaFilters = { ...visibleFilters, ...(branchLabel ? { branch: branchLabel } : {}) };
-  const meta = { metric: field, aggregation, ...(groupBy ? { groupBy } : {}), ...(Object.keys(metaFilters).length ? { filters: metaFilters } : {}) };
+  // Un filtro por medio de pago sin coincidencias llega como [{value: null}] o []: eso es una
+  // respuesta (no hay ventas así), no un fallo a "arreglar" consultando sin el filtro. Se dice
+  // explícito para que el modelo no lo reemplace por el total de otra consulta.
+  const noSalesNote =
+    filters?.paymentMethod && data.every((row) => !row.value)
+      ? { note: `No hay ventas pagadas con ${filters.paymentMethod} en este periodo (cero). Respondé eso; no vuelvas a consultar sin el filtro de medio de pago.` }
+      : {};
+  const meta = {
+    metric: field,
+    aggregation,
+    ...(groupBy ? { groupBy } : {}),
+    ...(Object.keys(metaFilters).length ? { filters: metaFilters } : {}),
+    ...noSalesNote,
+  };
   if (groupBy === "description") return { ...meta, data: data.map((row) => ({ ...row, volume: extractProductVolume(row.label) })) };
   if (groupBy !== "agent") return { ...meta, data };
 

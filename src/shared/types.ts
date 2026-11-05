@@ -239,6 +239,11 @@ export interface WidgetFilters {
    * horneadas") y los widgets que crea (`widgets/createHandler.ts`).
    */
   descriptionContains?: string;
+  /**
+   * Solo tickets pagados con este medio (uno de `PAYMENT_METHODS`, valor
+   * exacto). Los tickets sin medio de pago nunca coinciden con ningún valor.
+   */
+  paymentMethod?: string;
 }
 
 /**

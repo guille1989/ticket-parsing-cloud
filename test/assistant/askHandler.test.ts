@@ -463,6 +463,57 @@ test("run_widget_query: descriptionContains (\"lo que diga horneadas\") llega al
   expect(params).toEqual(["tenant-x", "2026", "2026", "2026-10-01", "2026-10-31T23:59:59.999Z", "horne"]);
 });
 
+describe("medio de pago", () => {
+  test("filters.paymentMethod (\"datafono\") llega al SQL como el valor exacto guardado", async () => {
+    mockBedrockSend
+      .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", filters: { paymentMethod: "datafono" } }))
+      .mockResolvedValueOnce(textResponse("No hay ventas con datafono."));
+    mockRunAthenaQuery.mockResolvedValue([{ value: null }]);
+
+    const result = await handler(eventWith({ question: "¿ventas con datafono?" }, "tenant-x"));
+
+    expect(result.statusCode).toBe(200);
+    const [sql, params] = mockRunAthenaQuery.mock.calls[0];
+    expect(sql).toContain("paymentmethod = ?");
+    expect(params).toContain("Datafono");
+  });
+
+  test("sin ventas con ese medio, el resultado dice explícito que es cero y que no hay que reconsultar sin el filtro", async () => {
+    mockBedrockSend
+      .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", filters: { paymentMethod: "Datafono" } }))
+      .mockResolvedValueOnce(textResponse("No hay ventas con datafono."));
+    mockRunAthenaQuery.mockResolvedValue([{ value: null }]);
+
+    await handler(eventWith({ question: "¿ventas con datafono?" }));
+
+    const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
+    const payload = JSON.parse(toolResult.content[0].text ?? JSON.stringify(toolResult.content[0].json));
+    expect(payload.filters).toEqual({ paymentMethod: "Datafono" });
+    expect(payload.note).toMatch(/No hay ventas pagadas con Datafono/);
+  });
+
+  test("con ventas en ese medio no hay nota", async () => {
+    mockBedrockSend
+      .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", filters: { paymentMethod: "QR" } }))
+      .mockResolvedValueOnce(textResponse("QR: 1.962.300"));
+    mockRunAthenaQuery.mockResolvedValue([{ value: 1962300 }]);
+
+    await handler(eventWith({ question: "¿ventas en QR?" }));
+
+    const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
+    const payload = JSON.parse(toolResult.content[0].text ?? JSON.stringify(toolResult.content[0].json));
+    expect(payload.note).toBeUndefined();
+  });
+
+  test("el prompt prohíbe buscar un medio de pago como producto y limita la regla de reconsultar al filtro de producto", async () => {
+    mockBedrockSend.mockResolvedValue(textResponse("ok"));
+    await handler(eventWith({ question: "hola" }));
+    const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+    expect(systemText).toContain('NUNCA busques un medio de pago con "descriptionContains"');
+    expect(systemText).toContain('Esa regla es SOLO para el filtro de producto');
+  });
+});
+
 test("el prompt lleva la fecha de hoy (sin ella el modelo preguntaba \"¿octubre de qué año?\")", async () => {
   mockBedrockSend.mockResolvedValue(textResponse("ok"));
   await handler(eventWith({ question: "hola" }));
@@ -592,6 +643,7 @@ test("build_report conserva ausencia del periodo anterior sin inventar cero", as
 test.each([
   null, [], "hoy", { dateFrom: "2026-02-31" },
   { dateFrom: "2026-10-31", dateTo: "2026-10-01" }, { port: 12 }, { status: "inexistente" }, { descriptionContains: 12 },
+  { paymentMethod: "bitcoin" }, { paymentMethod: 5 }, { paymentMethod: "Otro medio" },
 ])("run_widget_query rechaza filtros ambiguos o inválidos: %j", async (filters) => {
   mockBedrockSend
     .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", filters }))

@@ -144,6 +144,24 @@ test("agrupar por medio de pago suma cada ticket una sola vez (aunque tenga vari
   ]));
 });
 
+test("filtrar por medio de pago: valor exacto, un ticket una vez, y un medio sin ventas da NULL (no el total)", () => {
+  const ticket: ParsedTicket = { total: 10, timestamp: "2026-07-01T12:00:00.000Z", items: [
+    { description: "Agua", quantity: 1, unitPrice: 5, subtotal: 5 },
+    { description: "Hielo", quantity: 1, unitPrice: 5, subtotal: 5 },
+  ] };
+  addTicket("q1", { ...ticket, paymentMethod: "QR" });
+  addTicket("q2", { ...ticket, total: 30, paymentMethod: "QR" });
+  addTicket("e1", { ...ticket, total: 7, paymentMethod: "Efectivo" });
+  addTicket("viejo", { ...ticket, total: 3 });
+
+  expect(query("total", "sum", { filters: { paymentMethod: "QR" } })).toEqual([{ value: 40 }]);
+  expect(query("event_count", "count", { filters: { paymentMethod: "QR" } })).toEqual([{ value: 2 }]);
+  expect(query("subtotal", "sum", { filters: { paymentMethod: "Efectivo" } })).toEqual([{ value: 10 }]);
+  // El caso del bug: "datafono" no existe en los datos -> sin ventas, NO el total de todo (50).
+  expect(query("total", "sum", { filters: { paymentMethod: "Datafono" } })).toEqual([{ value: null }]);
+  expect(query("total", "sum")).toEqual([{ value: 50 }]);
+});
+
 test("agrupar por cliente reparte el total por comprador y deja sin dato a las ventas sin cliente", () => {
   const ticket: ParsedTicket = { total: 10, timestamp: "2026-07-01T12:00:00.000Z", items: [
     { description: "Agua", quantity: 1, unitPrice: 5, subtotal: 5 },
