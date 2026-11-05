@@ -74,7 +74,7 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = { tenants: [], catalog: {}, tenantId: null, agentId: null, agents: [], commands: [], open: new Set() };
+const state = { tenants: [], catalog: {}, tenantId: null, agentId: null, agents: [], versionCounts: {}, commands: [], open: new Set() };
 let pollTimer = null;
 
 const api = async (path, options) => {
@@ -137,6 +137,10 @@ function renderMain() {
     grid.append(card);
   }
   agentsCard.append(grid);
+  const countEntries = Object.entries(state.versionCounts || {}).sort(([a], [b]) => a.localeCompare(b));
+  if (countEntries.length) {
+    agentsCard.append(el("p", { className: "muted", textContent: "Versiones: " + countEntries.map(([v, n]) => `${v} × ${n}`).join(" · ") }));
+  }
   main.append(agentsCard);
 
   const agent = state.agents.find((a) => a.agentId === state.agentId);
@@ -203,8 +207,11 @@ async function request(scriptId, btn) {
 async function refreshAgents() {
   if (!state.tenantId) return;
   const tenantId = state.tenantId;
-  const { agents } = await api(`/api/tenants/${tenantId}/agents`);
-  if (state.tenantId === tenantId) state.agents = agents;
+  const { agents, versionCounts } = await api(`/api/tenants/${tenantId}/agents`);
+  if (state.tenantId === tenantId) {
+    state.agents = agents;
+    state.versionCounts = versionCounts || {};
+  }
 }
 
 async function refreshCommands() {
@@ -226,7 +233,7 @@ function schedulePoll() {
 }
 
 async function selectTenant(tenantId) {
-  state.tenantId = tenantId; state.agentId = null; state.agents = []; state.commands = []; state.loadingAgents = true;
+  state.tenantId = tenantId; state.agentId = null; state.agents = []; state.versionCounts = {}; state.commands = []; state.loadingAgents = true;
   history.replaceState(null, "", "#" + tenantId);
   renderTenants(); renderMain();
   try { await refreshAgents(); } catch (err) { $("main").append(el("div", { className: "banner bad", textContent: err.message })); }

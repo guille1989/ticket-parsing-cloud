@@ -18,7 +18,9 @@ function parseBody(raw: string | null): HeartbeatBody | undefined {
     const body = JSON.parse(raw ?? "{}") as HeartbeatBody;
     if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
     if (body.name !== undefined && (typeof body.name !== "string" || !body.name.trim() || body.name.length > 100)) return undefined;
-    if (body.version !== undefined && (typeof body.version !== "string" || body.version.length > 40)) return undefined;
+    // Versión vacía o solo espacios no aporta métricas de flota; se rechaza.
+    // Omitir el campo sigue siendo válido (agents viejos / probes).
+    if (body.version !== undefined && (typeof body.version !== "string" || !body.version.trim() || body.version.length > 40)) return undefined;
     if (body.location !== undefined) {
       const l = body.location;
       if (!l || typeof l !== "object" || Array.isArray(l)) return undefined;

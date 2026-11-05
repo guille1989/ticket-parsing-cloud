@@ -124,6 +124,16 @@ export function createAdminData(ddb: DynamoDBDocumentClient, tables: AdminTables
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  /** Conteo de agents por `version` reportada (métrica base Fase 0). */
+  function versionCounts(agents: AgentSummary[]): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const agent of agents) {
+      const key = agent.version?.trim() || "(sin versión)";
+      counts[key] = (counts[key] ?? 0) + 1;
+    }
+    return counts;
+  }
+
   async function listCommands(tenantId: string, agentId: string, limit = 20): Promise<AgentCommandRecord[]> {
     const result = await ddb.send(new QueryCommand({
       TableName: tables.agents,
@@ -172,7 +182,7 @@ export function createAdminData(ddb: DynamoDBDocumentClient, tables: AdminTables
     return record;
   }
 
-  return { listTenants, listAgents, listCommands, getCommand, createCommand, catalog: DIAGNOSTIC_SCRIPTS };
+  return { listTenants, listAgents, versionCounts, listCommands, getCommand, createCommand, catalog: DIAGNOSTIC_SCRIPTS };
 }
 
 export type AdminData = ReturnType<typeof createAdminData>;

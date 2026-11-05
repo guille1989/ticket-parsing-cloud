@@ -14,6 +14,17 @@ test("el stack sintetiza con las piezas clave del pipeline multi-tenant", () => 
   template.resourceCountIs("AWS::Lambda::EventSourceMapping", 2); // parser + sincronización analítica, ambos suscriptos al Stream de Tickets
   template.resourceCountIs("AWS::Cognito::UserPool", 1);
   template.resourceCountIs("AWS::Cognito::UserPoolClient", 1);
+  // Raw tickets + analytics + Athena results + agent releases (OTA Fase 0).
+  template.resourceCountIs("AWS::S3::Bucket", 4);
+  template.hasResourceProperties("AWS::S3::Bucket", {
+    VersioningConfiguration: { Status: "Enabled" },
+    PublicAccessBlockConfiguration: {
+      BlockPublicAcls: true,
+      BlockPublicPolicy: true,
+      IgnorePublicAcls: true,
+      RestrictPublicBuckets: true,
+    },
+  });
 
   // El agente sube tickets con SU api-key (o la del tenant, fallback legacy).
   template.hasResourceProperties("AWS::ApiGateway::Method", {

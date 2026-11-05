@@ -298,6 +298,7 @@ los pasos siguientes:
 | `UserPoolId` | env var `USER_POOL_ID` — la piden `onboard-tenant` y los tres scripts de administración de tenants |
 | `RawTicketsBucketName` | env var `RAW_BUCKET` — la pide `delete-tenant` |
 | `AnalyticsBucketName` | env var `ANALYTICS_BUCKET` — la pide `delete-tenant` |
+| `AgentReleasesBucketName` | env var `AGENT_RELEASES_BUCKET` — hosting OTA de `app.mjs` (ver [`docs/agent-releases.md`](docs/agent-releases.md)); `npm run publish-agent-release` |
 
 **¿No los guardaste?** Se pueden volver a pedir en cualquier momento:
 

@@ -49,6 +49,18 @@ export class TicketParsingCloudStack extends cdk.Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
     });
 
+    // ---- Releases del agent (OTA Fase 0: hosting; download en Fase 1) ----
+    // Prefijo canónico: agent-releases/<version>/app.mjs (+ .sha256 + manifest.json).
+    // Sin acceso público: escritura solo pipeline/ops; lectura vía URL firmada
+    // o señal de heartbeat en fases posteriores. Versionado S3 para no
+    // perder un objeto si alguien reescribe por error la misma key.
+    const agentReleasesBucket = new s3.Bucket(this, "AgentReleasesBucket", {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      versioned: true,
+      enforceSSL: true,
+    });
+
     const ticketsTable = new dynamodb.TableV2(this, "TicketsTable", {
       partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
@@ -1197,6 +1209,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
     new cdk.CfnOutput(this, "MattersTableName", { value: mattersTable.tableName });
     new cdk.CfnOutput(this, "RawTicketsBucketName", { value: rawTicketsBucket.bucketName });
     new cdk.CfnOutput(this, "AnalyticsBucketName", { value: analyticsBucket.bucketName });
+    new cdk.CfnOutput(this, "AgentReleasesBucketName", { value: agentReleasesBucket.bucketName });
     new cdk.CfnOutput(this, "AnalyticsDatabaseName", { value: analyticsDatabaseName });
     new cdk.CfnOutput(this, "AnalyticsTableName", { value: analyticsTableName });
     new cdk.CfnOutput(this, "AthenaWorkGroupName", { value: athenaWorkGroupName });
