@@ -21,6 +21,27 @@ export interface OnboardingState {
   starterDashboardCreatedAt?: string;
 }
 
+/** Horario de un día: abierto con open/close locales, o cerrado. */
+export type OpeningHoursDay = { open: string; close: string } | "closed";
+
+/**
+ * Ficha liviana del negocio (P1): moneda, locale, rubro y horarios declarados.
+ * Opcional — ausente = el especialista no afirma moneda ni abierto/cerrado.
+ */
+export interface TenantProfile {
+  /** Código ISO 4217, ej. "COP" | "USD". */
+  currency?: string;
+  /** Locale BCP 47, ej. "es-CO". */
+  locale?: string;
+  /** Rubro libre corto, ej. "restaurante", "retail". */
+  industry?: string;
+  /** Horarios en reloj de pared local del negocio (HH:MM). */
+  openingHours?: {
+    default?: { open: string; close: string };
+    byWeekday?: Partial<Record<"1" | "2" | "3" | "4" | "5" | "6" | "7", OpeningHoursDay>>;
+  };
+}
+
 export interface TenantRecord {
   tenantId: string;
   businessName: string;
@@ -66,6 +87,8 @@ export interface TenantRecord {
   onboarding?: OnboardingState;
   /** Preferencias del asistente-directivo Advisor (zona horaria, hora del briefing, correos). */
   advisor?: AdvisorSettings;
+  /** Ficha de negocio para Innova (moneda, horarios, rubro). Ausente = no cargada. */
+  profile?: TenantProfile;
 }
 
 export interface TicketRecord {

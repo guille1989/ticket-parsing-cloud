@@ -22,9 +22,24 @@ test("devuelve el perfil público y el onboarding", async () => {
   mockGetTenant.mockResolvedValue({ tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", parserId: "p1", onboarding: { version: 1 } });
   const result = await handler(eventWith("t1"));
   expect(JSON.parse(result.body)).toEqual({
-    tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", onboarding: { version: 1 }, features: { advisorView: false },
+    tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", onboarding: { version: 1 }, profile: null, features: { advisorView: false },
   });
   expect(result.body).not.toContain("parserId");
+});
+
+test("incluye la ficha de negocio cuando existe", async () => {
+  mockGetTenant.mockResolvedValue({
+    tenantId: "t1",
+    businessName: "Café Uno",
+    createdAt: "2026-08-12T10:00:00.000Z",
+    profile: { currency: "COP", industry: "restaurante", openingHours: { default: { open: "08:00", close: "20:00" } } },
+  });
+  const body = JSON.parse((await handler(eventWith("t1"))).body);
+  expect(body.profile).toEqual({
+    currency: "COP",
+    industry: "restaurante",
+    openingHours: { default: { open: "08:00", close: "20:00" } },
+  });
 });
 
 test("la vista beta del asistente solo se enciende con betaView exactamente en true", async () => {

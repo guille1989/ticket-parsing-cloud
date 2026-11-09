@@ -897,9 +897,9 @@ export class TicketParsingCloudStack extends cdk.Stack {
     );
 
     // ---- Perfil y onboarding del negocio -----------------------------
-    // GET /me expone únicamente metadatos públicos del tenant. PATCH
-    // persiste el recorrido y puede crear el dashboard inicial de forma
-    // transaccional e idempotente.
+    // GET /me expone metadatos públicos del tenant (incluye ficha profile).
+    // PATCH /me/onboarding persiste el recorrido y puede crear el dashboard
+    // inicial. PATCH /me/profile actualiza moneda/horarios/rubro (P1).
     const meGetFn = new nodejs.NodejsFunction(this, "MeGetFunction", {
       entry: "src/me/getHandler.ts",
       runtime: nodeRuntime,
@@ -918,7 +918,15 @@ export class TicketParsingCloudStack extends cdk.Stack {
         WIDGETS_TABLE: widgetsTable.tableName,
       },
     });
+    const profileUpdateFn = new nodejs.NodejsFunction(this, "ProfileUpdateFunction", {
+      entry: "src/me/updateProfileHandler.ts",
+      runtime: nodeRuntime,
+      bundling: sharedBundling,
+      timeout: cdk.Duration.seconds(10),
+      environment: { TENANTS_TABLE: tenantsTable.tableName },
+    });
     tenantsTable.grantReadWriteData(onboardingUpdateFn);
+    tenantsTable.grantReadWriteData(profileUpdateFn);
     agentsTable.grantReadData(onboardingUpdateFn);
     widgetsTable.grantWriteData(onboardingUpdateFn);
 
@@ -961,8 +969,9 @@ export class TicketParsingCloudStack extends cdk.Stack {
         TICKETS_TABLE: ticketsTable.tableName,
         // Para nombrar las sucursales (agentId -> etiqueta de ubicación) en las respuestas.
         AGENTS_TABLE: agentsTable.tableName,
-        // Tools list_matters / explain_matter (P0 especialista de negocio).
+        // Tools list_matters / explain_matter (P0) y list_widgets (P1).
         MATTERS_TABLE: mattersTable.tableName,
+        WIDGETS_TABLE: widgetsTable.tableName,
         ATHENA_WORKGROUP: athenaWorkGroupName,
         ASSISTANT_USAGE_TABLE: assistantUsageTable.tableName,
         REPORTS_TABLE: reportsTable.tableName,
@@ -974,6 +983,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
     ticketsTable.grantReadData(assistantAskFn);
     agentsTable.grantReadData(assistantAskFn);
     mattersTable.grantReadData(assistantAskFn);
+    widgetsTable.grantReadData(assistantAskFn);
     assistantUsageTable.grantReadWriteData(assistantAskFn);
     reportsTable.grantWriteData(assistantAskFn);
 
@@ -1061,7 +1071,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
       readFn, reviewFn, ticketImageFn,
       widgetsCreateFn, widgetsListFn, widgetsDeleteFn, widgetsFieldsFn, widgetsDataFn,
       agentsListFn, agentsCodesFn, agentsUpdateLocationFn,
-      meGetFn, onboardingUpdateFn, assistantAskFn,
+      meGetFn, onboardingUpdateFn, profileUpdateFn, assistantAskFn,
       reportsListFn, reportsGetFn, reportsDeleteFn,
       conversationsListFn, conversationGetFn, conversationSaveFn, conversationDeleteFn,
       mattersListFn, mattersUpdateFn,
@@ -1136,6 +1146,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
     const me = api.root.addResource("me");
     me.addMethod("GET", new apigateway.LambdaIntegration(meGetFn), dashboardAuth);
     me.addResource("onboarding").addMethod("PATCH", new apigateway.LambdaIntegration(onboardingUpdateFn), dashboardAuth);
+    me.addResource("profile").addMethod("PATCH", new apigateway.LambdaIntegration(profileUpdateFn), dashboardAuth);
 
     // /assistant/ask — dashboard humano logueado, no máquina (igual que
     // /tickets GET y /widgets). Ver "Asistente de datos (chat)" más arriba.
