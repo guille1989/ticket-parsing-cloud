@@ -466,7 +466,7 @@ test("run_widget_query: descriptionContains (\"lo que diga horneadas\") llega al
 
   expect(result.statusCode).toBe(200);
   const [sql, params] = mockRunAthenaQuery.mock.calls[0];
-  expect(sql).toContain("strpos(lower(description), lower(?)) > 0");
+  expect(sql).toContain("strpos(regexp_replace(normalize(lower(description), NFD)");
   expect(params).toEqual(["tenant-x", "2026", "2026", "2026-10-01", "2026-10-31T23:59:59.999Z", "horne"]);
 });
 

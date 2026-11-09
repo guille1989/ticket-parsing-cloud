@@ -20,6 +20,18 @@ import { dateFilterError, isDateOnly, normalizeDateFilter } from "./dateFilters.
 const ANALYTICS_DATABASE = "ticket_analytics";
 const ANALYTICS_TABLE = "ticket_items";
 
+/**
+ * Descripción del ítem en minúsculas y sin tildes (NFD + quitar marcas
+ * combinantes), para buscar por nombre de producto sin importar mayúsculas ni
+ * acentos: "cafe" tiene que encontrar "Café solo". Debe coincidir con
+ * `normalizeSearchText`, que normaliza el texto buscado.
+ */
+export const DESCRIPTION_SEARCH_EXPR = "regexp_replace(normalize(lower(description), NFD), '\\p{M}', '')";
+
+export function normalizeSearchText(text: string): string {
+  return text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+}
+
 // Tope de categorías de un widget (barras/dona). El dashboard las muestra
 // todas con scroll, así que tiene que cubrir el catálogo de un negocio:
 // con 50, el widget por producto de Empanadas Típicas ya llegaba justo al
@@ -209,8 +221,8 @@ function buildWhere(widget: WidgetRecord, timeZone?: string): { whereClause: str
   // strpos y no LIKE: así un "%" o "_" en el texto se busca tal cual, sin
   // tener que escaparlo como comodín.
   if (widget.filters?.descriptionContains) {
-    conditions.push("strpos(lower(description), lower(?)) > 0");
-    params.push(widget.filters.descriptionContains);
+    conditions.push(`strpos(${DESCRIPTION_SEARCH_EXPR}, ?) > 0`);
+    params.push(normalizeSearchText(widget.filters.descriptionContains));
   }
 
   return { whereClause: conditions.join(" AND "), params };

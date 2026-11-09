@@ -1,4 +1,4 @@
-import { buildWidgetQuery } from "../../src/widgets/queryBuilder";
+import { buildWidgetQuery, DESCRIPTION_SEARCH_EXPR } from "../../src/widgets/queryBuilder";
 import type { WidgetRecord } from "../../src/shared/types";
 
 // Sin `dateFrom`/`dateTo` explícitos, el año por default sale de "ahora"
@@ -129,9 +129,16 @@ test("descriptionContains filtra por nombre de producto sin distinguir mayúscul
   const { sql, params } = buildWidgetQuery(
     widget({ metric: { field: "subtotal", aggregation: "sum" }, filters: { descriptionContains: "Horne" } }),
   );
-  expect(sql).toContain("strpos(lower(description), lower(?)) > 0");
+  expect(sql).toContain(`strpos(${DESCRIPTION_SEARCH_EXPR}, ?) > 0`);
   expect(sql).not.toContain("Horne");
-  expect(params.at(-1)).toBe("Horne");
+  expect(params.at(-1)).toBe("horne");
+});
+
+test("descriptionContains se normaliza sin tildes: 'Café' y 'cafe' buscan lo mismo", () => {
+  const { params } = buildWidgetQuery(
+    widget({ metric: { field: "subtotal", aggregation: "sum" }, filters: { descriptionContains: "Café" } }),
+  );
+  expect(params.at(-1)).toBe("cafe");
 });
 
 test("descriptionContains con un campo del ticket (total) se rechaza: sumaría tickets enteros, no el producto", () => {

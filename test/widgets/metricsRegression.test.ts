@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { example38ColParser } from "../../src/parsing/parsers/example38col";
 import type { ParsedTicket } from "../../src/parsing/types";
 import type { WidgetRecord } from "../../src/shared/types";
-import { buildWidgetQuery } from "../../src/widgets/queryBuilder";
+import { buildWidgetQuery, DESCRIPTION_SEARCH_EXPR, normalizeSearchText } from "../../src/widgets/queryBuilder";
 
 // Ejecuta el subconjunto SQL compartido por Athena/SQLite sobre filas reales.
 // Así se comprueban resultados económicos y deduplicación, no solo el SQL.
@@ -13,6 +13,8 @@ let db: DatabaseSync;
 beforeEach(() => {
   db = new DatabaseSync(":memory:");
   db.function("strpos", (value, search) => String(value).indexOf(String(search)) + 1);
+  // SQLite no tiene normalize/regexp_replace de Trino: se emula la misma regla.
+  db.function("strip_accents", (value) => normalizeSearchText(String(value)));
   db.exec("ATTACH DATABASE ':memory:' AS ticket_analytics");
   db.exec(`CREATE TABLE ticket_analytics.ticket_items (
     tenant TEXT, year TEXT, ticketid TEXT, capturedat TEXT, port TEXT,
@@ -38,7 +40,7 @@ function query(field: string, aggregation: "sum" | "avg" | "count" = "sum", extr
     metric: { field, aggregation }, filters: { dateFrom: "2026-01-01", dateTo: "2026-12-31" }, ...extras,
   };
   const { sql, params } = buildWidgetQuery(widget);
-  return db.prepare(sql).all(...params);
+  return db.prepare(sql.replaceAll(DESCRIPTION_SEARCH_EXPR, "strip_accents(description)")).all(...params);
 }
 
 test("fixture con anulación: ventas 5250, tres unidades y ningún comprador de la hamburguesa anulada", () => {
@@ -51,6 +53,13 @@ test("fixture con anulación: ventas 5250, tres unidades y ningún comprador de 
   expect(query("event_count")).toEqual([{ value: 1 }]);
   expect(query("event_count", "count", { filters: { descriptionContains: "Hamburguesa" } })).toEqual([{ value: 0 }]);
   expect(query("event_count", "count", { groupBy: "description" }).map((row) => row.label)).not.toContain("Hamburguesa Compl.");
+});
+
+test("descriptionContains encuentra 'Café solo' buscando 'cafe' (sin tildes ni mayúsculas)", () => {
+  addTicket("cafe", { total: 10, timestamp: "2026-07-01T12:00:00.000Z", items: [{ description: "Café solo", quantity: 2, unitPrice: 5, subtotal: 10 }] });
+
+  expect(query("quantity", "sum", { filters: { dateFrom: "2026-01-01", dateTo: "2026-12-31", descriptionContains: "cafe" } })).toEqual([{ value: 2 }]);
+  expect(query("quantity", "sum", { filters: { dateFrom: "2026-01-01", dateTo: "2026-12-31", descriptionContains: "CAFÉ" } })).toEqual([{ value: 2 }]);
 });
 
 test("las métricas por defecto cuentan parsed y needs_review; el filtro de estado y los diagnósticos los separan", () => {
