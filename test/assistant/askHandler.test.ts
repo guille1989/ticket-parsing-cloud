@@ -18,7 +18,13 @@ jest.mock("@aws-sdk/client-bedrock-runtime", () => {
 });
 jest.mock("../../src/shared/dynamo", () => {
   const actual = jest.requireActual("../../src/shared/dynamo");
-  return { ...actual, ddb: { send: (...args: unknown[]) => mockDdbSend(...args) }, TICKETS_TABLE: "TestTickets", AGENTS_TABLE: "TestAgents" };
+  return {
+    ...actual,
+    ddb: { send: (...args: unknown[]) => mockDdbSend(...args) },
+    TICKETS_TABLE: "TestTickets",
+    AGENTS_TABLE: "TestAgents",
+    MATTERS_TABLE: "TestMatters",
+  };
 });
 jest.mock("../../src/widgets/athenaQuery", () => ({
   runWidgetQuery: (...args: unknown[]) => mockRunAthenaQuery(...args),
@@ -973,4 +979,177 @@ test("create_widget: el prompt la describe y manda pasar las condiciones como fi
   const input = mockBedrockSend.mock.calls[0][0].input;
   expect(input.system[0].text).toContain('"create_widget"');
   expect(input.toolConfig.tools.map((t: { toolSpec: { name: string } }) => t.toolSpec.name)).toContain("create_widget");
+});
+
+describe("P0 especialista de negocio (Innova)", () => {
+  function mockTenantAndAgents(tenant: Record<string, unknown>, agents: unknown[] = BRANCH_AGENTS) {
+    mockDdbSend.mockImplementation(async (command: { constructor: { name: string }; input: { TableName?: string } }) => {
+      if (command.constructor.name === "GetCommand" && command.input.TableName !== "TestMatters") {
+        return { Item: tenant };
+      }
+      if (command.input.TableName === "TestAgents") return { Items: agents };
+      return {};
+    });
+  }
+
+  test("el prompt se presenta como Innova especialista y conserva reglas anti-alucinación", async () => {
+    mockBedrockSend.mockResolvedValue(textResponse("ok"));
+    await handler(eventWith({ question: "hola" }));
+    const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+    expect(systemText).toContain("Sos Innova, el especialista del negocio");
+    expect(systemText).not.toContain("Sos el asistente de datos");
+    expect(systemText).toContain("nunca inventes números");
+    expect(systemText).toContain("list_matters");
+    expect(systemText).toContain("explain_matter");
+    expect(systemText).toContain('agrupá por "hourOfDay"');
+  });
+
+  test("inyecta businessName, zona y sucursales en el system prompt", async () => {
+    mockTenantAndAgents(
+      { tenantId: "tenant-x", businessName: "Empanadas El Sol", advisor: { timeZone: "America/Bogota" } },
+      [
+        { agentId: "a1", name: "Robot Centro", location: { label: "Centro" } },
+        { agentId: "a2", name: "Robot Chapinero", location: { label: "Chapinero" } },
+      ],
+    );
+    mockBedrockSend.mockResolvedValue(textResponse("ok"));
+
+    await handler(eventWith({ question: "hola", timeZone: "Europe/Madrid" }, "tenant-x"));
+
+    const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+    expect(systemText).toContain("Nombre: Empanadas El Sol");
+    expect(systemText).toContain("Sucursales (robots): Centro, Chapinero");
+    expect(systemText).toContain("Moneda: (no definida)");
+    expect(systemText).toContain("Horarios: (no cargados");
+    expect(systemText).toContain("zona horaria del negocio: America/Bogota");
+  });
+
+  test("registra tools list_matters y explain_matter", async () => {
+    mockBedrockSend.mockResolvedValue(textResponse("ok"));
+    await handler(eventWith({ question: "hola" }));
+    const names = mockBedrockSend.mock.calls[0][0].input.toolConfig.tools.map(
+      (t: { toolSpec: { name: string } }) => t.toolSpec.name,
+    );
+    expect(names).toEqual(expect.arrayContaining(["list_matters", "explain_matter", "run_widget_query", "list_tickets"]));
+  });
+
+  test("matterId inválido → 400", async () => {
+    const result = await handler(eventWith({ question: "explicame", matterId: "no es base64!" }));
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body).error).toContain("matterId");
+    expect(mockBedrockSend).not.toHaveBeenCalled();
+  });
+
+  test("matterId válido prefija el mensaje al modelo para forzar explain_matter", async () => {
+    const matterId = Buffer.from("2026-11-09#agent_offline#branch:a1", "utf-8").toString("base64url");
+    mockBedrockSend.mockResolvedValue(textResponse("ok"));
+
+    const result = await handler(
+      eventWith({ question: "Explícame este aviso: TPV Sol offline", matterId }, "tenant-x"),
+    );
+
+    expect(result.statusCode).toBe(200);
+    // El array messages se muta después: miramos lo que se envió en la 1ª llamada a Bedrock.
+    const userText = mockBedrockSend.mock.calls[0][0].input.messages[0].content[0].text as string;
+    expect(userText).toContain(`matterId="${matterId}"`);
+    expect(userText).toContain("explain_matter");
+    expect(userText).toContain("Explícame este aviso: TPV Sol offline");
+  });
+
+  test("list_matters: el modelo recibe avisos públicos sin claves internas", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    mockBedrockSend
+      .mockResolvedValueOnce(toolUseResponse("tu1", "list_matters", { limit: 5 }))
+      .mockResolvedValueOnce(textResponse("Hay 1 aviso abierto."));
+    mockDdbSend.mockImplementation(async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      if (command.constructor.name === "GetCommand") return { Item: { tenantId: "tenant-x", businessName: "Demo" } };
+      if (command.input.TableName === "TestMatters") {
+        return {
+          Items: [
+            {
+              pk: "TENANT#tenant-x",
+              sk: `MATTER#${today}#agent_offline#branch:a1`,
+              tenantId: "tenant-x",
+              detector: "agent_offline",
+              scope: "branch:a1",
+              periodDate: today,
+              severity: "warn",
+              status: "new",
+              evidence: { agentName: "Caja 1", minutesSinceSeen: 45 },
+              createdAt: "2026-11-09T12:00:00Z",
+              updatedAt: "2026-11-09T12:00:00Z",
+              ttl: 1,
+            },
+          ],
+        };
+      }
+      if (command.input.TableName === "TestAgents") {
+        return { Items: [{ agentId: "a1", name: "Caja 1", location: { label: "Sede Norte" } }] };
+      }
+      return {};
+    });
+
+    const result = await handler(eventWith({ question: "¿qué avisos hay?" }, "tenant-x"));
+
+    expect(result.statusCode).toBe(200);
+    const payload = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult.content[0].json;
+    expect(payload.matters).toHaveLength(1);
+    expect(payload.matters[0]).toMatchObject({
+      detector: "agent_offline",
+      severity: "warn",
+      status: "new",
+      branchLabel: "Sede Norte",
+      title: expect.stringContaining("Sede Norte"),
+    });
+    expect(payload.matters[0]).not.toHaveProperty("pk");
+    expect(payload.matters[0]).not.toHaveProperty("ttl");
+  });
+
+  test("explain_matter: devuelve evidence y chequeos sin inventar causas", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const matterId = Buffer.from(`${today}#capture_zero#branch:a1`, "utf-8").toString("base64url");
+    mockBedrockSend
+      .mockResolvedValueOnce(toolUseResponse("tu1", "explain_matter", { matterId }))
+      .mockResolvedValueOnce(textResponse("Revisá la impresora."));
+    mockDdbSend.mockImplementation(async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      if (command.input.TableName === "TestMatters" && command.constructor.name === "GetCommand") {
+        return {
+          Item: {
+            pk: "TENANT#tenant-x",
+            sk: `MATTER#${today}#capture_zero#branch:a1`,
+            tenantId: "tenant-x",
+            detector: "capture_zero",
+            scope: "branch:a1",
+            periodDate: today,
+            severity: "critical",
+            status: "new",
+            expected: 12,
+            actual: 0,
+            evidence: { windowHours: 3, agentName: "Caja 1" },
+            createdAt: "2026-11-09T12:00:00Z",
+            updatedAt: "2026-11-09T12:00:00Z",
+            ttl: 1,
+          },
+        };
+      }
+      if (command.constructor.name === "GetCommand") return { Item: { tenantId: "tenant-x", businessName: "Demo" } };
+      if (command.input.TableName === "TestAgents") {
+        return { Items: [{ agentId: "a1", name: "Caja 1", location: { label: "Sede Norte" } }] };
+      }
+      return {};
+    });
+
+    const result = await handler(eventWith({ question: "explicame el aviso", matterId }, "tenant-x"));
+
+    expect(result.statusCode).toBe(200);
+    const payload = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult.content[0].json;
+    expect(payload).toMatchObject({
+      detector: "capture_zero",
+      expected: 12,
+      actual: 0,
+      evidence: { windowHours: 3, agentName: "Caja 1" },
+    });
+    expect(payload.checks.length).toBeGreaterThan(0);
+    expect(payload.note).toMatch(/No inventes/);
+  });
 });

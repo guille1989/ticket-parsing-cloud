@@ -961,6 +961,8 @@ export class TicketParsingCloudStack extends cdk.Stack {
         TICKETS_TABLE: ticketsTable.tableName,
         // Para nombrar las sucursales (agentId -> etiqueta de ubicación) en las respuestas.
         AGENTS_TABLE: agentsTable.tableName,
+        // Tools list_matters / explain_matter (P0 especialista de negocio).
+        MATTERS_TABLE: mattersTable.tableName,
         ATHENA_WORKGROUP: athenaWorkGroupName,
         ASSISTANT_USAGE_TABLE: assistantUsageTable.tableName,
         REPORTS_TABLE: reportsTable.tableName,
@@ -971,6 +973,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
     grantAnalyticsQueryAccess(assistantAskFn);
     ticketsTable.grantReadData(assistantAskFn);
     agentsTable.grantReadData(assistantAskFn);
+    mattersTable.grantReadData(assistantAskFn);
     assistantUsageTable.grantReadWriteData(assistantAskFn);
     reportsTable.grantWriteData(assistantAskFn);
 
