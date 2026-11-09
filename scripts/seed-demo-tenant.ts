@@ -702,16 +702,19 @@ async function main(): Promise<void> {
 
   // 1) Tenant — el onboarding va completo para que el demo abra directo en el dashboard.
   const created = new Date(from.getTime() - 2 * 86400000).toISOString();
-  await ddb.send(new PutCommand({
+  // UpdateItem y no PutItem: un Put reemplaza el registro entero y borraba `advisor` (interruptor de
+  // Innova beta y zona horaria) cada vez que se estiraba el demo. Así solo se tocan estos campos.
+  await ddb.send(new UpdateCommand({
     TableName: env.tenants,
-    Item: {
-      pk: `TENANT#${TENANT_ID}`,
-      tenantId: TENANT_ID,
-      businessName: BUSINESS_NAME,
-      parserId: "example-38col",
-      portParsers: {},
-      createdAt: created,
-      onboarding: { version: 1, startedAt: created, completedAt: created, productTourCompletedAt: created, starterDashboardCreatedAt: created },
+    Key: { pk: `TENANT#${TENANT_ID}` },
+    UpdateExpression: "SET tenantId = :tenantId, businessName = :businessName, parserId = :parserId, portParsers = :portParsers, createdAt = :createdAt, onboarding = :onboarding",
+    ExpressionAttributeValues: {
+      ":tenantId": TENANT_ID,
+      ":businessName": BUSINESS_NAME,
+      ":parserId": "example-38col",
+      ":portParsers": {},
+      ":createdAt": created,
+      ":onboarding": { version: 1, startedAt: created, completedAt: created, productTourCompletedAt: created, starterDashboardCreatedAt: created },
     },
   }));
   console.log("\nTenant escrito.");
