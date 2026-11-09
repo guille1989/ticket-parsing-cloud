@@ -24,7 +24,7 @@
 //   npx tsx scripts/seed-demo-tenant.ts                  # corrida en seco: solo estadísticas
 //   npx tsx scripts/seed-demo-tenant.ts --apply          # escribe en AWS
 //   npx tsx scripts/seed-demo-tenant.ts --heartbeat      # mantiene "en línea" a los 4 robots (dejar abierto durante la demo)
-//   opciones: --months 3   --until 2026-10-20T10:00:00Z   --credentials-file ../demo-credenciales.txt
+//   opciones: --months 3   --from 2026-07-20 (pisa --months)   --until 2026-10-20T10:00:00Z   --credentials-file ../demo-credenciales.txt
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
@@ -342,7 +342,29 @@ interface GeneratedTicket {
   tax?: number;
   discount?: number;
   tip?: number;
+  /** Medio de pago normalizado (uno de PAYMENT_METHODS). */
+  paymentMethod?: string;
   failReason?: string;
+}
+
+/**
+ * Medio de pago de un ticket. Usa su propio generador (sembrado por el ticketId)
+ * y NO el de la generación del día: así agregar este campo no cambia ni un ítem
+ * ni un total de los tickets que ya están cargados.
+ */
+function pickPaymentMethod(ticketId: string, branch: Branch, total: number): string {
+  const rng = makeRng(`pay|${ticketId}`);
+  // Lavapiés paga más en efectivo; Salamanca y Sol (turistas) más con tarjeta.
+  const cashBias: Record<string, number> = { sol: 0.8, salamanca: 0.6, chamberi: 0.9, lavapies: 1.5 };
+  const amountCash = total < 5 ? 3 : total < 12 ? 1.5 : 0.7; // las compras chicas van en efectivo
+  const options: Array<[string, number]> = [
+    ["Efectivo", 30 * (cashBias[branch.key] ?? 1) * amountCash],
+    ["Datafono", 30],
+    ["Tarjeta", 20],
+    ["QR", 8],
+    ["Mixto", total > 10 ? 3 : 0],
+  ];
+  return rng.weighted(options, ([, weight]) => weight)![0];
 }
 
 /** Peso de cada hora local (7…21) en día laborable y en fin de semana. */
@@ -507,6 +529,7 @@ function generateDay(branch: Branch, y: number, mo: number, d: number, now: Date
       parsedBy: needsReview ? "bedrock-fallback" : "deterministic",
       items: built.items,
       ...money,
+      paymentMethod: pickPaymentMethod(ticketId, branch, money.total),
     });
   }
   return tickets;
@@ -590,6 +613,7 @@ function ticketToDynamoItem(t: GeneratedTicket, agentIdByBranch: Map<string, str
     tax: t.tax ?? null,
     discount: t.discount ?? null,
     tip: t.tip ?? null,
+    paymentMethod: t.paymentMethod,
     parsedBy: t.parsedBy,
   };
 }
@@ -613,6 +637,7 @@ function analyticsRows(t: GeneratedTicket, agentId: string): string[] {
       tip: t.tip ?? null,
       tax: t.tax ?? null,
       total: t.total,
+      paymentMethod: t.paymentMethod ?? null,
     }),
   );
 }
@@ -664,8 +689,8 @@ async function heartbeatLoop(): Promise<never> {
 async function main(): Promise<void> {
   if (process.argv.includes("--heartbeat")) return heartbeatLoop();
 
-  const from = new Date(UNTIL);
-  from.setUTCMonth(from.getUTCMonth() - MONTHS);
+  const from = argValue("from") ? new Date(argValue("from")!) : new Date(UNTIL);
+  if (!argValue("from")) from.setUTCMonth(from.getUTCMonth() - MONTHS);
 
   console.log(`Generando tickets de ${from.toISOString().slice(0, 10)} a ${UNTIL.toISOString().slice(0, 16)}Z …`);
   const all: GeneratedTicket[] = [];
@@ -688,6 +713,18 @@ async function main(): Promise<void> {
   }
   const grand = all.filter((t) => t.status !== "failed").reduce((sum, t) => sum + (t.total ?? 0), 0);
   console.log(`\nVentas totales: ${money(grand)} €`);
+  const byMethod = new Map<string, { n: number; sum: number }>();
+  for (const t of all) {
+    if (t.status === "failed") continue;
+    const entry = byMethod.get(t.paymentMethod ?? "(sin dato)") ?? { n: 0, sum: 0 };
+    entry.n++;
+    entry.sum += t.total ?? 0;
+    byMethod.set(t.paymentMethod ?? "(sin dato)", entry);
+  }
+  console.log("\nPor medio de pago:");
+  for (const [method, { n, sum }] of [...byMethod].sort((a, b) => b[1].sum - a[1].sum)) {
+    console.log(`  ${method.padEnd(12)} ${String(n).padStart(6)} tickets   ${money(sum).padStart(8)} €   (${((sum / grand) * 100).toFixed(1)} %)`);
+  }
 
   if (!APPLY) {
     console.log("\n(corrida en seco — nada se escribió. Usá --apply para cargar a AWS.)");
