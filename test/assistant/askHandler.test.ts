@@ -1005,6 +1005,78 @@ describe("P0 especialista de negocio (Innova)", () => {
     expect(systemText).toContain('agrupá por "hourOfDay"');
   });
 
+  test("modo promo solo ventas: permite hasta 3 campañas ancladas en tools y prohíbe margen/costo", async () => {
+    mockBedrockSend.mockResolvedValue(textResponse("ok"));
+    await handler(
+      eventWith({
+        question:
+          "Con mis datos de ventas, identifica productos y horarios que podrían beneficiarse de una promoción. Propón tres campañas, su objetivo y los riesgos para el margen.",
+      }),
+    );
+    const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+    expect(systemText).toContain("Promos y campañas (solo ancladas en ventas)");
+    expect(systemText).toContain("HASTA TRES campañas");
+    expect(systemText).toContain("NUNCA inventes costos, precios de compra, margen");
+    expect(systemText).toContain("riesgos de VOLUMEN");
+    expect(systemText).toContain("canibalización");
+    expect(systemText).toContain('Estrategia creativa SIN datos');
+    expect(systemText).toContain("nómina");
+    // Sigue rechazando margen puro; no abre SQL libre ni costos.
+    expect(systemText).toContain('¿cuál es mi margen?');
+    expect(systemText).not.toContain("SQL libre");
+  });
+
+  test("modo promo: el modelo puede anclar ideas en run_widget_query (productos/horas) sin ampliar MAX_TURNS", async () => {
+    mockBedrockSend
+      .mockResolvedValueOnce(
+        toolUseResponse("tu1", "run_widget_query", {
+          field: "quantity",
+          aggregation: "sum",
+          groupBy: "description",
+        }),
+      )
+      .mockResolvedValueOnce(
+        toolUseResponse("tu2", "run_widget_query", {
+          field: "total",
+          aggregation: "sum",
+          groupBy: "hourOfDay",
+        }),
+      )
+      .mockResolvedValueOnce(
+        textResponse(
+          "Con tus ventas (unidades y horas), propongo 3 campañas. No tengo costos ni márgenes: los riesgos son de volumen (canibalización en productos top).",
+        ),
+      );
+    mockRunAthenaQuery
+      .mockResolvedValueOnce([
+        { label: "Empanada carne", value: 12 },
+        { label: "Jugo naranja", value: 120 },
+      ])
+      .mockResolvedValueOnce([
+        { label: "11", value: 5000 },
+        { label: "15", value: 800 },
+      ]);
+
+    const result = await handler(
+      eventWith({
+        question:
+          "Con mis datos de ventas, identifica productos y horarios para una promoción. Propón tres campañas y riesgos para el margen.",
+      }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    const body = JSON.parse(result.body);
+    expect(body.answer).toContain("3 campañas");
+    expect(body.answer).toMatch(/No tengo costos|márgenes|volumen/i);
+    expect(mockBedrockSend).toHaveBeenCalledTimes(3);
+    expect(mockRunAthenaQuery).toHaveBeenCalledTimes(2);
+    // Primer tool-use: productos; segundo: hourOfDay (SQL vía query builder).
+    const productSql = mockRunAthenaQuery.mock.calls[0][0] as string;
+    const hourSql = mockRunAthenaQuery.mock.calls[1][0] as string;
+    expect(productSql).toMatch(/description|ticket_items/i);
+    expect(hourSql).toContain("substr(capturedat, 12, 2)");
+  });
+
   test("inyecta businessName, zona y sucursales en el system prompt", async () => {
     mockTenantAndAgents(
       { tenantId: "tenant-x", businessName: "Empanadas El Sol", advisor: { timeZone: "America/Bogota" } },
