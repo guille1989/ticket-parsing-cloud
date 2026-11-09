@@ -4,9 +4,10 @@ import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent }
 
 import { checkAssistantRateLimit } from "./rateLimit.js";
 import { saveReport } from "./reportStore.js";
+import { formatBusinessContextBlock, loadAskBusinessContext, type AskBusinessContext } from "./businessContext.js";
+import { explainMatterTool, listMattersTool } from "./matterTools.js";
 import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { AGENTS_TABLE, ddb, TICKETS_TABLE } from "../shared/dynamo.js";
-import { getBusinessTimeZone } from "../shared/businessTimeZone.js";
 import { jsonResponse } from "../shared/http.js";
 import type { AgentRecord, TicketRecord, TicketStatus, WidgetAggregation, WidgetFilters, WidgetRecord, WidgetVisualization } from "../shared/types.js";
 import { PAYMENT_METHODS, resolvePaymentMethodFilter } from "../parsing/bedrockShared.js";
@@ -27,6 +28,7 @@ import {
   isValidMetricField,
 } from "../widgets/fields.js";
 import { buildWidgetQuery } from "../widgets/queryBuilder.js";
+import { internalMatterId } from "../advisor/matterApi.js";
 
 const bedrock = new BedrockRuntimeClient({});
 
@@ -54,12 +56,14 @@ const MAX_DESCRIPTION_FILTER_LENGTH = 50;
 const REPORT_MAX_SECTIONS = 6;
 const REPORT_MAX_TITLE_LENGTH = 100;
 
-const SYSTEM_PROMPT = `Sos el asistente de datos del dashboard de un negocio que usa InnoApp para capturar y analizar tickets de venta. Contestá siempre en español, en pocas oraciones, directo al grano.
+const SYSTEM_PROMPT = `Sos Innova, el especialista del negocio en InnoApp. Ayudás al dueño a entender ventas, sucursales, productos, medios de pago, horas pico, robots de captura y avisos del día, con los datos REALES de ESTE negocio. Contestá siempre en español, en pocas oraciones, directo al grano. Hablá como alguien que conoce el local, no como un analista anónimo.
 
-Tenés herramientas para consultar los datos REALES del negocio — nunca inventes números:
+Tenés herramientas para consultar los datos REALES del negocio — nunca inventes números, causas operativas ni métricas que no vinieron de una tool:
 Las métricas de venta cuentan por defecto los tickets confirmados (parsed) y los pendientes de revisión (needs_review), este último un ticket leído por un modelo de IA que el negocio aún no confirmó; excluyen líneas anuladas al consultar productos. Un value null significa que no hay observaciones para esa métrica: no lo conviertas en cero ni calcules un porcentaje contra una base ausente. sampleCount, cuando aparece, indica el número de observaciones del promedio. Si el usuario pregunta por ventas confirmadas, filtrá por estado parsed; si una consulta explícita por estado incluye needs_review, aclaralo.
 - "run_widget_query": totales/promedios/conteos, opcionalmente agrupados por sucursal/estado/producto o por día. Usala para preguntas de agregados ("¿cuánto vendí?", "¿qué producto vendió más?", "comparame las sucursales", "¿qué día vendí más?").
 - "list_tickets": los tickets más recientes (fecha, sucursal, puerto, estado, total y, en facturas electrónicas, cliente y número de factura), opcionalmente filtrados por estado. Usala para preguntas puntuales sobre ventas concretas o para listados fila por fila, no para totales.
+- "list_matters": lista avisos (matters) del Advisor — anomalías de venta, robot offline, captura en cero, cola de revisión, fallos de parseo. Usala cuando pregunten qué hay que revisar, qué avisos hay o el estado de Innova/avisos. Por defecto trae los abiertos (new/seen).
+- "explain_matter": detalla UN aviso por matterId (id público). Usala si el usuario pregunta por un aviso concreto o el mensaje trae un matterId. Devolvé evidence/expected/actual y sugerí los chequeos de la herramienta; no inventes por qué falló una impresora o un POS — pedí que confirmen en Agentes. Podés contrastar el aviso con ventas vía run_widget_query o list_tickets.
 
 - "build_report": arma un reporte descargable (varias secciones, cada una con su consulta). Usala SOLO cuando el usuario pida un reporte, informe o resumen para descargar. Las tablas las calcula la herramienta con datos reales; vos no transcribas números. Después de llamarla, contestá en pocas oraciones con los hallazgos principales y decí que el reporte está listo para descargar.
 
@@ -86,32 +90,44 @@ No pidas aclaraciones si la pregunta se puede contestar con una suposición razo
 - Cada cifra de una tabla se copia tal cual del resultado de la herramienta. Nunca multipliques, dividas ni derives importes (por ejemplo cantidad × precio) ni inventes precios: si te falta una cifra, volvé a consultar. Solo usá "descriptionContains" si el usuario nombra una palabra concreta que sí figura en los productos (una medida, "bala", "con gas"). Si el resultado viene vacío con un filtro de producto ("descriptionContains"), volvé a consultar sin ese filtro antes de decir que no hay datos. Esa regla es SOLO para el filtro de producto: con "paymentMethod" (o "branch") un resultado vacío o en cero es la respuesta.
 Pedí aclaración solo si no hay ninguna interpretación razonable.
 
-Si la pregunta no tiene que ver con los datos del negocio (tickets, ventas, robots), respondé brevemente que solo podés ayudar con eso. Basá la respuesta únicamente en lo que devolvió la herramienta — si no hay datos, decilo en vez de inventar. Cuando uses datos reales, mencioná brevemente sobre qué te basaste (ej. cantidad de tickets).
+Alcance: tickets, ventas, productos vendidos, sucursales/robots, parseo/revisión, avisos Advisor, reportes y KPIs del dashboard. Fuera de eso (costos, personal, impuestos, márgenes, inventario, estrategia general sin datos): rechazá en una frase ("Con los datos que tengo…" / "No tengo costos ni inventario…") y volvé al dominio. Basá la respuesta únicamente en lo que devolvió la herramienta — si no hay datos, decilo en vez de inventar. Cuando uses datos reales, mencioná brevemente sobre qué te basaste (ej. cantidad de tickets).
 
 Puede haber preguntas anteriores de la misma conversación antes de la actual — usalas para interpretar referencias ambiguas ("¿y por producto?", "¿y la semana pasada?"), pero siempre volvé a llamar a la herramienta correspondiente para traer datos frescos, nunca reuses un número que hayas dado antes sin volver a consultarlo.
 
 Si una herramienta devuelve un error, no adivines por qué falló ni le atribuyas la causa a los datos del negocio (por ejemplo al estado de los tickets). Si el error dice que un parámetro es inválido, corregilo y probá de nuevo. Si es otro tipo de error, decile al usuario que hubo un problema técnico al consultar los datos y que pruebe de nuevo en un rato, y ofrecé lo que sí hayas podido consultar.`;
 
+type PromptZoneOwner = "business" | "user" | "utc";
+
 /**
  * El modelo no sabe qué día es: sin esto, "ventas de octubre" terminaba en
  * "¿octubre de qué año?" (2026-10-16). UTC, igual que el agrupado por "day".
+ * P0 también inyecta ficha mínima del negocio (nombre, zona, sucursales).
  */
-function buildSystemPrompt(now: Date, timeZone?: string, zoneOwner: "business" | "user" = "user"): string {
-  if (timeZone) {
-    const localDate = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
-    if (zoneOwner === "business") {
-      // Las horas son las del local aunque el usuario consulte desde otro país. Sin esta
-      // aclaración el modelo "confirmaba" otra zona (le dijo "hora colombiana" a horas de Madrid).
-      return (
-        `${SYSTEM_PROMPT}\n\nHoy es ${localDate} (zona horaria del negocio: ${timeZone}). ` +
-        `Todas las fechas y horas de las consultas están en la hora local del negocio (${timeZone}), sin importar desde dónde consulte el usuario. ` +
-        `Al nombrar una hora, es la hora del negocio. No conviertas horas a otra zona ni afirmes que están en otra: ` +
-        `si el usuario pregunta por otra zona horaria, explicale que las horas están en la del negocio (${timeZone}).`
-      );
-    }
-    return `${SYSTEM_PROMPT}\n\nHoy es ${localDate} (zona horaria del usuario: ${timeZone}). Las fechas y horas de las consultas están en esa zona.`;
+function buildSystemPrompt(
+  now: Date,
+  timeZone: string | undefined,
+  zoneOwner: PromptZoneOwner,
+  business: AskBusinessContext,
+): string {
+  const localDate = timeZone
+    ? new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now)
+    : now.toISOString().slice(0, 10);
+  const contextBlock = formatBusinessContextBlock(business, localDate, zoneOwner, timeZone);
+
+  if (timeZone && zoneOwner === "business") {
+    // Las horas son las del local aunque el usuario consulte desde otro país. Sin esta
+    // aclaración el modelo "confirmaba" otra zona (le dijo "hora colombiana" a horas de Madrid).
+    return (
+      `${SYSTEM_PROMPT}\n\n${contextBlock}\n\nHoy es ${localDate} (zona horaria del negocio: ${timeZone}). ` +
+      `Todas las fechas y horas de las consultas están en la hora local del negocio (${timeZone}), sin importar desde dónde consulte el usuario. ` +
+      `Al nombrar una hora, es la hora del negocio. No conviertas horas a otra zona ni afirmes que están en otra: ` +
+      `si el usuario pregunta por otra zona horaria, explicale que las horas están en la del negocio (${timeZone}).`
+    );
   }
-  return `${SYSTEM_PROMPT}\n\nHoy es ${now.toISOString().slice(0, 10)} (fecha UTC).`;
+  if (timeZone) {
+    return `${SYSTEM_PROMPT}\n\n${contextBlock}\n\nHoy es ${localDate} (zona horaria del usuario: ${timeZone}). Las fechas y horas de las consultas están en esa zona.`;
+  }
+  return `${SYSTEM_PROMPT}\n\n${contextBlock}\n\nHoy es ${localDate} (fecha UTC).`;
 }
 
 function widgetQueryProperties() {
@@ -258,6 +274,43 @@ function buildTools(): Tool[] {
                 description: `Máximo de tickets a devolver (por defecto ${LIST_TICKETS_DEFAULT_LIMIT}, tope ${LIST_TICKETS_MAX_LIMIT}).`,
               },
             },
+          },
+        },
+      },
+    },
+    {
+      toolSpec: {
+        name: "list_matters",
+        description:
+          "Lista avisos (matters) del Advisor del negocio: anomalías de venta, robot offline, captura en cero, cola needs_review, fallos de parseo. Por defecto solo abiertos (new/seen). Cada aviso trae id, detector, severidad, sucursal, título, detail, expected/actual. Para el detalle de uno usá explain_matter.",
+        inputSchema: {
+          json: {
+            type: "object",
+            properties: {
+              status: {
+                type: "array",
+                items: { type: "string", enum: ["new", "seen", "dismissed", "resolved"] },
+                description: "Estados a incluir (opcional; por defecto new y seen).",
+              },
+              days: { type: "number", description: "Ventana en días hacia atrás (por defecto 14, tope 90)." },
+              limit: { type: "number", description: "Máximo de avisos a devolver (por defecto 10, tope 10)." },
+            },
+          },
+        },
+      },
+    },
+    {
+      toolSpec: {
+        name: "explain_matter",
+        description:
+          "Explica un aviso concreto por su matterId público (el id que manda la UI al tocar Preguntar). Devuelve título, detail, evidence, expected/actual y chequeos sugeridos. No inventes causas operativas.",
+        inputSchema: {
+          json: {
+            type: "object",
+            properties: {
+              matterId: { type: "string", description: "Id público del aviso (base64url)." },
+            },
+            required: ["matterId"],
           },
         },
       },
@@ -718,11 +771,15 @@ async function callTool(name: string, input: unknown, tenantId: string, ctx: Too
   if (name === "run_widget_query") return runWidgetQueryTool(input, tenantId, ctx);
   if (name === "list_tickets") return listTicketsTool(input, tenantId, ctx);
   if (name === "create_widget") return createWidgetTool(input, tenantId, ctx);
+  if (name === "list_matters") return listMattersTool(input, tenantId);
+  if (name === "explain_matter") return explainMatterTool(input, tenantId);
   throw new Error(`herramienta desconocida: "${name}"`);
 }
 
 type HistoryTurn = { role: "user" | "assistant"; text: string };
-type Validation = { ok: true; question: string; history: HistoryTurn[]; timeZone?: string } | { ok: false; error: string };
+type Validation =
+  | { ok: true; question: string; history: HistoryTurn[]; timeZone?: string; matterId?: string }
+  | { ok: false; error: string };
 
 // Memoria de conversación acotada: el cliente manda los últimos intercambios
 // (los mismos que ya muestra en pantalla), el servidor los antepone al
@@ -785,7 +842,16 @@ function validateBody(body: unknown): Validation {
   // Opcional: el navegador manda su zona IANA. Una inválida se ignora (UTC) en vez de rechazar la pregunta.
   const timeZone = typeof b.timeZone === "string" && isValidTimeZone(b.timeZone) ? b.timeZone : undefined;
 
-  return { ok: true, question: question.trim(), history: historyValidation.history, timeZone };
+  // Opcional: id público de un aviso (Innova "Preguntar"). Inválido → 400, no se ignora en silencio.
+  let matterId: string | undefined;
+  if (b.matterId !== undefined) {
+    if (typeof b.matterId !== "string" || !internalMatterId(b.matterId.trim())) {
+      return { ok: false, error: "matterId inválido" };
+    }
+    matterId = b.matterId.trim();
+  }
+
+  return { ok: true, question: question.trim(), history: historyValidation.history, timeZone, matterId };
 }
 
 /**
@@ -848,17 +914,22 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
     return jsonResponse(429, { error: message });
   }
 
-  // La hora pico de un local se mira en la hora del local, no en la del navegador de quien
-  // consulta (que puede estar en otro país). La del navegador queda de respaldo.
-  const businessTimeZone = await getBusinessTimeZone(tenantId);
-  const timeZone = businessTimeZone ?? validation.timeZone;
+  // Ficha mínima + zona del negocio (nombre, sucursales). La zona del navegador queda de respaldo.
+  const business = await loadAskBusinessContext(tenantId);
+  const timeZone = business.timeZone ?? validation.timeZone;
+  const zoneOwner: PromptZoneOwner = business.timeZone ? "business" : timeZone ? "user" : "utc";
 
   const modelId = process.env.BEDROCK_MODEL_ID!;
-  const systemPrompt = buildSystemPrompt(new Date(), timeZone, businessTimeZone ? "business" : "user");
+  const systemPrompt = buildSystemPrompt(new Date(), timeZone, zoneOwner, business);
   const tools = buildTools();
+  // Si la UI manda matterId (botón Preguntar), el modelo debe explicar ese aviso
+  // con explain_matter: el prefijo no se guarda en el history del cliente.
+  const userQuestion = validation.matterId
+    ? `[Contexto interno: el usuario se refiere al aviso matterId="${validation.matterId}". Llamá explain_matter con ese matterId antes de responder.]\n${validation.question}`
+    : validation.question;
   const messages: Message[] = [
     ...validation.history.map((turn): Message => ({ role: turn.role, content: [{ text: turn.text }] })),
-    { role: "user", content: [{ text: validation.question }] },
+    { role: "user", content: [{ text: userQuestion }] },
   ];
   // Para el log de auditoría al final — qué herramientas se invocaron y con
   // qué input, sin importar si tuvieron éxito (un intento de herramienta
