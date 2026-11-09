@@ -19,6 +19,7 @@ import { handler as agentsCodes } from "../../src/agents/codesHandler";
 import { handler as agentsLocation } from "../../src/agents/updateLocationHandler";
 import { handler as me } from "../../src/me/getHandler";
 import { handler as onboarding } from "../../src/me/updateOnboardingHandler";
+import { handler as profile } from "../../src/me/updateProfileHandler";
 import { handler as assistant } from "../../src/assistant/askHandler";
 import { handler as reportsList } from "../../src/reports/listHandler";
 import { handler as reportsGet } from "../../src/reports/getHandler";
@@ -34,7 +35,7 @@ const routes: Array<[string, HumanHandler]> = [
   ["POST /widgets", widgetsCreate], ["GET /widgets", widgetsList], ["DELETE /widgets/{widgetId}", widgetsDelete],
   ["GET /widgets/fields", widgetsFields], ["GET /widgets/{widgetId}/data", widgetsData],
   ["GET /agents", agentsList], ["GET /activation-codes", agentsCodes], ["PATCH /agents/{agentId}/location", agentsLocation],
-  ["GET /me", me], ["PATCH /me/onboarding", onboarding], ["POST /assistant/ask", assistant],
+  ["GET /me", me], ["PATCH /me/onboarding", onboarding], ["PATCH /me/profile", profile], ["POST /assistant/ask", assistant],
   ["GET /reports", reportsList], ["GET /reports/{reportId}", reportsGet], ["DELETE /reports/{reportId}", reportsDelete],
   ["GET /assistant/conversations", conversationsList], ["GET /assistant/conversations/{conversationId}", conversationGet],
   ["PUT /assistant/conversations/{conversationId}", conversationSave], ["DELETE /assistant/conversations/{conversationId}", conversationDelete],

@@ -24,6 +24,7 @@ jest.mock("../../src/shared/dynamo", () => {
     TICKETS_TABLE: "TestTickets",
     AGENTS_TABLE: "TestAgents",
     MATTERS_TABLE: "TestMatters",
+    WIDGETS_TABLE: "TestWidgets",
   };
 });
 jest.mock("../../src/widgets/athenaQuery", () => ({
@@ -920,7 +921,7 @@ test("el prompt manda agrupar por agent para 'sucursal' y no por port, sin símb
   expect(system).toContain('agrupá por "agent"');
   expect(system).toContain('NO uses "port"');
   expect(system).toContain("**negrita**");
-  expect(system).toContain("No pongas símbolo de moneda");
+  expect(system).toMatch(/Moneda:.*\(no definida\)|sin símbolo/);
 });
 
 test("create_widget: KPI de un producto en una sucursal devuelve el widget con agentId y descriptionContains", async () => {
@@ -1024,13 +1025,65 @@ describe("P0 especialista de negocio (Innova)", () => {
     expect(systemText).toContain("zona horaria del negocio: America/Bogota");
   });
 
-  test("registra tools list_matters y explain_matter", async () => {
+  test("inyecta currency, horarios e industry de tenant.profile", async () => {
+    mockTenantAndAgents({
+      tenantId: "tenant-x",
+      businessName: "Empanadas El Sol",
+      advisor: { timeZone: "America/Bogota" },
+      profile: {
+        currency: "COP",
+        locale: "es-CO",
+        industry: "restaurante",
+        openingHours: { default: { open: "08:00", close: "20:00" }, byWeekday: { "7": "closed" } },
+      },
+    });
+    mockBedrockSend.mockResolvedValue(textResponse("ok"));
+    await handler(eventWith({ question: "hola" }, "tenant-x"));
+    const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+    expect(systemText).toContain("Moneda / locale: COP (es-CO)");
+    expect(systemText).toContain("default 08:00–20:00");
+    expect(systemText).toContain("dom cerrado");
+    expect(systemText).toContain("Rubro: restaurante");
+    expect(systemText).toContain("list_widgets");
+  });
+
+  test("registra tools list_matters, explain_matter y list_widgets", async () => {
     mockBedrockSend.mockResolvedValue(textResponse("ok"));
     await handler(eventWith({ question: "hola" }));
     const names = mockBedrockSend.mock.calls[0][0].input.toolConfig.tools.map(
       (t: { toolSpec: { name: string } }) => t.toolSpec.name,
     );
-    expect(names).toEqual(expect.arrayContaining(["list_matters", "explain_matter", "run_widget_query", "list_tickets"]));
+    expect(names).toEqual(
+      expect.arrayContaining(["list_matters", "explain_matter", "list_widgets", "run_widget_query", "list_tickets", "create_widget"]),
+    );
+  });
+
+  test("list_widgets: el modelo recibe el catálogo del dashboard", async () => {
+    mockDdbSend.mockImplementation(async (command: { constructor: { name: string }; input: { TableName?: string } }) => {
+      if (command.input.TableName === "TestWidgets") {
+        return {
+          Items: [
+            {
+              widgetId: "w1",
+              name: "Ventas totales",
+              visualization: "kpi",
+              metric: { field: "total", aggregation: "sum" },
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+        };
+      }
+      return {};
+    });
+    mockBedrockSend
+      .mockResolvedValueOnce(toolUseResponse("tu1", "list_widgets", { limit: 10 }))
+      .mockResolvedValueOnce(textResponse("Ya tenés Ventas totales"));
+
+    const result = await handler(eventWith({ question: "creame un kpi de ventas" }));
+    expect(result.statusCode).toBe(200);
+    const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
+    expect(toolResult.status).toBeUndefined();
+    expect(toolResult.content[0].json.widgets[0].title).toBe("Ventas totales");
   });
 
   test("matterId inválido → 400", async () => {

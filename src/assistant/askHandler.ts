@@ -6,6 +6,7 @@ import { checkAssistantRateLimit } from "./rateLimit.js";
 import { saveReport } from "./reportStore.js";
 import { formatBusinessContextBlock, loadAskBusinessContext, type AskBusinessContext } from "./businessContext.js";
 import { explainMatterTool, listMattersTool } from "./matterTools.js";
+import { listWidgetsTool } from "./widgetTools.js";
 import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
 import { AGENTS_TABLE, ddb, TICKETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
@@ -67,7 +68,8 @@ Las métricas de venta cuentan por defecto los tickets confirmados (parsed) y lo
 
 - "build_report": arma un reporte descargable (varias secciones, cada una con su consulta). Usala SOLO cuando el usuario pida un reporte, informe o resumen para descargar. Las tablas las calcula la herramienta con datos reales; vos no transcribas números. Después de llamarla, contestá en pocas oraciones con los hallazgos principales y decí que el reporte está listo para descargar.
 
-- "create_widget": agrega un widget al dashboard. Usala cuando el usuario pida crear/agregar/hacer un KPI, gráfica o widget con condiciones (una sucursal, un producto). Pasá esas condiciones como filtros "branch" y "descriptionContains": nunca las ignores ni las metas solo en el título. Un widget de un producto usa "subtotal" (plata) o "quantity" (unidades), nunca "total". Si piden ventas Y cantidad de un producto en un mismo seguimiento, creá UN solo KPI con field "subtotal" y secondaryField "quantity" (la tarjeta muestra la plata grande y las unidades al lado); no lo uses en KPIs de ventas totales. Un widget "line" solo admite groupBy day/hour y "bar"/"donut" solo categorías: si lo pedido no se puede crear tal cual, decilo en vez de cambiarlo en silencio. Cada respuesta crea un solo widget. Escribí el producto sin tildes y con una raíz corta ("cafe con leche"). La herramienta devuelve "preview" con el valor actual: contale al usuario qué filtros quedaron aplicados y cuánto da hoy; si preview viene vacío o en cero, decilo y sugerí revisar el nombre del producto. Si la sucursal no existe o es ambigua, mostrale las opciones y no crees nada.
+- "list_widgets": lista los widgets/KPIs ya creados en el dashboard (título, tipo, campo, filtros). Usala ANTES de create_widget. Si ya hay uno equivalente (misma métrica/agrupación/filtros o título muy parecido), decilo, nombralo y ofrecé usarlo o ajustarlo en vez de duplicar.
+- "create_widget": agrega un widget al dashboard. Usala cuando el usuario pida crear/agregar/hacer un KPI, gráfica o widget con condiciones (una sucursal, un producto). Antes de crearlo, mirá list_widgets: no dupliques uno equivalente. Pasá esas condiciones como filtros "branch" y "descriptionContains": nunca las ignores ni las metas solo en el título. Un widget de un producto usa "subtotal" (plata) o "quantity" (unidades), nunca "total". Si piden ventas Y cantidad de un producto en un mismo seguimiento, creá UN solo KPI con field "subtotal" y secondaryField "quantity" (la tarjeta muestra la plata grande y las unidades al lado); no lo uses en KPIs de ventas totales. Un widget "line" solo admite groupBy day/hour y "bar"/"donut" solo categorías: si lo pedido no se puede crear tal cual, decilo en vez de cambiarlo en silencio. Cada respuesta crea un solo widget. Escribí el producto sin tildes y con una raíz corta ("cafe con leche"). La herramienta devuelve "preview" con el valor actual: contale al usuario qué filtros quedaron aplicados y cuánto da hoy; si preview viene vacío o en cero, decilo y sugerí revisar el nombre del producto. Si la sucursal no existe o es ambigua, mostrale las opciones y no crees nada.
 
 Sucursales: cada robot ("agent") es una sucursal/local del negocio. Para "¿qué sucursal/local/sede…?", "comparame las sucursales" o "ventas por sucursal" agrupá por "agent": el resultado ya trae el nombre de cada sucursal, usalo tal cual en la respuesta. NO uses "port" para eso: "port" es el puerto/periférico (por ejemplo una caja registradora, TPV-CAJA1) y un mismo local puede tener varios; solo agrupá por "port" si piden explícitamente comparar cajas o puertos.
 Para los datos de UNA sola sucursal ("¿qué se vende más en la sucursal Sol?", "ventas de Chapinero en octubre") usá el filtro "branch" con el nombre que dijo el usuario, junto con el resto de la consulta (por ejemplo agrupado por producto). Sin ese filtro el resultado es de TODO el negocio: nunca atribuyas a una sucursal un resultado que no consultaste con "branch". Si la herramienta responde que la sucursal no existe o es ambigua, mostrale al usuario las sucursales que te devuelve y pedile que elija.
@@ -78,7 +80,7 @@ Medio de pago: las ventas de los negocios cuyo ticket lo imprime traen con qué 
 
 Horas pico y días fuertes: para "¿a qué hora vendo más?", "horas pico" o "en qué horario…" agrupá por "hourOfDay" (hora 00–23 en la zona del negocio, juntando todos los días); para "¿qué día de la semana vendo más?" agrupá por "weekday" (1 = lunes … 7 = domingo). Hacé una consulta con "total" (plata) y otra con "event_count" (tickets) y armá la tabla con TODAS las horas (o días) que devolvió la herramienta, en orden, marcando las más fuertes. NUNCA uses "hour" ni "day" para esto: dan una fila por cada fecha y hora concreta (cientos de filas) y terminás eligiendo y ordenando filas vos mismo, donde se cometen errores. "Las horas pico de un día" o "cuándo se mueve más el negocio en un día" es un día típico: usá "hourOfDay" con todo el historial (o el período que pidan), no un día puntual como "hoy"; solo usá una fecha concreta si el usuario la nombra. Decí qué período cubre la tabla (desde qué fecha). Las horas sin ventas no aparecen en el resultado: aclaralo en vez de inventarlas. Armá la tabla con las horas de menor a mayor (de cuando abre a cuando cierra) y las columnas que dio la herramienta, y no omitas ni repitas filas. Decí solo lo que está en las filas devueltas: no inventes patrones ("poco movimiento después de las 20") que no estén en la tabla, y la hora pico es la de mayor valor.
 
-Formato de la respuesta: texto plano. Podés resaltar con **negrita** lo más importante (el nombre de la sucursal o producto y la cifra clave). Si piden una lista o una tabla con columnas, armala como tabla markdown (| col | col | con la fila |---|---|); fuera de eso, nada de #, tablas ni viñetas con asteriscos. No pongas símbolo de moneda ($, €…) porque no sabés la moneda del negocio: escribí solo el número (con separador de miles y hasta 2 decimales).
+Formato de la respuesta: texto plano. Podés resaltar con **negrita** lo más importante (el nombre de la sucursal o producto y la cifra clave). Si piden una lista o una tabla con columnas, armala como tabla markdown (| col | col | con la fila |---|---|); fuera de eso, nada de #, tablas ni viñetas con asteriscos. Moneda: si el contexto del negocio trae una moneda definida, usala al nombrar montos; si dice "(no definida)", escribí solo el número (con separador de miles y hasta 2 decimales), sin símbolo. Abierto/cerrado: solo si hay Horarios cargados; si no, hablá de horas con/sin ventas, nunca afirmes que el local debería estar cerrado.
 
 No pidas aclaraciones si la pregunta se puede contestar con una suposición razonable: consultá, contestá y decí en una frase qué supusiste. Supuestos por defecto:
 - "Ventas" es plata: "subtotal" si es por producto, "total" si es del negocio entero.
@@ -223,9 +225,24 @@ function buildTools(): Tool[] {
     },
     {
       toolSpec: {
+        name: "list_widgets",
+        description:
+          "Lista los widgets/KPIs ya creados en el dashboard del negocio (título, tipo de gráfica, campo, agregación, filtros resumidos). Usala antes de create_widget para no duplicar uno equivalente: si hay uno parecido, nombralo y ofrecé usarlo o ajustarlo.",
+        inputSchema: {
+          json: {
+            type: "object",
+            properties: {
+              limit: { type: "number", description: "Máximo de widgets a devolver (por defecto 30, tope 50)." },
+            },
+          },
+        },
+      },
+    },
+    {
+      toolSpec: {
         name: "create_widget",
         description:
-          "Agrega un widget (KPI, barras, línea o dona) al dashboard del usuario. Valida la consulta con datos reales y devuelve una vista previa del valor. Un KPI es un solo número (sin groupBy); bar/donut necesitan groupBy; line necesita groupBy 'day' u 'hour'. Los widgets no admiten rango de fechas ni estado: solo los filtros branch, descriptionContains y paymentMethod.",
+          "Agrega un widget (KPI, barras, línea o dona) al dashboard del usuario. Antes de crearlo, consultá list_widgets y evitá duplicar uno equivalente. Valida la consulta con datos reales y devuelve una vista previa del valor. Un KPI es un solo número (sin groupBy); bar/donut necesitan groupBy; line necesita groupBy 'day' u 'hour'. Los widgets no admiten rango de fechas ni estado: solo los filtros branch, descriptionContains y paymentMethod.",
         inputSchema: {
           json: {
             type: "object",
@@ -770,6 +787,7 @@ async function callTool(name: string, input: unknown, tenantId: string, ctx: Too
   if (name === "build_report") return buildReportTool(input, tenantId, ctx);
   if (name === "run_widget_query") return runWidgetQueryTool(input, tenantId, ctx);
   if (name === "list_tickets") return listTicketsTool(input, tenantId, ctx);
+  if (name === "list_widgets") return listWidgetsTool(input, tenantId);
   if (name === "create_widget") return createWidgetTool(input, tenantId, ctx);
   if (name === "list_matters") return listMattersTool(input, tenantId);
   if (name === "explain_matter") return explainMatterTool(input, tenantId);
