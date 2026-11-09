@@ -3,6 +3,7 @@ import {
   GetQueryExecutionCommand,
   GetQueryResultsCommand,
   StartQueryExecutionCommand,
+  StopQueryExecutionCommand,
 } from "@aws-sdk/client-athena";
 
 const athena = new AthenaClient({});
@@ -15,7 +16,15 @@ const athena = new AthenaClient({});
 const RESULT_REUSE_MAX_AGE_MINUTES = 1;
 
 const POLL_INTERVAL_MS = 500;
-const MAX_POLL_ATTEMPTS = 40; // ~20s — a este volumen de datos, Athena suele responder en 1-3s.
+const DEFAULT_MAX_WAIT_MS = 20_000; // a este volumen de datos, Athena suele responder en 1-3s.
+
+/** La consulta no terminó a tiempo (típicamente porque Athena la dejó en cola). */
+export class AthenaTimeoutError extends Error {
+  constructor() {
+    super("timeout esperando el resultado de la consulta de Athena");
+    this.name = "AthenaTimeoutError";
+  }
+}
 
 export interface WidgetDataPoint {
   label?: string;
@@ -50,8 +59,13 @@ function toSqlStringLiteral(value: string): string {
  * Lambda — razonable a este volumen de datos, no hace falta nada más
  * elaborado (colas, WebSocket) todavía.
  */
-export async function runWidgetQuery(sql: string, params: string[], workGroup: string): Promise<WidgetDataPoint[]> {
-  return fetchResults(await executeQuery(sql, params, workGroup));
+export async function runWidgetQuery(
+  sql: string,
+  params: string[],
+  workGroup: string,
+  maxWaitMs?: number,
+): Promise<WidgetDataPoint[]> {
+  return fetchResults(await executeQuery(sql, params, workGroup, maxWaitMs));
 }
 
 /** Una fila de resultado con las columnas por nombre (en minúsculas); `null` = celda vacía. */
@@ -96,7 +110,7 @@ export async function runAthenaRows(sql: string, params: string[], workGroup: st
 }
 
 /** Dispara la consulta y espera a que termine; devuelve el id para leer sus resultados. */
-async function executeQuery(sql: string, params: string[], workGroup: string): Promise<string> {
+async function executeQuery(sql: string, params: string[], workGroup: string, maxWaitMs = DEFAULT_MAX_WAIT_MS): Promise<string> {
   const start = await athena.send(
     new StartQueryExecutionCommand({
       QueryString: sql,
@@ -112,7 +126,8 @@ async function executeQuery(sql: string, params: string[], workGroup: string): P
     throw new Error("Athena no devolvió un QueryExecutionId");
   }
 
-  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
+  const giveUpAt = Date.now() + maxWaitMs;
+  while (Date.now() < giveUpAt) {
     const execution = await athena.send(new GetQueryExecutionCommand({ QueryExecutionId: queryExecutionId }));
     const state = execution.QueryExecution?.Status?.State;
 
@@ -126,7 +141,14 @@ async function executeQuery(sql: string, params: string[], workGroup: string): P
     await sleep(POLL_INTERVAL_MS);
   }
 
-  throw new Error("timeout esperando el resultado de la consulta de Athena");
+  // Si se abandona, se cancela: una consulta que sigue en cola ocupa un cupo de
+  // Athena y hace que el reintento del usuario espere todavía más.
+  try {
+    await athena.send(new StopQueryExecutionCommand({ QueryExecutionId: queryExecutionId }));
+  } catch (err) {
+    console.error("[athena] no se pudo cancelar la consulta abandonada:", err);
+  }
+  throw new AthenaTimeoutError();
 }
 
 async function fetchResults(queryExecutionId: string): Promise<WidgetDataPoint[]> {

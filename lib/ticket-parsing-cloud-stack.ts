@@ -534,7 +534,7 @@ export class TicketParsingCloudStack extends cdk.Stack {
       // resultados de Athena (lo exige el servicio, no es opcional).
       fn.addToRolePolicy(
         new iam.PolicyStatement({
-          actions: ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:GetWorkGroup"],
+          actions: ["athena:StartQueryExecution", "athena:StopQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:GetWorkGroup"],
           resources: [`arn:aws:athena:${this.region}:${this.account}:workgroup/${athenaWorkGroupName}`],
         }),
       );

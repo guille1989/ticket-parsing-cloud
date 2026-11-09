@@ -29,6 +29,7 @@ jest.mock("../../src/shared/dynamo", () => {
 });
 jest.mock("../../src/widgets/athenaQuery", () => ({
   runWidgetQuery: (...args: unknown[]) => mockRunAthenaQuery(...args),
+  AthenaTimeoutError: class AthenaTimeoutError extends Error {},
 }));
 
 import { handler } from "../../src/assistant/askHandler";
@@ -703,6 +704,48 @@ test("build_report: ejecuta una consulta por sección y devuelve el reporte con 
   // Ambas consultas llevan el tenant del JWT.
   expect(mockRunAthenaQuery).toHaveBeenCalledTimes(2);
   for (const [, params] of mockRunAthenaQuery.mock.calls) expect(params[0]).toBe("tenant-x");
+});
+
+test("build_report: una sección que se agota en Athena se omite y el reporte sale con las demás", async () => {
+  const { AthenaTimeoutError } = jest.requireMock("../../src/widgets/athenaQuery");
+  mockBedrockSend
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "build_report", {
+        title: "Ventas",
+        sections: [
+          { heading: "Total", field: "total", aggregation: "sum" },
+          { heading: "Por hora", field: "event_count", aggregation: "count", groupBy: "hourOfDay" },
+        ],
+      }),
+    )
+    .mockResolvedValueOnce(textResponse("Listo, falta la sección por hora."));
+  mockRunAthenaQuery
+    .mockResolvedValueOnce([{ value: 100 }])
+    .mockRejectedValueOnce(new AthenaTimeoutError("x"));
+
+  const result = await handler(eventWith({ question: "hazme un reporte" }, "tenant-x"));
+
+  expect(result.statusCode).toBe(200);
+  const body = JSON.parse(result.body);
+  expect(body.report.sections.map((s: { heading: string }) => s.heading)).toEqual(["Total"]);
+  // El modelo recibe el aviso de qué sección faltó para decírselo al usuario.
+  const toolResult = JSON.stringify(mockBedrockSend.mock.calls[1][0].input.messages);
+  expect(toolResult).toContain("skippedSections");
+  expect(toolResult).toContain("Por hora");
+});
+
+test("build_report: si todas las secciones se agotan, falla la herramienta y no hay reporte", async () => {
+  const { AthenaTimeoutError } = jest.requireMock("../../src/widgets/athenaQuery");
+  mockBedrockSend
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "build_report", { title: "X", sections: [{ heading: "Total", field: "total", aggregation: "sum" }] }),
+    )
+    .mockResolvedValueOnce(textResponse("No pude armarlo."));
+  mockRunAthenaQuery.mockRejectedValueOnce(new AthenaTimeoutError("x"));
+
+  const result = await handler(eventWith({ question: "reporte" }, "tenant-x"));
+
+  expect(JSON.parse(result.body).report).toBeUndefined();
 });
 
 test("build_report: una sección inválida hace fallar la herramienta y no se devuelve reporte", async () => {

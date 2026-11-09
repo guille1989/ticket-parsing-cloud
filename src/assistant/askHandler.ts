@@ -12,7 +12,7 @@ import { AGENTS_TABLE, ddb, TICKETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import type { AgentRecord, TicketRecord, TicketStatus, WidgetAggregation, WidgetFilters, WidgetRecord, WidgetVisualization } from "../shared/types.js";
 import { PAYMENT_METHODS, resolvePaymentMethodFilter } from "../parsing/bedrockShared.js";
-import { runWidgetQuery as runAthenaQuery, type WidgetDataPoint } from "../widgets/athenaQuery.js";
+import { AthenaTimeoutError, runWidgetQuery as runAthenaQuery, type WidgetDataPoint } from "../widgets/athenaQuery.js";
 import { dateFilterError } from "../widgets/dateFilters.js";
 import { extractProductVolume } from "./productVolume.js";
 import {
@@ -38,6 +38,13 @@ const MAX_QUESTION_LENGTH = 500;
 // necesita 2 (pedir la herramienta -> responder con el resultado). El tope
 // evita que una pregunta rara entre en un ciclo largo y caro.
 const MAX_TURNS = 4;
+
+// API Gateway corta a los 29 s y el cliente recibe un 504 pelado, sin mensaje.
+// Se trabaja con presupuesto propio: las consultas a Athena (las que se encolan)
+// deben terminar antes de TOOL_DEADLINE_MS y todo el pedido antes de REQUEST_BUDGET_MS,
+// dejando margen para la última llamada a Bedrock que redacta la respuesta.
+const TOOL_DEADLINE_MS = 18_000;
+const REQUEST_BUDGET_MS = 26_000;
 
 const TICKET_STATUSES: TicketStatus[] = ["pending", "parsed", "needs_review", "failed"];
 // Menos que el tope de los widgets (MAX_GROUPS en queryBuilder.ts): cada
@@ -429,7 +436,8 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
   };
 
   const query = buildWidgetQuery(widget, ASSISTANT_MAX_GROUPS, ctx.timeZone);
-  const data = await runAthenaQuery(query.sql, query.params, process.env.ATHENA_WORKGROUP!);
+  const maxWaitMs = ctx.deadline === undefined ? undefined : Math.max(1_000, ctx.deadline - Date.now());
+  const data = await runAthenaQuery(query.sql, query.params, process.env.ATHENA_WORKGROUP!, maxWaitMs);
   // Qué se calculó de verdad, para que el modelo rotule la columna con la métrica real
   // y no la confunda con la que pidió el usuario (p. ej. "total del ticket" → subtotal).
   // El agentId es interno: al modelo se le devuelve el nombre de la sucursal consultada.
@@ -588,8 +596,9 @@ async function buildReportTool(input: unknown, tenantId: string, ctx: ToolContex
     throw new Error(`sections inválido: se esperaban entre 1 y ${REPORT_MAX_SECTIONS} secciones`);
   }
 
-  const sections = await Promise.all(
-    raw.sections.map(async (item, i): Promise<ReportSection> => {
+  const skipped: string[] = [];
+  const built = await Promise.all(
+    raw.sections.map(async (item, i): Promise<ReportSection | null> => {
       const section = (item ?? {}) as Record<string, unknown>;
       const heading = typeof section.heading === "string" ? section.heading.trim().slice(0, REPORT_MAX_TITLE_LENGTH) : "";
       if (!heading) throw new Error(`sections[${i}].heading inválido`);
@@ -624,13 +633,28 @@ async function buildReportTool(input: unknown, tenantId: string, ctx: ToolContex
           previous,
         };
       } catch (err) {
+        // Athena encolada no es un error del pedido: el reporte sale sin esa sección en vez de caerse entero.
+        if (err instanceof AthenaTimeoutError) {
+          console.error(`[assistant] sección sin datos por timeout: "${heading}"`);
+          skipped.push(heading);
+          return null;
+        }
         throw new Error(`sections[${i}] ("${heading}"): ${err instanceof Error ? err.message : "error desconocido"}`);
       }
     }),
   );
+  const sections = built.filter((section): section is ReportSection => section !== null);
+  if (sections.length === 0) throw new Error("ninguna sección alcanzó a calcularse: Athena está lenta, probá de nuevo en un momento");
 
   ctx.report = { title, generatedAt: new Date().toISOString(), sections };
-  return { ok: true, title, sections: sections.map((s) => ({ heading: s.heading, data: s.data, previous: s.previous })) };
+  return {
+    ok: true,
+    title,
+    sections: sections.map((s) => ({ heading: s.heading, data: s.data, previous: s.previous })),
+    ...(skipped.length > 0
+      ? { skippedSections: skipped, note: `Estas secciones NO están en el reporte por demora del sistema: ${skipped.join(", ")}. Avisale al usuario cuáles faltan y que puede pedirlas de nuevo.` }
+      : {}),
+  };
 }
 
 /**
@@ -706,6 +730,8 @@ async function createWidgetTool(input: unknown, tenantId: string, ctx: ToolConte
 }
 
 type ToolContext = {
+  /** Instante (ms epoch) hasta el que las consultas a Athena pueden esperar. */
+  deadline?: number;
   widget?: WidgetDraft;
   report?: Report;
   timeZone?: string;
@@ -957,7 +983,8 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   // qué input, sin importar si tuvieron éxito (un intento de herramienta
   // inexistente también es una señal útil, ver logQa()).
   const toolCalls: ToolCallLog[] = [];
-  const toolContext: ToolContext = { timeZone };
+  const startedAt = Date.now();
+  const toolContext: ToolContext = { timeZone, deadline: startedAt + TOOL_DEADLINE_MS };
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -971,6 +998,8 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
           // ya mostró lo rápido que un costo "chico" escala sin límites explícitos.
           inferenceConfig: { maxTokens: 1024, temperature: 0.3 },
         }),
+        // Si ya no queda margen antes del corte de API Gateway, se corta acá y se contesta con un mensaje claro.
+        { abortSignal: AbortSignal.timeout(Math.max(1_000, REQUEST_BUDGET_MS - (Date.now() - startedAt))) },
       );
 
       const outputMessage = response.output?.message;
@@ -1027,6 +1056,10 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
 
     return jsonResponse(502, { error: "el asistente no pudo resolver la pregunta, probá reformularla" });
   } catch (err) {
+    if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
+      console.error("[assistant] se agotó el tiempo de la solicitud:", err);
+      return jsonResponse(504, { error: "La consulta tardó más de lo esperado. Probá de nuevo en unos segundos." });
+    }
     console.error("[assistant] fallo al invocar Bedrock:", err);
     return jsonResponse(502, { error: "no se pudo generar una respuesta, probá de nuevo en unos segundos" });
   }
