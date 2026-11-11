@@ -266,6 +266,53 @@ test("run_widget_query: agrupado por producto, cada fila trae el volumen del nom
   expect(data[1].volume).toBeUndefined();
 });
 
+test("run_widget_query: agrupado con suma devuelve groupsTotal calculado por el servidor", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "subtotal", aggregation: "sum", groupBy: "description" }))
+    .mockResolvedValueOnce(textResponse("Listo."));
+  mockRunAthenaQuery.mockResolvedValue([
+    { label: "A", value: 700 },
+    { label: "B", value: 232.5 },
+  ]);
+
+  await handler(eventWith({ question: "ventas por producto" }, "tenant-x"));
+
+  const json = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult.content[0].json;
+  expect(json.groupsTotal).toBe(932.5);
+  expect(json.groupCount).toBe(2);
+  expect(json.groupsTruncated).toBeUndefined();
+  expect(mockRunAthenaQuery).toHaveBeenCalledTimes(1);
+});
+
+test("run_widget_query: con el tope de grupos alcanzado, el total sale de una consulta sin agrupar", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", groupBy: "customer" }))
+    .mockResolvedValueOnce(textResponse("Listo."));
+  const rows = Array.from({ length: 50 }, (_, i) => ({ label: `C${i}`, value: 10 }));
+  mockRunAthenaQuery.mockResolvedValueOnce(rows).mockResolvedValueOnce([{ value: 932070000 }]);
+
+  await handler(eventWith({ question: "ventas por cliente" }, "tenant-x"));
+
+  const json = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult.content[0].json;
+  expect(json.groupsTruncated).toBe(true);
+  expect(json.groupsTotal).toBe(932070000);
+  expect(json.groupCount).toBe(50);
+  expect(mockRunAthenaQuery).toHaveBeenCalledTimes(2);
+  expect(mockRunAthenaQuery.mock.calls[1][0]).not.toContain("GROUP BY label");
+});
+
+test("run_widget_query: promedio o conteo de tickets por producto no llevan groupsTotal", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "event_count", aggregation: "count", groupBy: "description" }))
+    .mockResolvedValueOnce(textResponse("Listo."));
+  mockRunAthenaQuery.mockResolvedValue([{ label: "A", value: 3 }, { label: "B", value: 3 }]);
+
+  await handler(eventWith({ question: "tickets por producto" }, "tenant-x"));
+
+  const json = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult.content[0].json;
+  expect(json.groupsTotal).toBeUndefined();
+});
+
 test("list_tickets: consulta DynamoDB por estado y limita el resultado", async () => {
   mockBedrockSend
     .mockResolvedValueOnce(toolUseResponse("tu1", "list_tickets", { status: "failed", limit: 5 }))

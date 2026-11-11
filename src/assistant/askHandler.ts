@@ -23,7 +23,9 @@ import {
   NUMERIC_FIELDS,
   TEMPORAL_FIELDS,
   isItemLevelGroupBy,
+  isTemporalGroupByField,
   isTicketLevelField,
+  isTimeOfDayGroupBy,
   isValidAggregation,
   isValidGroupByField,
   isValidTimeZone,
@@ -52,6 +54,8 @@ const TICKET_STATUSES: TicketStatus[] = ["pending", "parsed", "needs_review", "f
 // fila le llega al modelo como tokens de entrada, y para contestar "¿qué
 // producto vendió más?" alcanza con los primeros 50 ordenados por valor.
 const ASSISTANT_MAX_GROUPS = 50;
+// Tope de puntos de las series por día/hora; debe coincidir con MAX_TIME_POINTS en queryBuilder.ts.
+const MAX_TIME_POINTS = 800;
 const LIST_TICKETS_DEFAULT_LIMIT = 10;
 const LIST_TICKETS_MAX_LIMIT = 15;
 // Páginas de 1 MB de Dynamo que recorre la búsqueda por cliente antes de rendirse.
@@ -98,6 +102,7 @@ No pidas aclaraciones si la pregunta se puede contestar con una suposición razo
 - Un mes o un día sin año es el más reciente que ya empezó, según la fecha de hoy (va al final).
 - "Las horneadas", "lo que diga empanadas" y parecidos son un tipo de producto: usá el filtro "descriptionContains" con una raíz corta de la palabra, una consulta por cada tipo. La suma la hace la herramienta, no la calcules vos.
 - "Envases", "botellas", "presentaciones", "tamaños", "tipos" o "referencias" vendidas NO son una palabra que aparezca en los nombres: el tipo de envase/presentación viene dentro del nombre del producto (por ejemplo "AGUA TRATADA 350 ML SIN GAS", "AGUA TRATADA 600 ML BALA CON GAS"). NUNCA filtres con "descriptionContains" por una categoría genérica como "envase", "botella" o "producto". Agrupá por "description" con "quantity" (sum) —y si piden plata, también "subtotal"— en el periodo pedido, y presentá cada producto como una fila: el nombre del producto es el tipo de envase y la cantidad es el número de envases/unidades. Cada fila agrupada por producto trae "volume" (la medida que figura en el nombre, ej. "350 ML"; ausente si no tiene): si piden el volumen separado, ponelo en su propia columna (Producto | Volumen | Unidades) copiando "volume" tal cual, sin calcularlo vos. Si piden totales POR VOLUMEN (todo lo de 350 ML junto, con y sin gas), agrupá por "volume" (con "quantity" o "subtotal"): la herramienta ya suma por medida; las filas "(sin dato)" son productos sin medida en el nombre. Nunca sumes filas por volumen vos.
+- Totales de una consulta agrupada: el resultado trae "groupsTotal" (suma de TODOS los grupos, calculada por la herramienta) y "groupCount" (cuántos grupos hay). Para el total general ("ventas totales", "unidades vendidas") y para porcentajes de participación ("el 78% de los ingresos") usá "groupsTotal" como total; NUNCA sumes las filas vos ni inventes un total. Si "groupsTruncated" es true, la lista trae solo los primeros 50 grupos por valor y hay más: decilo ("mostrando los 50 principales de más"), y no presentes la lista como completa ni sumes sus filas como total. Si te piden "todas las referencias" y vienen menos filas que las que pide el usuario, avisá cuántas muestra la tabla. Si tampoco viene "groupsTotal", consultá aparte sin groupBy para obtener el total.
 - Si piden el "total del ticket"/"total de la factura" desglosado por producto, volumen o medida, ese total no se puede repartir entre los ítems: usá "subtotal" (valor de las líneas, antes de los impuestos del ticket) y decí explícitamente en la respuesta que usaste subtotal y por qué. El encabezado de la columna de cifras nombra la métrica real que devolvió la herramienta (campo "metric": "Subtotal", "Unidades"…), no la que pidió el usuario.
 - Cada cifra de una tabla se copia tal cual del resultado de la herramienta. Nunca multipliques, dividas ni derives importes (por ejemplo cantidad × precio) ni inventes precios: si te falta una cifra, volvé a consultar. Solo usá "descriptionContains" si el usuario nombra una palabra concreta que sí figura en los productos (una medida, "bala", "con gas"). Si el resultado viene vacío con un filtro de producto ("descriptionContains"), volvé a consultar sin ese filtro antes de decir que no hay datos. Esa regla es SOLO para el filtro de producto: con "paymentMethod" (o "branch") un resultado vacío o en cero es la respuesta.
 Pedí aclaración solo si no hay ninguna interpretación razonable.
@@ -475,11 +480,16 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
             `para "qué día de la semana se vende más", con groupBy "weekday". Usá estas filas solo para mostrar la evolución en el tiempo.`,
         }
       : {};
+  // Total de TODOS los grupos, calculado acá: el modelo sumaba las filas de cabeza y se equivocaba
+  // (en una prueba real dijo "1,02 mil millones" cuando el total era 932 M). Solo cuando los grupos
+  // se reparten el total sin solaparse; con el tope de grupos alcanzado se pide el total sin agrupar.
+  const groupsSummary = await groupsTotalSummary({ widget, data, field, aggregation, groupBy, timeZone: ctx.timeZone, maxWaitMs, filters });
   const meta = {
     metric: field,
     aggregation,
     ...(groupBy ? { groupBy } : {}),
     ...(Object.keys(metaFilters).length ? { filters: metaFilters } : {}),
+    ...groupsSummary,
     ...noSalesNote,
     ...rowsPerDateNote,
   };
@@ -495,6 +505,47 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
       label: !row.label || row.label === "(sin dato)" ? "Sin sucursal asignada" : (names.get(row.label) ?? row.label),
     })),
   };
+}
+
+/**
+ * `groupsTotal` = suma de todos los grupos; `groupCount` = cuántos grupos hay. Si el tope recortó la
+ * lista, `groupsTruncated` es true y el total sale de una consulta sin agrupar (el de las filas
+ * mostradas sería parcial). No aplica a promedios/máx/mín ni a conteos de tickets por producto
+ * (un ticket cuenta en cada uno de sus productos, así que los grupos se solapan).
+ */
+async function groupsTotalSummary(args: {
+  widget: WidgetRecord;
+  data: WidgetDataPoint[];
+  field: string;
+  aggregation: string;
+  groupBy: string | undefined;
+  timeZone: string | undefined;
+  maxWaitMs: number | undefined;
+  filters: WidgetFilters | undefined;
+}): Promise<{ groupsTotal?: number; groupCount?: number; groupsTruncated?: boolean }> {
+  const { widget, data, field, aggregation, groupBy, timeZone, maxWaitMs, filters } = args;
+  if (!groupBy) return {};
+  const isEventCount = field === EVENT_COUNT_FIELD;
+  const additive = isEventCount
+    ? !isItemLevelGroupBy(groupBy) && !filters?.descriptionContains
+    : aggregation === "sum";
+  if (!additive) return {};
+
+  const byLabel = isTemporalGroupByField(groupBy) || isTimeOfDayGroupBy(groupBy);
+  const cap = byLabel ? MAX_TIME_POINTS : ASSISTANT_MAX_GROUPS;
+  const truncated = data.length >= cap;
+  if (!truncated) {
+    const total = data.reduce((sum, row) => sum + (row.value ?? 0), 0);
+    return { groupsTotal: Math.round(total * 100) / 100, groupCount: data.length };
+  }
+  try {
+    const whole = buildWidgetQuery({ ...widget, groupBy: undefined, visualization: "kpi" }, ASSISTANT_MAX_GROUPS, timeZone);
+    const [row] = await runAthenaQuery(whole.sql, whole.params, process.env.ATHENA_WORKGROUP!, maxWaitMs);
+    return { groupsTruncated: true, groupCount: data.length, ...(row?.value != null ? { groupsTotal: row.value } : {}) };
+  } catch (err) {
+    console.error("[assistant] no se pudo calcular el total sin agrupar:", err);
+    return { groupsTruncated: true, groupCount: data.length };
+  }
 }
 
 /** Mismo query que `read/handler.ts`, recortado a lo que le sirve al modelo (sin items, para no inflar tokens). */
