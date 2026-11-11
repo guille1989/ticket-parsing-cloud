@@ -5,6 +5,7 @@ import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent }
 import { checkAssistantRateLimit } from "./rateLimit.js";
 import { saveReport } from "./reportStore.js";
 import { formatBusinessContextBlock, loadAskBusinessContext, type AskBusinessContext } from "./businessContext.js";
+import { analyticsToolSpec, analyzeBusinessTool } from "./analyticsTools.js";
 import { explainMatterTool, listMattersTool } from "./matterTools.js";
 import { listWidgetsTool } from "./widgetTools.js";
 import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
@@ -72,6 +73,8 @@ Las métricas de venta cuentan por defecto los tickets confirmados (parsed) y lo
 - "list_tickets": los tickets más recientes (fecha, sucursal, puerto, estado, total y, en facturas electrónicas, cliente y número de factura), opcionalmente filtrados por estado. Usala para preguntas puntuales sobre ventas concretas o para listados fila por fila, no para totales.
 - "list_matters": lista avisos (matters) del Advisor — anomalías de venta, robot offline, captura en cero, cola de revisión, fallos de parseo. Usala cuando pregunten qué hay que revisar, qué avisos hay o el estado de Innova/avisos. Por defecto trae los abiertos (new/seen).
 - "explain_matter": detalla UN aviso por matterId (id público). Usala si el usuario pregunta por un aviso concreto o el mensaje trae un matterId. Devolvé evidence/expected/actual y sugerí los chequeos de la herramienta; no inventes por qué falló una impresora o un POS — pedí que confirmen en Agentes. Podés contrastar el aviso con ventas vía run_widget_query o list_tickets.
+
+- "analyze_business": análisis calculado por el servidor para las preguntas guía. SIEMPRE usala (y no run_widget_query) para: "¿cómo va mi negocio hoy?" (intent business_status_today), "¿por qué vendí menos esta semana?" (intent weekly_sales_decline), "¿qué puedo hacer para vender más mañana?" (intent increase_tomorrow_sales), "¿cuáles son mis productos estrella?" / productos que más venden y crecen (intent product_stars) y "¿qué local/sucursal está funcionando mejor?" (intent location_performance; period last_7_days si piden la última semana). La herramienta ya compara la misma franja horaria, descompone tickets y ticket medio y avisa la calidad de los datos. Respondé en unas 100-150 palabras con las cifras del resultado tal cual (metrics, breakdowns, summary), sin recalcular, redondear distinto ni agregar números: es el mismo principio de "nunca inventes cifras". Reglas: (1) distinguí lo observado de las hipótesis y nunca afirmes causas; solo "coincide con" o "habría que revisar". (2) Un valor null o "sin base comparable" se dice así, nunca como cero ni como un porcentaje inventado. (3) Respetá los warnings de quality (sin costes, sin objetivo, histórico insuficiente, captura sin ventas): mencioná los relevantes en una frase y no prometas visión completa del negocio si la captura es parcial. (4) En location_performance no elijas un único "mejor local": nombrá el ganador por cada dimensión y aclará que sin costes no hay rentabilidad. (5) Si metrics.margin dice available false, no hables de margen ni de "el más rentable". (6) Cerrá con UNA acción concreta y verificable, sin sugerir descuentos. (7) En weekly_sales_decline: la primera frase dice qué cayó, cuánto y contra qué periodo; después los efectos de tickets y ticket medio (suman la variación) y los topDrivers (cortes distintos de la misma caída: no los sumes); separá "hechos detectados" de "posibles explicaciones" (kind hypothesis) y, si status es no_decline, decí "no se observa una caída comparable" y explicá la variación; la acción es investigar la franja, el producto o la sucursal de mayor pérdida, nunca bajar precios ni dar descuentos. (8) En increase_tomorrow_sales: presentá el rango esperado de mañana como escenario (nunca "vas a vender"), y las acciones de recommendations en su orden de prioridad, cada una con qué hacer, por qué, cuándo/dónde, impacto, confianza y cómo hacer el seguimiento. Si impact.available es false, decí que no se puede cuantificar; no inventes cifras de impacto, de margen ni de stock. El potencial (metrics.potential) cubre solo la acción cuantificada: no sumes impactos. No recomiendes promociones con descuento ni afirmes que algo es "rentable". Si status es likely_closed o insufficient_history, explicá por qué no hay recomendaciones.
 
 - "build_report": arma un reporte descargable (varias secciones, cada una con su consulta). Usala SOLO cuando el usuario pida un reporte, informe o resumen para descargar. Las tablas las calcula la herramienta con datos reales; vos no transcribas números. Después de llamarla, contestá en pocas oraciones con los hallazgos principales y decí que el reporte está listo para descargar.
 
@@ -343,6 +346,7 @@ function buildTools(): Tool[] {
         },
       },
     },
+    analyticsToolSpec(),
   ];
 }
 
@@ -732,6 +736,8 @@ async function createWidgetTool(input: unknown, tenantId: string, ctx: ToolConte
 type ToolContext = {
   /** Instante (ms epoch) hasta el que las consultas a Athena pueden esperar. */
   deadline?: number;
+  /** Moneda de la ficha del negocio (para formatear montos en los análisis calculados por el servidor). */
+  currency?: string;
   widget?: WidgetDraft;
   report?: Report;
   timeZone?: string;
@@ -821,6 +827,18 @@ async function callTool(name: string, input: unknown, tenantId: string, ctx: Too
   if (name === "create_widget") return createWidgetTool(input, tenantId, ctx);
   if (name === "list_matters") return listMattersTool(input, tenantId);
   if (name === "explain_matter") return explainMatterTool(input, tenantId);
+  if (name === "analyze_business") {
+    return analyzeBusinessTool(input, tenantId, {
+      timeZone: ctx.timeZone,
+      currency: ctx.currency,
+      deadline: ctx.deadline,
+      branchNames: () => branchNames(tenantId, ctx),
+      resolveBranch: async (query) => {
+        await branchNames(tenantId, ctx);
+        return resolveBranch(query, ctx.branchAliases ?? new Map());
+      },
+    });
+  }
   throw new Error(`herramienta desconocida: "${name}"`);
 }
 
@@ -984,7 +1002,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   // inexistente también es una señal útil, ver logQa()).
   const toolCalls: ToolCallLog[] = [];
   const startedAt = Date.now();
-  const toolContext: ToolContext = { timeZone, deadline: startedAt + TOOL_DEADLINE_MS };
+  const toolContext: ToolContext = { timeZone, currency: business.profile?.currency, deadline: startedAt + TOOL_DEADLINE_MS };
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {

@@ -79,8 +79,8 @@ const MAX_RESULT_PAGES = 20;
  * páginas de resultados. Lo usa Advisor, que necesita varias columnas por fila (día, hora,
  * sucursal, monto) y no el par label/value de un widget.
  */
-export async function runAthenaRows(sql: string, params: string[], workGroup: string): Promise<AthenaRow[]> {
-  const queryExecutionId = await executeQuery(sql, params, workGroup);
+export async function runAthenaRows(sql: string, params: string[], workGroup: string, maxWaitMs?: number): Promise<AthenaRow[]> {
+  const queryExecutionId = await executeQuery(sql, params, workGroup, maxWaitMs);
   const rows: AthenaRow[] = [];
   let names: string[] | undefined;
   let nextToken: string | undefined;
