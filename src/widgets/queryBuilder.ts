@@ -28,6 +28,9 @@ const ANALYTICS_TABLE = "ticket_items";
  */
 export const DESCRIPTION_SEARCH_EXPR = "regexp_replace(normalize(lower(description), NFD), '\\p{M}', '')";
 
+/** Igual que `DESCRIPTION_SEARCH_EXPR` pero sobre el nombre del cliente (un valor por ticket, repetido en sus filas). */
+export const CUSTOMER_SEARCH_EXPR = "regexp_replace(normalize(lower(customername), NFD), '\\p{M}', '')";
+
 export function normalizeSearchText(text: string): string {
   return text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 }
@@ -223,6 +226,12 @@ function buildWhere(widget: WidgetRecord, timeZone?: string): { whereClause: str
   if (widget.filters?.descriptionContains) {
     conditions.push(`strpos(${DESCRIPTION_SEARCH_EXPR}, ?) > 0`);
     params.push(normalizeSearchText(widget.filters.descriptionContains));
+  }
+  // El cliente es un dato del ticket (no del ítem): no afecta cómo se agregan
+  // total/descuento/propina, que igual se colapsan por ticket.
+  if (widget.filters?.customerContains) {
+    conditions.push(`strpos(${CUSTOMER_SEARCH_EXPR}, ?) > 0`);
+    params.push(normalizeSearchText(widget.filters.customerContains));
   }
 
   return { whereClause: conditions.join(" AND "), params };

@@ -84,7 +84,7 @@ Las métricas de venta cuentan por defecto los tickets confirmados (parsed) y lo
 Sucursales: cada robot ("agent") es una sucursal/local del negocio. Para "¿qué sucursal/local/sede…?", "comparame las sucursales" o "ventas por sucursal" agrupá por "agent": el resultado ya trae el nombre de cada sucursal, usalo tal cual en la respuesta. NO uses "port" para eso: "port" es el puerto/periférico (por ejemplo una caja registradora, TPV-CAJA1) y un mismo local puede tener varios; solo agrupá por "port" si piden explícitamente comparar cajas o puertos.
 Para los datos de UNA sola sucursal ("¿qué se vende más en la sucursal Sol?", "ventas de Chapinero en octubre") usá el filtro "branch" con el nombre que dijo el usuario, junto con el resto de la consulta (por ejemplo agrupado por producto). Sin ese filtro el resultado es de TODO el negocio: nunca atribuyas a una sucursal un resultado que no consultaste con "branch". Si la herramienta responde que la sucursal no existe o es ambigua, mostrale al usuario las sucursales que te devuelve y pedile que elija.
 
-Clientes: si el negocio factura con factura electrónica, las ventas traen el cliente. Para "¿qué cliente compró más?" o "ventas por cliente" agrupá por "customer" (con "total" o "subtotal"). Si todo sale como "sin dato", ese negocio no registra clientes: decilo. Para una lista de ventas/facturas con el nombre del cliente en una columna, usá "list_tickets": cada ticket trae customerName, customerId y documentNumber (solo las facturas electrónicas los tienen; si un ticket no los trae, ponelo como "sin dato" y no digas que el sistema no captura clientes). Para las facturas de UN cliente concreto ("¿qué facturas son de X?") usá "list_tickets" con "customerContains" (un fragmento del nombre): busca en todo el historial. "list_tickets" sin ese filtro solo trae los más recientes, así que NUNCA concluyas que un cliente no existe porque no salió en esa lista; si un cliente salió en una consulta agrupada por "customer", existe.
+Clientes: si el negocio factura con factura electrónica, las ventas traen el cliente. Para "¿qué cliente compró más?" o "ventas por cliente" agrupá por "customer" (con "total" o "subtotal"). Si todo sale como "sin dato", ese negocio no registra clientes: decilo. Para una lista de ventas/facturas con el nombre del cliente en una columna, usá "list_tickets": cada ticket trae customerName, customerId y documentNumber (solo las facturas electrónicas los tienen; si un ticket no los trae, ponelo como "sin dato" y no digas que el sistema no captura clientes). Para las facturas de UN cliente concreto ("¿qué facturas son de X?") usá "list_tickets" con "customerContains" (un fragmento del nombre): busca en todo el historial. "list_tickets" sin ese filtro solo trae los más recientes, así que NUNCA concluyas que un cliente no existe porque no salió en esa lista; si un cliente salió en una consulta agrupada por "customer", existe. "list_tickets" trae como máximo 15 facturas: si el resultado viene con truncated true, la lista está incompleta y NUNCA la uses para totales, resúmenes por semana/mes ni para decir "sin datos" en un período. Para un resumen o totales de UN cliente en un período ("ventas de D1 las últimas 3 semanas, por semana") usá "run_widget_query" con el filtro customerContains, el rango dateFrom/dateTo de cada semana (una consulta por semana con "total" y otra con "event_count" para el número de facturas) o groupBy "day" para el detalle diario; nunca armes los totales a mano desde "list_tickets".
 
 Medio de pago: las ventas de los negocios cuyo ticket lo imprime traen con qué pagó el cliente (Efectivo, QR, Datafono, Tarjeta, Nequi, Daviplata, Transferencia, Rappi, Mixto u Otro). Para "¿cuánto vendí en efectivo vs QR?" o "ventas por medio de pago" agrupá por "paymentMethod" (con "total" para ventas del negocio, o "event_count" para cantidad de tickets). Para UN medio concreto ("¿cuánto pagaron con datafono?", "ventas en QR") usá el filtro "paymentMethod" con ese valor. NUNCA busques un medio de pago con "descriptionContains": no es un producto. Si el filtro o la agrupación no devuelve nada para un medio, la respuesta es que NO hay ventas pagadas con ese medio (decilo así, en cero); nunca la contestes con el total de otra consulta ni vuelvas a consultar sin el filtro de medio de pago para "encontrar" algo. Si preguntan por un medio y la agrupación solo muestra otros, decí cuáles medios hay y que ese no aparece. Los tickets anteriores a que se capturara este dato (o que no lo traen) salen como "sin dato": mencionalo, no lo repartas entre los demás medios. "list_tickets" trae paymentMethod en cada ticket.
 
@@ -180,6 +180,11 @@ function widgetQueryProperties() {
             enum: [...PAYMENT_METHODS],
             description:
               "Solo las ventas pagadas con este medio de pago (opcional). Es la forma de preguntar por efectivo, QR, datafono, etc.: NUNCA uses 'descriptionContains' para eso, un medio de pago no es un producto. Si no hay ventas con ese medio, el resultado viene en cero/vacío y eso ES la respuesta: no hay ventas pagadas así.",
+          },
+          customerContains: {
+            type: "string",
+            description:
+              "Solo las ventas (facturas electrónicas) cuyo cliente contiene este texto, sin distinguir mayúsculas ni tildes, p. ej. 'd1' (opcional). Es la forma de totalizar UN cliente: combinalo con dateFrom/dateTo y groupBy 'day' para resúmenes por semana o por día. Nunca lo reemplaces por 'list_tickets', que solo trae los 15 más recientes.",
           },
           descriptionContains: {
             type: "string",
@@ -416,6 +421,10 @@ async function parseQueryInput(
       if (!method) throw new Error(`paymentMethod inválido: "${String(f.paymentMethod)}". Válidos: ${PAYMENT_METHODS.join(", ")}`);
       filters.paymentMethod = method;
     }
+    if (f.customerContains !== undefined) {
+      if (typeof f.customerContains !== "string" || !f.customerContains.trim()) throw new Error("customerContains inválido, se esperaba parte del nombre del cliente");
+      filters.customerContains = f.customerContains.trim().slice(0, MAX_DESCRIPTION_FILTER_LENGTH);
+    }
     if (f.descriptionContains !== undefined && (typeof f.descriptionContains !== "string" || !f.descriptionContains.trim())) throw new Error("descriptionContains inválido");
     if (typeof f.descriptionContains === "string" && f.descriptionContains.trim()) {
       filters.descriptionContains = f.descriptionContains.trim().slice(0, MAX_DESCRIPTION_FILTER_LENGTH);
@@ -514,23 +523,33 @@ async function listTicketsTool(input: unknown, tenantId: string, ctx: ToolContex
       }),
     );
 
+  // Se pide una fila de más para saber si el listado quedó cortado: sin ese
+  // aviso el modelo tomaba los `limit` más recientes como "todo lo que hay" y
+  // contestaba "sin datos" para los períodos anteriores.
   let items: TicketRecord[];
+  let truncated = false;
   if (!customerContains) {
-    items = ((await queryPage(undefined, limit)).Items as TicketRecord[] | undefined) ?? [];
+    items = ((await queryPage(undefined, limit + 1)).Items as TicketRecord[] | undefined) ?? [];
   } else {
     // Dynamo no filtra por cliente antes del Limit: se recorre el historial por
     // páginas (más recientes primero) hasta juntar `limit` coincidencias.
     items = [];
     let startKey: Record<string, unknown> | undefined;
-    for (let page = 0; page < CUSTOMER_SEARCH_MAX_PAGES && items.length < limit; page++) {
+    for (let page = 0; page < CUSTOMER_SEARCH_MAX_PAGES && items.length <= limit; page++) {
       const res = await queryPage(startKey);
       for (const t of (res.Items as TicketRecord[] | undefined) ?? []) {
         if (t.customerName && normalizeSearchText(t.customerName).includes(customerContains)) items.push(t);
-        if (items.length >= limit) break;
+        if (items.length > limit) break;
       }
       startKey = res.LastEvaluatedKey;
       if (!startKey) break;
     }
+    // Sin coincidencias de más, pero el recorrido se rindió antes de terminar el historial.
+    if (startKey && items.length <= limit) truncated = true;
+  }
+  if (items.length > limit) {
+    truncated = true;
+    items = items.slice(0, limit);
   }
 
   const names = await branchNames(tenantId, ctx);
@@ -549,7 +568,18 @@ async function listTicketsTool(input: unknown, tenantId: string, ctx: ToolContex
     paymentMethod: t.paymentMethod,
   }));
 
-  return { tickets, count: tickets.length };
+  return {
+    tickets,
+    count: tickets.length,
+    ...(truncated
+      ? {
+          truncated: true,
+          note:
+            `Lista INCOMPLETA: solo son los ${tickets.length} más recientes y hay más. No afirmes que un período o cliente "no tiene datos" por lo que no aparece aquí, ni armes totales o resúmenes por semana/mes con esta lista. ` +
+            `Para totales, conteos o períodos consultá run_widget_query (con el filtro customerContains si es un cliente).`,
+        }
+      : {}),
+  };
 }
 
 /**

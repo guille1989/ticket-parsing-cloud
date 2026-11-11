@@ -281,6 +281,11 @@ export interface WidgetFilters {
    */
   descriptionContains?: string;
   /**
+   * Solo ventas cuyo cliente (facturas electrónicas) contiene este texto, sin
+   * distinguir mayúsculas ni tildes. Solo el asistente (`run_widget_query`).
+   */
+  customerContains?: string;
+  /**
    * Solo tickets pagados con este medio (uno de `PAYMENT_METHODS`, valor
    * exacto). Los tickets sin medio de pago nunca coinciden con ningún valor.
    */

@@ -141,6 +141,15 @@ test("descriptionContains se normaliza sin tildes: 'Café' y 'cafe' buscan lo mi
   expect(params.at(-1)).toBe("cafe");
 });
 
+test("customerContains filtra por cliente sin tildes ni mayúsculas, también con 'total' (dato del ticket)", () => {
+  const { sql, params } = buildWidgetQuery(
+    widget({ metric: { field: "total", aggregation: "sum" }, groupBy: undefined, filters: { customerContains: "Distribuidora Ñandú" } }),
+  );
+  expect(sql).toContain("strpos(regexp_replace(normalize(lower(customername), NFD), '\\p{M}', ''), ?) > 0");
+  expect(sql).not.toContain("Ñandú");
+  expect(params.at(-1)).toBe("distribuidora nandu");
+});
+
 test("descriptionContains con un campo del ticket (total) se rechaza: sumaría tickets enteros, no el producto", () => {
   expect(() =>
     buildWidgetQuery(widget({ metric: { field: "total", aggregation: "sum" }, filters: { descriptionContains: "empa" } })),

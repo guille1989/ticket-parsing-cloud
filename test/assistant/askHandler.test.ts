@@ -286,7 +286,72 @@ test("list_tickets: consulta DynamoDB por estado y limita el resultado", async (
   const ddbInput = mockDdbSend.mock.calls.map(([cmd]) => cmd.input).find((input) => input.IndexName === "status-index");
   expect(ddbInput).toBeDefined();
   expect(ddbInput.ExpressionAttributeValues[":gsi1pk"]).toBe("TENANT#tenant-x#STATUS#failed");
-  expect(ddbInput.Limit).toBe(5);
+  // Se pide una fila de más (limit + 1) para saber si el listado quedó cortado.
+  expect(ddbInput.Limit).toBe(6);
+});
+
+test("list_tickets: avisa truncated cuando hay más tickets que el tope (el caso de D1: 15 facturas = no todo)", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "list_tickets", { limit: 15 }))
+    .mockResolvedValueOnce(textResponse("Listo."));
+  // Dynamo devuelve 16 (limit + 1): la 16.ª solo prueba que hay más.
+  mockDdbSend.mockResolvedValue({
+    Items: Array.from({ length: 16 }, (_, i) => ({
+      ticketId: `t${i}`, capturedAt: "2026-11-10T15:00:00Z", status: "parsed", port: "UBL", total: 1000, customerName: "D1 S A S",
+    })),
+  });
+
+  await handler(eventWith({ question: "facturas de d1" }, "tenant-x"));
+
+  const toolResultMsg = mockBedrockSend.mock.calls[1][0].input.messages[2];
+  const payload = toolResultMsg.content[0].toolResult.content[0].json;
+  expect(payload.count).toBe(15);
+  expect(payload.tickets).toHaveLength(15);
+  expect(payload.truncated).toBe(true);
+  expect(payload.note).toContain("run_widget_query");
+});
+
+test("list_tickets: sin truncated cuando el listado es completo", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(toolUseResponse("tu1", "list_tickets", {}))
+    .mockResolvedValueOnce(textResponse("Listo."));
+  mockDdbSend.mockResolvedValue({ Items: [{ ticketId: "a", capturedAt: "2026-08-01T00:00:00Z", status: "parsed", port: "UBL", total: 1 }] });
+
+  await handler(eventWith({ question: "listame" }, "tenant-x"));
+
+  const payload = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult.content[0].json;
+  expect(payload.truncated).toBeUndefined();
+  expect(payload.note).toBeUndefined();
+});
+
+test("run_widget_query: customerContains (resumen de UN cliente por semana) llega al SQL como parámetro", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "run_widget_query", {
+        field: "total",
+        aggregation: "sum",
+        filters: { dateFrom: "2026-11-09", dateTo: "2026-11-15", customerContains: "  D1  " },
+      }),
+    )
+    .mockResolvedValueOnce(textResponse("Listo."));
+  mockRunAthenaQuery.mockResolvedValue([{ value: 168652032 }]);
+
+  const result = await handler(eventWith({ question: "ventas de d1 esta semana" }, "tenant-x"));
+
+  expect(result.statusCode).toBe(200);
+  const [sql, params] = mockRunAthenaQuery.mock.calls[0];
+  expect(sql).toContain("strpos(regexp_replace(normalize(lower(customername), NFD)");
+  expect(params.at(-1)).toBe("d1");
+  const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult.content[0].json;
+  expect(toolResult.filters.customerContains).toBe("  D1  ".trim());
+});
+
+test("el prompt prohíbe armar resúmenes por período con list_tickets", async () => {
+  mockBedrockSend.mockResolvedValue(textResponse("ok"));
+  await handler(eventWith({ question: "hola" }));
+  const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
+  expect(systemText).toContain("truncated true");
+  expect(systemText).toContain("customerContains");
 });
 
 test("list_tickets: devuelve cliente y número de factura de las facturas electrónicas", async () => {
