@@ -31,7 +31,7 @@ describe("analyze_business", () => {
     const spec = analyticsToolSpec().toolSpec!;
     const enumValues = (spec.inputSchema as { json: { properties: { intent: { enum: string[] } } } }).json.properties.intent.enum;
     expect(spec.name).toBe("analyze_business");
-    expect(enumValues).toEqual(["business_status_today", "weekly_sales_decline", "product_stars", "location_performance", "increase_tomorrow_sales"]);
+    expect(enumValues).toEqual(["business_status_today", "weekly_sales_decline", "product_stars", "location_performance", "increase_tomorrow_sales", "month_to_date"]);
   });
 
   it("rechaza un intent desconocido sin consultar Athena", async () => {

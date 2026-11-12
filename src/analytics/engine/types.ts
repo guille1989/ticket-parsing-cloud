@@ -12,10 +12,11 @@ export type IntentId =
   | "weekly_sales_decline"
   | "product_stars"
   | "location_performance"
-  | "increase_tomorrow_sales";
+  | "increase_tomorrow_sales"
+  | "month_to_date";
 
-/** Los cinco intents del documento de especificación. `increase_tomorrow_sales` es la versión reducida (sin costes, stock ni ventas cruzadas). */
-export const IMPLEMENTED_INTENTS = ["business_status_today", "weekly_sales_decline", "product_stars", "location_performance", "increase_tomorrow_sales"] as const;
+/** Los cinco intents del documento de especificación más `month_to_date`. `increase_tomorrow_sales` es la versión reducida (sin costes, stock ni ventas cruzadas). */
+export const IMPLEMENTED_INTENTS = ["business_status_today", "weekly_sales_decline", "product_stars", "location_performance", "increase_tomorrow_sales", "month_to_date"] as const;
 export type ImplementedIntent = (typeof IMPLEMENTED_INTENTS)[number];
 
 export type Confidence = "high" | "medium" | "low";

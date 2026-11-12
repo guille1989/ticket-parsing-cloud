@@ -3,6 +3,7 @@ import type { Tool } from "@aws-sdk/client-bedrock-runtime";
 import { buildBusinessStatus, type BusinessDay } from "../analytics/engine/businessStatus.js";
 import { buildLocationPerformance, type LocationPeriod } from "../analytics/engine/locationPerformance.js";
 import { DEFAULT_STAR_DAYS, MAX_STAR_DAYS, MIN_STAR_DAYS, PRODUCT_ROW_LIMIT, loadProductRows, loadProductRowsForDates, loadProductRowsForWindow } from "../analytics/engine/productData.js";
+import { buildMonthToDate } from "../analytics/engine/monthToDate.js";
 import { buildProductStars } from "../analytics/engine/productStars.js";
 import { loadSalesSlots } from "../analytics/engine/salesData.js";
 import { buildTomorrowOpportunities, tomorrowReferenceDates } from "../analytics/engine/tomorrowOpportunities.js";
@@ -36,6 +37,7 @@ export function analyticsToolSpec(): Tool {
         "'business_status_today' (¿cómo va mi negocio hoy/ayer? ventas, tickets y ticket medio; day=today hasta la hora actual o day=yesterday = día local cerrado completo, contra el mismo día de la semana), " +
         "'increase_tomorrow_sales' (¿qué puedo hacer para vender más mañana? pronóstico por día de la semana y hasta 3 acciones con evidencia, rango de impacto, confianza y seguimiento), " +
         "'weekly_sales_decline' (¿por qué vendí menos esta semana / la semana pasada? week=current = semana en curso contra la anterior hasta el mismo día y hora; week=last_closed = semana ISO lun–dom cerrada contra la anterior cerrada), " +
+        "'month_to_date' (lo que va del mes contra el mes anterior: acumulado del día 1 a hoy contra el día 1 al mismo número de día del mes anterior, mismo corte horario; usalo para 'ventas del mes vs mes pasado', 'este mes contra octubre', 'cómo vamos en el mes'), " +
         "'product_stars' (productos estrella: ranking por ingresos, unidades y crecimiento, 30 días completos contra los 30 anteriores) y " +
         "'location_performance' (qué sucursal funciona mejor: un ganador por dimensión; por defecto últimos 7 días cerrados). " +
         "Usala SIEMPRE para esas preguntas en vez de armar los cálculos con run_widget_query. Devuelve un 'summary' ya redactado y los datos: respondé con esas cifras tal cual, sin recalcular ni inventar.",
@@ -46,7 +48,7 @@ export function analyticsToolSpec(): Tool {
             intent: { type: "string", enum: [...IMPLEMENTED_INTENTS], description: "Qué análisis calcular." },
             branch: {
               type: "string",
-              description: "Solo para business_status_today, weekly_sales_decline, increase_tomorrow_sales y product_stars: limitar a esta sucursal, por su nombre tal cual lo dijo el usuario (opcional).",
+              description: "Solo para business_status_today, weekly_sales_decline, increase_tomorrow_sales, month_to_date y product_stars: limitar a esta sucursal, por su nombre tal cual lo dijo el usuario (opcional).",
             },
             day: {
               type: "string",
@@ -156,6 +158,13 @@ export async function analyzeBusinessTool(input: unknown, tenantId: string, ctx:
       productsStatus: products.failed ? "failed" : "no_closed_days",
       week: weekMode,
     });
+    result.quality.warnings.unshift(...zoneWarning);
+    return result;
+  }
+
+  if (intent === "month_to_date") {
+    const [rows, branchLabels] = await Promise.all([loadSalesSlots(tenantId, timeZone, now, maxWaitMs), ctx.branchNames()]);
+    const result = buildMonthToDate({ rows, now, timeZone, currency, branch, branchLabels });
     result.quality.warnings.unshift(...zoneWarning);
     return result;
   }
