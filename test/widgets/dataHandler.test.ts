@@ -2,8 +2,11 @@ import type { APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 // La guardia de tenant activo tiene cobertura de integración independiente.
 jest.mock("../../src/shared/auth", () => ({
-  resolveActiveTenantIdFromEvent: async (event: APIGatewayProxyWithCognitoAuthorizerEvent) =>
-    event.requestContext?.authorizer?.claims?.["custom:tenantId"] || undefined,
+  resolveActiveTenantFromEvent: async (event: APIGatewayProxyWithCognitoAuthorizerEvent) => {
+    const tenantId = event.requestContext?.authorizer?.claims?.["custom:tenantId"];
+    return tenantId ? { tenantId, userViews: { "own-user": { suggestedPrompts: [{ q: "¿Cuánto vendí hoy?", label: "Hoy" }] } } } : undefined;
+  },
+  resolveUserIdFromEvent: (event: APIGatewayProxyWithCognitoAuthorizerEvent) => event.requestContext?.authorizer?.claims?.sub,
 }));
 
 const mockDdbSend = jest.fn();
@@ -178,4 +181,20 @@ test("rechaza un rango invertido después de combinarlo con filtros guardados", 
   const result = await handler(eventWith("w1", { dateTo: "2026-10-19" }));
   expect(result.statusCode).toBe(400);
   expect(mockRunWidgetQuery).not.toHaveBeenCalled();
+});
+
+describe("vista propia por persona", () => {
+  const withSub = (sub: string) => ({ requestContext: { authorizer: { claims: { "custom:tenantId": "t1", sub } } }, pathParameters: { widgetId: "w1" }, queryStringParameters: null }) as unknown as APIGatewayProxyWithCognitoAuthorizerEvent;
+
+  test("un widget de otra persona no se puede consultar (404)", async () => {
+    mockDdbSend.mockResolvedValue({ Item: { ...validWidget, userId: "otra" } });
+    expect((await handler(withSub("own-user"))).statusCode).toBe(404);
+    expect((await handler(withSub("alguien-mas"))).statusCode).toBe(404);
+    expect(mockRunWidgetQuery).not.toHaveBeenCalled();
+  });
+
+  test("un widget compartido no se consulta desde una vista propia (404)", async () => {
+    mockDdbSend.mockResolvedValue({ Item: validWidget });
+    expect((await handler(withSub("own-user"))).statusCode).toBe(404);
+  });
 });

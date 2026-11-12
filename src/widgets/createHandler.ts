@@ -4,9 +4,10 @@ import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 import { PAYMENT_METHODS, resolvePaymentMethodFilter } from "../parsing/bedrockShared.js";
-import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
+import { resolveActiveTenantFromEvent, resolveUserIdFromEvent } from "../shared/auth.js";
 import { ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
+import { userViewFor } from "../shared/userView.js";
 import type { WidgetAggregation, WidgetFilters, WidgetMetric, WidgetRecord, WidgetVisualization } from "../shared/types.js";
 import { AGGREGATIONS, CATEGORICAL_FIELDS, TEMPORAL_FIELDS, isItemLevelGroupBy, isTicketLevelField, isValidAggregation, isValidGroupByField, isValidMetricField } from "./fields.js";
 import { dateFilterError } from "./dateFilters.js";
@@ -26,7 +27,7 @@ const MAX_DESCRIPTION_LENGTH = 50;
 type WidgetInput = Omit<WidgetRecord, "tenantId" | "widgetId" | "createdAt">;
 type Validation = { ok: true; value: WidgetInput } | { ok: false; error: string };
 
-function validateBody(body: unknown): Validation {
+export function validateBody(body: unknown): Validation {
   if (!body || typeof body !== "object") {
     return { ok: false, error: "se esperaba un objeto JSON" };
   }
@@ -153,10 +154,13 @@ function parseMetric(input: unknown, label: string): WidgetMetric | { error: str
 }
 
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
-  const tenantId = await resolveActiveTenantIdFromEvent(event);
-  if (!tenantId) {
+  const tenant = await resolveActiveTenantFromEvent(event);
+  if (!tenant) {
     return jsonResponse(403, { error: "no autenticado" });
   }
+  const tenantId = tenant.tenantId;
+  const userId = resolveUserIdFromEvent(event);
+  const ownView = userViewFor(tenant, userId) !== undefined;
 
   let body: unknown;
   try {
@@ -175,6 +179,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
     widgetId: randomUUID(),
     createdAt: new Date().toISOString(),
     ...validation.value,
+    ...(ownView && userId ? { userId } : {}),
   };
 
   await ddb.send(

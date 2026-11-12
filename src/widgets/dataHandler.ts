@@ -1,11 +1,12 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { APIGatewayProxyResult, APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
-import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
+import { resolveActiveTenantFromEvent, resolveUserIdFromEvent } from "../shared/auth.js";
 import { getBusinessTimeZone } from "../shared/businessTimeZone.js";
 import { ATHENA_WORKGROUP, ddb, WIDGETS_TABLE, widgetKey } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import type { WidgetRecord } from "../shared/types.js";
+import { userViewFor, widgetVisibleTo } from "../shared/userView.js";
 import { runWidgetQuery } from "./athenaQuery.js";
 import { isValidTimeZone } from "./fields.js";
 import { buildWidgetQuery } from "./queryBuilder.js";
@@ -29,10 +30,13 @@ function parseDateRange(event: APIGatewayProxyWithCognitoAuthorizerEvent): { dat
 }
 
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
-  const tenantId = await resolveActiveTenantIdFromEvent(event);
-  if (!tenantId) {
+  const tenant = await resolveActiveTenantFromEvent(event);
+  if (!tenant) {
     return jsonResponse(403, { error: "no autenticado" });
   }
+  const tenantId = tenant.tenantId;
+  const userId = resolveUserIdFromEvent(event);
+  const ownView = userViewFor(tenant, userId) !== undefined;
 
   const widgetId = event.pathParameters?.widgetId;
   if (!widgetId) {
@@ -46,7 +50,7 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
 
   const result = await ddb.send(new GetCommand({ TableName: WIDGETS_TABLE, Key: widgetKey(tenantId, widgetId) }));
   const widget = result.Item as WidgetRecord | undefined;
-  if (!widget) {
+  if (!widget || !widgetVisibleTo(widget, userId, ownView)) {
     return jsonResponse(404, { error: "widget no encontrado" });
   }
   const mergedFilters = { ...widget.filters, ...range };

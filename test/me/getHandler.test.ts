@@ -6,8 +6,8 @@ jest.mock("../../src/shared/tenant", () => ({ getTenant: (...args: unknown[]) =>
 
 import { handler } from "../../src/me/getHandler";
 
-function eventWith(tenantId?: string): APIGatewayProxyWithCognitoAuthorizerEvent {
-  return { requestContext: { authorizer: { claims: tenantId ? { "custom:tenantId": tenantId } : {} } } } as unknown as APIGatewayProxyWithCognitoAuthorizerEvent;
+function eventWith(tenantId?: string, sub?: string): APIGatewayProxyWithCognitoAuthorizerEvent {
+  return { requestContext: { authorizer: { claims: tenantId ? { "custom:tenantId": tenantId, ...(sub ? { sub } : {}) } : {} } } } as unknown as APIGatewayProxyWithCognitoAuthorizerEvent;
 }
 
 beforeEach(() => mockGetTenant.mockReset());
@@ -22,7 +22,7 @@ test("devuelve el perfil público y el onboarding", async () => {
   mockGetTenant.mockResolvedValue({ tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", parserId: "p1", onboarding: { version: 1 } });
   const result = await handler(eventWith("t1"));
   expect(JSON.parse(result.body)).toEqual({
-    tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", onboarding: { version: 1 }, profile: null, features: { advisorView: false }, timeZone: null,
+    tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", onboarding: { version: 1 }, profile: null, features: { advisorView: false }, timeZone: null, suggestedPrompts: null,
   });
   expect(result.body).not.toContain("parserId");
 });
@@ -78,4 +78,12 @@ test("un tenant anterior devuelve onboarding null", async () => {
   mockGetTenant.mockResolvedValue({ tenantId: "legacy", businessName: "Anterior", createdAt: "2026-01-01T00:00:00.000Z", parserId: "p1" });
   const result = await handler(eventWith("legacy"));
   expect(JSON.parse(result.body).onboarding).toBeNull();
+});
+
+test("devuelve los prompts sugeridos solo a quien tiene vista propia", async () => {
+  const prompts = [{ q: "¿Cuánto vendí hoy?", label: "Hoy" }];
+  mockGetTenant.mockResolvedValue({ tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", userViews: { "u-own": { suggestedPrompts: prompts } } });
+  expect(JSON.parse((await handler(eventWith("t1", "u-own"))).body).suggestedPrompts).toEqual(prompts);
+  expect(JSON.parse((await handler(eventWith("t1", "u-otro"))).body).suggestedPrompts).toBeNull();
+  expect(JSON.parse((await handler(eventWith("t1"))).body).suggestedPrompts).toBeNull();
 });

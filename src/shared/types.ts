@@ -89,6 +89,19 @@ export interface TenantRecord {
   advisor?: AdvisorSettings;
   /** Ficha de negocio para Innova (moneda, horarios, rubro). Ausente = no cargada. */
   profile?: TenantProfile;
+  /**
+   * Vistas propias por persona del negocio, indexadas por `sub` de Cognito. Una persona que
+   * aparece acá ve SOLO sus widgets (los compartidos del negocio no) y sus prompts sugeridos;
+   * los datos (tickets, analítica) son los mismos del negocio. Ausente = todos ven lo compartido.
+   * Se arma con `scripts/add-tenant-user.ts`.
+   */
+  userViews?: Record<string, UserView>;
+}
+
+export interface UserView {
+  /** Etiqueta interna (rol/persona), solo para operadores. */
+  label?: string;
+  suggestedPrompts?: Array<{ q: string; label: string }>;
 }
 
 export interface TicketRecord {
@@ -314,4 +327,6 @@ export interface WidgetRecord {
   groupBy?: string;
   filters?: WidgetFilters;
   createdAt: string;
+  /** Presente solo en widgets de una persona con vista propia (`TenantRecord.userViews`); ausente = compartido. */
+  userId?: string;
 }

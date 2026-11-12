@@ -2,8 +2,11 @@ import type { APIGatewayProxyWithCognitoAuthorizerEvent } from "aws-lambda";
 
 // La guardia de tenant activo tiene cobertura de integración independiente.
 jest.mock("../../src/shared/auth", () => ({
-  resolveActiveTenantIdFromEvent: async (event: APIGatewayProxyWithCognitoAuthorizerEvent) =>
-    event.requestContext?.authorizer?.claims?.["custom:tenantId"] || undefined,
+  resolveActiveTenantFromEvent: async (event: APIGatewayProxyWithCognitoAuthorizerEvent) => {
+    const tenantId = event.requestContext?.authorizer?.claims?.["custom:tenantId"];
+    return tenantId ? { tenantId, userViews: { "own-user": { suggestedPrompts: [{ q: "¿Cuánto vendí hoy?", label: "Hoy" }] } } } : undefined;
+  },
+  resolveUserIdFromEvent: (event: APIGatewayProxyWithCognitoAuthorizerEvent) => event.requestContext?.authorizer?.claims?.sub,
 }));
 
 const mockDdbSend = jest.fn();
@@ -297,4 +300,20 @@ test.each([
   const result = await handler(eventWith({ name: "Ventas", visualization: "kpi", metric: { field: "total", aggregation: "sum" }, filters }));
   expect(result.statusCode).toBe(400);
   expect(mockDdbSend).not.toHaveBeenCalled();
+});
+
+describe("vista propia por persona", () => {
+  const body = { name: "Mi KPI", visualization: "kpi", metric: { field: "total", aggregation: "sum" } };
+  const withSub = (sub: string) => ({ requestContext: { authorizer: { claims: { "custom:tenantId": "t1", sub } } }, body: JSON.stringify(body) }) as unknown as APIGatewayProxyWithCognitoAuthorizerEvent;
+
+  test("quien tiene vista propia crea el widget con su userId", async () => {
+    const result = await handler(withSub("own-user"));
+    expect(JSON.parse(result.body).userId).toBe("own-user");
+    expect(mockDdbSend.mock.calls[0][0].input.Item.userId).toBe("own-user");
+  });
+
+  test("el resto del negocio crea widgets compartidos, sin userId", async () => {
+    const result = await handler(withSub("alguien-mas"));
+    expect(JSON.parse(result.body).userId).toBeUndefined();
+  });
 });

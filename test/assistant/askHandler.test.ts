@@ -6,7 +6,11 @@ const mockDdbSend = jest.fn();
 const mockRunAthenaQuery = jest.fn();
 
 jest.mock("../../src/shared/auth", () => ({
-  resolveActiveTenantIdFromEvent: async (event: APIGatewayProxyWithCognitoAuthorizerEvent) => event.requestContext.authorizer.claims["custom:tenantId"],
+  resolveActiveTenantFromEvent: async (event: APIGatewayProxyWithCognitoAuthorizerEvent) => {
+    const tenantId = event.requestContext.authorizer?.claims?.["custom:tenantId"];
+    return tenantId ? { tenantId, userViews: { "own-user": { suggestedPrompts: [{ q: "¿Cuánto vendí hoy?", label: "Hoy" }] } } } : undefined;
+  },
+  resolveUserIdFromEvent: (event: APIGatewayProxyWithCognitoAuthorizerEvent) => event.requestContext.authorizer?.claims?.sub,
 }));
 
 jest.mock("@aws-sdk/client-bedrock-runtime", () => {
@@ -1262,6 +1266,60 @@ test.each([
   const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
   expect(toolResult.status).toBe("error");
   expect(JSON.stringify(toolResult.content)).toMatch(message);
+});
+
+test("create_widget: si el modelo dice que creó el widget sin llamarla, se le corrige y crea el widget", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(textResponse("Listo. Acabo de crear el widget **Unidades 5 litros** en tu dashboard."))
+    .mockResolvedValueOnce(
+      toolUseResponse("tu1", "create_widget", {
+        name: "Unidades 5 litros · Por cliente", visualization: "bar", field: "quantity", aggregation: "sum",
+        groupBy: "customer", filters: { descriptionContains: "5 litros" },
+      }),
+    )
+    .mockResolvedValueOnce(textResponse("Listo, creé el widget de unidades por cliente."));
+  mockRunAthenaQuery.mockResolvedValue([{ label: "D1 S A S", value: 238500 }]);
+
+  const result = await handler(eventWith({ question: "hazme la grafica de unidades", history: [
+    { role: "user", text: "hazme una grafica" },
+    { role: "assistant", text: "Listo. Acabo de crear el widget X en tu dashboard." },
+  ] }, "tenant-x"));
+
+  expect(result.statusCode).toBe(200);
+  const body = JSON.parse(result.body);
+  expect(body.widget).toMatchObject({ visualization: "bar", groupBy: "customer", metric: { field: "quantity", aggregation: "sum" } });
+  expect(body.answer).toContain("creé el widget");
+  // El mock guarda el mismo array de mensajes (se va ampliando): la corrección está en él, como mensaje de usuario.
+  const sent = mockBedrockSend.mock.calls[1][0].input.messages as Array<{ role: string; content: Array<{ text?: string }> }>;
+  expect(sent.some((m) => m.role === "user" && m.content[0].text?.includes("NO llamaste a create_widget"))).toBe(true);
+});
+
+test("create_widget: si el modelo insiste en que lo creó sin widget, la respuesta se reemplaza por un aviso honesto", async () => {
+  mockBedrockSend
+    .mockResolvedValueOnce(textResponse("Listo, creé la gráfica en tu dashboard."))
+    .mockResolvedValueOnce(textResponse("Ya tengo ese widget creado."));
+
+  const result = await handler(eventWith({ question: "hazme la grafica" }, "tenant-x"));
+
+  const body = JSON.parse(result.body);
+  expect(body.widget).toBeUndefined();
+  expect(body.answer).toMatch(/No pude crear el widget/);
+  expect(mockBedrockSend).toHaveBeenCalledTimes(2);
+});
+
+test("create_widget: una respuesta que no afirma haber creado nada no dispara la corrección", async () => {
+  mockBedrockSend.mockResolvedValueOnce(textResponse("D1 S A S lidera con 238.500 unidades."));
+  const result = await handler(eventWith({ question: "unidades por cliente" }, "tenant-x"));
+  expect(JSON.parse(result.body).answer).toBe("D1 S A S lidera con 238.500 unidades.");
+  expect(mockBedrockSend).toHaveBeenCalledTimes(1);
+});
+
+test("create_widget: el prompt prohíbe afirmar la creación sin la llamada y poner periodos en el título", async () => {
+  mockBedrockSend.mockResolvedValueOnce(textResponse("hola"));
+  await handler(eventWith({ question: "hola" }));
+  const prompt = mockBedrockSend.mock.calls[0][0].input.system[0].text;
+  expect(prompt).toContain("REGLA DURA");
+  expect(prompt).toContain("no pongas meses");
 });
 
 test("create_widget: el prompt la describe y manda pasar las condiciones como filtros", async () => {

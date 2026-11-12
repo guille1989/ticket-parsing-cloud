@@ -1,0 +1,16 @@
+{
+  "label": "Alamo - comercial (EJEMPLO: editar antes de usar)",
+  "suggestedPrompts": [
+    { "q": "¿Cuánto he vendido hoy?", "label": "Ventas de hoy" },
+    { "q": "¿Quiénes son mis mejores clientes este mes?", "label": "Mejores clientes" },
+    { "q": "¿Qué productos se vendieron más esta semana?", "label": "Productos top" },
+    { "q": "¿Cómo van las ventas de este mes frente al mes pasado?", "label": "Mes vs mes pasado" },
+    { "q": "¿Qué clientes compraron menos que el mes pasado?", "label": "Clientes a la baja" }
+  ],
+  "widgets": [
+    { "name": "Facturas emitidas", "visualization": "kpi", "metric": { "field": "event_count", "aggregation": "count" } },
+    { "name": "Ventas totales", "visualization": "kpi", "metric": { "field": "total", "aggregation": "sum" } },
+    { "name": "Ventas por cliente", "visualization": "bar", "metric": { "field": "total", "aggregation": "sum" }, "groupBy": "customer" },
+    { "name": "Evolución de ventas", "visualization": "line", "metric": { "field": "total", "aggregation": "sum" }, "groupBy": "day" }
+  ]
+}

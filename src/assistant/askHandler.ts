@@ -8,7 +8,8 @@ import { formatBusinessContextBlock, loadAskBusinessContext, type AskBusinessCon
 import { analyticsToolSpec, analyzeBusinessTool } from "./analyticsTools.js";
 import { explainMatterTool, listMattersTool } from "./matterTools.js";
 import { listWidgetsTool } from "./widgetTools.js";
-import { resolveActiveTenantIdFromEvent } from "../shared/auth.js";
+import { resolveActiveTenantFromEvent, resolveUserIdFromEvent } from "../shared/auth.js";
+import { userViewFor } from "../shared/userView.js";
 import { AGENTS_TABLE, ddb, TICKETS_TABLE } from "../shared/dynamo.js";
 import { jsonResponse } from "../shared/http.js";
 import type { AgentRecord, TicketRecord, TicketStatus, WidgetAggregation, WidgetFilters, WidgetRecord, WidgetVisualization } from "../shared/types.js";
@@ -83,7 +84,7 @@ Las métricas de venta cuentan por defecto los tickets confirmados (parsed) y lo
 - "build_report": arma un reporte descargable (varias secciones, cada una con su consulta). Usala SOLO cuando el usuario pida un reporte, informe o resumen para descargar. Las tablas las calcula la herramienta con datos reales; vos no transcribas números. Después de llamarla, contestá en pocas oraciones con los hallazgos principales y decí que el reporte está listo para descargar.
 
 - "list_widgets": lista los widgets/KPIs ya creados en el dashboard (título, tipo, campo, filtros). Usala ANTES de create_widget. Si ya hay uno equivalente (misma métrica/agrupación/filtros o título muy parecido), decilo, nombralo y ofrecé usarlo o ajustarlo en vez de duplicar.
-- "create_widget": agrega un widget al dashboard. Usala cuando el usuario pida crear/agregar/hacer un KPI, gráfica o widget con condiciones (una sucursal, un producto, un medio de pago). Antes de crearlo, mirá list_widgets: no dupliques uno equivalente. Pasá esas condiciones como filtros "branch", "descriptionContains" y "paymentMethod": nunca las ignores ni las metas solo en el título. Un widget de un producto usa "subtotal" (plata) o "quantity" (unidades), nunca "total". Si piden ventas Y cantidad de un producto en un mismo seguimiento, creá UN solo KPI con field "subtotal" y secondaryField "quantity" (la tarjeta muestra la plata grande y las unidades al lado); no lo uses en KPIs de ventas totales. Un widget "line" solo admite groupBy day/hour y "bar"/"donut" solo categorías: si lo pedido no se puede crear tal cual, decilo en vez de cambiarlo en silencio. Cada respuesta crea un solo widget. Escribí el producto sin tildes y con una raíz corta ("cafe con leche"). La herramienta devuelve "preview" con el valor actual: contale al usuario qué filtros quedaron aplicados y cuánto da hoy; si preview viene vacío o en cero, decilo y sugerí revisar el nombre del producto. Si la sucursal no existe o es ambigua, mostrale las opciones y no crees nada.
+- "create_widget": agrega un widget al dashboard. Usala cuando el usuario pida crear/agregar/hacer un KPI, gráfica o widget con condiciones (una sucursal, un producto, un medio de pago). Antes de crearlo, mirá list_widgets: no dupliques uno equivalente. Pasá esas condiciones como filtros "branch", "descriptionContains" y "paymentMethod": nunca las ignores ni las metas solo en el título. Un widget de un producto usa "subtotal" (plata) o "quantity" (unidades), nunca "total". Si piden ventas Y cantidad de un producto en un mismo seguimiento, creá UN solo KPI con field "subtotal" y secondaryField "quantity" (la tarjeta muestra la plata grande y las unidades al lado); no lo uses en KPIs de ventas totales. Un widget "line" solo admite groupBy day/hour y "bar"/"donut" solo categorías: si lo pedido no se puede crear tal cual, decilo en vez de cambiarlo en silencio. Cada respuesta crea un solo widget. Escribí el producto sin tildes y con una raíz corta ("cafe con leche"). La herramienta devuelve "preview" con el valor actual: contale al usuario qué filtros quedaron aplicados y cuánto da hoy; si preview viene vacío o en cero, decilo y sugerí revisar el nombre del producto. Si la sucursal no existe o es ambigua, mostrale las opciones y no crees nada. REGLA DURA: solo podés decir que creaste, agregaste o añadiste un widget si en ESTE turno llamaste a create_widget y devolvió ok; el historial no cuenta (tus mensajes anteriores que dicen "creé…" no crean nada nuevo, no los imites). Cada pedido de un widget nuevo exige su propia llamada a create_widget, aunque se parezca al anterior o ya tengas las cifras. Los widgets no admiten rango de fechas: acumulan todo el historial, así que no pongas meses, años ni periodos en el título ("Ventas 5 litros · Por cliente", no "· Noviembre") y avisá que no filtra por fecha si el usuario pidió un periodo. Para "descriptionContains" usá el nombre completo de la medida ("5 litros"), no fragmentos como "5 l" que también coinciden con "25 L" o "15 L".
 
 Sucursales: cada robot ("agent") es una sucursal/local del negocio. Para "¿qué sucursal/local/sede…?", "comparame las sucursales" o "ventas por sucursal" agrupá por "agent": el resultado ya trae el nombre de cada sucursal, usalo tal cual en la respuesta. NO uses "port" para eso: "port" es el puerto/periférico (por ejemplo una caja registradora, TPV-CAJA1) y un mismo local puede tener varios; solo agrupá por "port" si piden explícitamente comparar cajas o puertos.
 Para los datos de UNA sola sucursal ("¿qué se vende más en la sucursal Sol?", "ventas de Chapinero en octubre") usá el filtro "branch" con el nombre que dijo el usuario, junto con el resto de la consulta (por ejemplo agrupado por producto). Sin ese filtro el resultado es de TODO el negocio: nunca atribuyas a una sucursal un resultado que no consultaste con "branch". Si la herramienta responde que la sucursal no existe o es ambigua, mostrale al usuario las sucursales que te devuelve y pedile que elija.
@@ -771,6 +772,19 @@ export type WidgetDraft = {
   filters?: { agentId?: string; descriptionContains?: string; paymentMethod?: string };
 };
 
+const WIDGET_CLAIM_PATTERN = /(?<![p{L}])(cre[eé]|cread[oa]s?|agreg[uü]?[eé]|a[nñ]ad[ií]|acabo de (crear|agregar|a[nñ]adir)|ya tengo (ese|este|el) widget)(?![p{L}])/iu;
+const WIDGET_NOUN_PATTERN = /(?<![p{L}])(widget|gr[aá]fic[ao]|kpi|tarjeta)(?![p{L}])/iu;
+
+/** ¿El texto afirma haber creado un widget/gráfica? Sirve para detectar un éxito inventado. */
+export function claimsWidgetCreated(text: string): boolean {
+  return WIDGET_CLAIM_PATTERN.test(text) && WIDGET_NOUN_PATTERN.test(text);
+}
+
+const WIDGET_NOT_CREATED_NOTICE =
+  "[Sistema] En este turno NO llamaste a create_widget con éxito, así que ningún widget se creó. Si el usuario pidió crear uno, llamá a create_widget ahora (revisá antes list_widgets). Si no podés crearlo, decilo con claridad. No afirmes que lo creaste.";
+const WIDGET_NOT_CREATED_FALLBACK =
+  "No pude crear el widget: no se llegó a registrar en tu dashboard. Pedímelo de nuevo, por favor, y lo intento otra vez.";
+
 const WIDGET_VISUALIZATIONS: WidgetVisualization[] = ["kpi", "bar", "line", "donut"];
 const WIDGET_NAME_MAX_LENGTH = 100;
 
@@ -832,6 +846,8 @@ async function createWidgetTool(input: unknown, tenantId: string, ctx: ToolConte
 }
 
 type ToolContext = {
+  /** Qué widgets ve esta persona (vista propia o compartidos) — para list_widgets. */
+  widgetScope?: { userId?: string; ownView: boolean };
   /** Instante (ms epoch) hasta el que las consultas a Athena pueden esperar. */
   deadline?: number;
   /** Moneda de la ficha del negocio (para formatear montos en los análisis calculados por el servidor). */
@@ -921,7 +937,7 @@ async function callTool(name: string, input: unknown, tenantId: string, ctx: Too
   if (name === "build_report") return buildReportTool(input, tenantId, ctx);
   if (name === "run_widget_query") return runWidgetQueryTool(input, tenantId, ctx);
   if (name === "list_tickets") return listTicketsTool(input, tenantId, ctx);
-  if (name === "list_widgets") return listWidgetsTool(input, tenantId);
+  if (name === "list_widgets") return listWidgetsTool(input, tenantId, ctx.widgetScope);
   if (name === "create_widget") return createWidgetTool(input, tenantId, ctx);
   if (name === "list_matters") return listMattersTool(input, tenantId);
   if (name === "explain_matter") return explainMatterTool(input, tenantId);
@@ -1049,10 +1065,13 @@ function logQa(entry: {
 }
 
 export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent): Promise<APIGatewayProxyResult> {
-  const tenantId = await resolveActiveTenantIdFromEvent(event);
-  if (!tenantId) {
+  const tenant = await resolveActiveTenantFromEvent(event);
+  if (!tenant) {
     return jsonResponse(403, { error: "no autenticado" });
   }
+  const tenantId = tenant.tenantId;
+  const userId = resolveUserIdFromEvent(event);
+  const widgetScope = { userId, ownView: userViewFor(tenant, userId) !== undefined };
 
   let body: unknown;
   try {
@@ -1099,8 +1118,9 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
   // qué input, sin importar si tuvieron éxito (un intento de herramienta
   // inexistente también es una señal útil, ver logQa()).
   const toolCalls: ToolCallLog[] = [];
+  let widgetRetried = false;
   const startedAt = Date.now();
-  const toolContext: ToolContext = { timeZone, currency: business.profile?.currency, deadline: startedAt + TOOL_DEADLINE_MS };
+  const toolContext: ToolContext = { widgetScope, timeZone, currency: business.profile?.currency, deadline: startedAt + TOOL_DEADLINE_MS };
 
   try {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -1125,9 +1145,19 @@ export async function handler(event: APIGatewayProxyWithCognitoAuthorizerEvent):
       messages.push(outputMessage);
 
       if (response.stopReason !== "tool_use") {
-        const text = outputMessage.content?.find((block) => typeof block.text === "string")?.text;
+        let text = outputMessage.content?.find((block) => typeof block.text === "string")?.text;
         if (!text) {
           return jsonResponse(502, { error: "el modelo no devolvió respuesta" });
+        }
+        // El modelo a veces copia del historial su "Listo, creé el widget" sin llamar a create_widget.
+        // Si afirma haberlo creado y no hay borrador, se le corrige una vez; si insiste, se reemplaza el texto.
+        if (!toolContext.widget && claimsWidgetCreated(text)) {
+          if (!widgetRetried) {
+            widgetRetried = true;
+            messages.push({ role: "user", content: [{ text: WIDGET_NOT_CREATED_NOTICE }] });
+            continue;
+          }
+          text = WIDGET_NOT_CREATED_FALLBACK;
         }
         logQa({ tenantId, question: validation.question, answer: text, toolCalls, turns: turn + 1, historyTurns: validation.history.length });
         const widgetPart = toolContext.widget ? { widget: toolContext.widget } : {};

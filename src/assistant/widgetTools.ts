@@ -1,3 +1,4 @@
+import { widgetVisibleTo } from "../shared/userView.js";
 import { WIDGETS_TABLE } from "../shared/dynamo.js";
 import { queryAllPages } from "../shared/pagination.js";
 import type { WidgetRecord } from "../shared/types.js";
@@ -43,7 +44,7 @@ function toListItem(widget: WidgetRecord) {
  * Lista los widgets del dashboard del tenant para que Ask evite duplicar KPIs
  * antes de create_widget (F3 / P1).
  */
-export async function listWidgetsTool(input: unknown, tenantId: string): Promise<unknown> {
+export async function listWidgetsTool(input: unknown, tenantId: string, scope?: { userId?: string; ownView: boolean }): Promise<unknown> {
   const raw = (input ?? {}) as Record<string, unknown>;
   const limit = parseLimit(raw.limit);
 
@@ -53,6 +54,7 @@ export async function listWidgetsTool(input: unknown, tenantId: string): Promise
     ExpressionAttributeValues: { ":pk": `TENANT#${tenantId}`, ":prefix": "WIDGET#" },
   });
 
-  const widgets = items.slice(0, limit).map(toListItem);
-  return { widgets, count: widgets.length, total: items.length };
+  const visible = scope ? items.filter((w) => widgetVisibleTo(w, scope.userId, scope.ownView)) : items;
+  const widgets = visible.slice(0, limit).map(toListItem);
+  return { widgets, count: widgets.length, total: visible.length };
 }
