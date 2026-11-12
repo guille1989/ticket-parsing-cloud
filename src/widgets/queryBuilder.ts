@@ -143,7 +143,23 @@ export function buildWidgetQuery(widget: WidgetRecord, maxGroups: number = MAX_G
 // `toSqlStringLiteral`), así que ese CAST ya es redundante — se deja
 // porque no cambia el resultado y la consulta ya está probada así contra
 // Athena real.
-const DEFAULT_YEAR_LOOKBACK = 1;
+/** Años de partición Athena que se abarcan cuando la consulta no trae dateFrom/dateTo. */
+export const DEFAULT_YEAR_LOOKBACK = 1;
+
+/**
+ * Meta de cobertura cuando la query no trae fechas explícitas: Athena acota
+ * particiones a ~DEFAULT_YEAR_LOOKBACK años hacia atrás. El asistente debe
+ * decir esa ventana y no presentar el total como "desde siempre".
+ */
+export function undatedQueryCoverage(filters?: { dateFrom?: string; dateTo?: string }): {
+  coverageFrom: string;
+  lookbackYears: number;
+} | undefined {
+  if (filters?.dateFrom || filters?.dateTo) return undefined;
+  const currentYear = new Date().getUTCFullYear();
+  const fromYear = currentYear - DEFAULT_YEAR_LOOKBACK;
+  return { coverageFrom: `${fromYear}-01-01`, lookbackYears: DEFAULT_YEAR_LOOKBACK };
+}
 
 function buildWhere(widget: WidgetRecord, timeZone?: string): { whereClause: string; params: string[] } {
   const params: string[] = [widget.tenantId];

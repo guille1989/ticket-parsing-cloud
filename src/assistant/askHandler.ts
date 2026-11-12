@@ -31,7 +31,7 @@ import {
   isValidTimeZone,
   isValidMetricField,
 } from "../widgets/fields.js";
-import { buildWidgetQuery } from "../widgets/queryBuilder.js";
+import { buildWidgetQuery, undatedQueryCoverage } from "../widgets/queryBuilder.js";
 import { internalMatterId } from "../advisor/matterApi.js";
 
 const bedrock = new BedrockRuntimeClient({});
@@ -83,7 +83,7 @@ Las métricas de venta cuentan por defecto los tickets confirmados (parsed) y lo
 - "build_report": arma un reporte descargable (varias secciones, cada una con su consulta). Usala SOLO cuando el usuario pida un reporte, informe o resumen para descargar. Las tablas las calcula la herramienta con datos reales; vos no transcribas números. Después de llamarla, contestá en pocas oraciones con los hallazgos principales y decí que el reporte está listo para descargar.
 
 - "list_widgets": lista los widgets/KPIs ya creados en el dashboard (título, tipo, campo, filtros). Usala ANTES de create_widget. Si ya hay uno equivalente (misma métrica/agrupación/filtros o título muy parecido), decilo, nombralo y ofrecé usarlo o ajustarlo en vez de duplicar.
-- "create_widget": agrega un widget al dashboard. Usala cuando el usuario pida crear/agregar/hacer un KPI, gráfica o widget con condiciones (una sucursal, un producto). Antes de crearlo, mirá list_widgets: no dupliques uno equivalente. Pasá esas condiciones como filtros "branch" y "descriptionContains": nunca las ignores ni las metas solo en el título. Un widget de un producto usa "subtotal" (plata) o "quantity" (unidades), nunca "total". Si piden ventas Y cantidad de un producto en un mismo seguimiento, creá UN solo KPI con field "subtotal" y secondaryField "quantity" (la tarjeta muestra la plata grande y las unidades al lado); no lo uses en KPIs de ventas totales. Un widget "line" solo admite groupBy day/hour y "bar"/"donut" solo categorías: si lo pedido no se puede crear tal cual, decilo en vez de cambiarlo en silencio. Cada respuesta crea un solo widget. Escribí el producto sin tildes y con una raíz corta ("cafe con leche"). La herramienta devuelve "preview" con el valor actual: contale al usuario qué filtros quedaron aplicados y cuánto da hoy; si preview viene vacío o en cero, decilo y sugerí revisar el nombre del producto. Si la sucursal no existe o es ambigua, mostrale las opciones y no crees nada.
+- "create_widget": agrega un widget al dashboard. Usala cuando el usuario pida crear/agregar/hacer un KPI, gráfica o widget con condiciones (una sucursal, un producto, un medio de pago). Antes de crearlo, mirá list_widgets: no dupliques uno equivalente. Pasá esas condiciones como filtros "branch", "descriptionContains" y "paymentMethod": nunca las ignores ni las metas solo en el título. Un widget de un producto usa "subtotal" (plata) o "quantity" (unidades), nunca "total". Si piden ventas Y cantidad de un producto en un mismo seguimiento, creá UN solo KPI con field "subtotal" y secondaryField "quantity" (la tarjeta muestra la plata grande y las unidades al lado); no lo uses en KPIs de ventas totales. Un widget "line" solo admite groupBy day/hour y "bar"/"donut" solo categorías: si lo pedido no se puede crear tal cual, decilo en vez de cambiarlo en silencio. Cada respuesta crea un solo widget. Escribí el producto sin tildes y con una raíz corta ("cafe con leche"). La herramienta devuelve "preview" con el valor actual: contale al usuario qué filtros quedaron aplicados y cuánto da hoy; si preview viene vacío o en cero, decilo y sugerí revisar el nombre del producto. Si la sucursal no existe o es ambigua, mostrale las opciones y no crees nada.
 
 Sucursales: cada robot ("agent") es una sucursal/local del negocio. Para "¿qué sucursal/local/sede…?", "comparame las sucursales" o "ventas por sucursal" agrupá por "agent": el resultado ya trae el nombre de cada sucursal, usalo tal cual en la respuesta. NO uses "port" para eso: "port" es el puerto/periférico (por ejemplo una caja registradora, TPV-CAJA1) y un mismo local puede tener varios; solo agrupá por "port" si piden explícitamente comparar cajas o puertos.
 Para los datos de UNA sola sucursal ("¿qué se vende más en la sucursal Sol?", "ventas de Chapinero en octubre") usá el filtro "branch" con el nombre que dijo el usuario, junto con el resto de la consulta (por ejemplo agrupado por producto). Sin ese filtro el resultado es de TODO el negocio: nunca atribuyas a una sucursal un resultado que no consultaste con "branch". Si la herramienta responde que la sucursal no existe o es ambigua, mostrale al usuario las sucursales que te devuelve y pedile que elija.
@@ -104,7 +104,8 @@ No pidas aclaraciones si la pregunta se puede contestar con una suposición razo
 - "Envases", "botellas", "presentaciones", "tamaños", "tipos" o "referencias" vendidas NO son una palabra que aparezca en los nombres: el tipo de envase/presentación viene dentro del nombre del producto (por ejemplo "AGUA TRATADA 350 ML SIN GAS", "AGUA TRATADA 600 ML BALA CON GAS"). NUNCA filtres con "descriptionContains" por una categoría genérica como "envase", "botella" o "producto". Agrupá por "description" con "quantity" (sum) —y si piden plata, también "subtotal"— en el periodo pedido, y presentá cada producto como una fila: el nombre del producto es el tipo de envase y la cantidad es el número de envases/unidades. Cada fila agrupada por producto trae "volume" (la medida que figura en el nombre, ej. "350 ML"; ausente si no tiene): si piden el volumen separado, ponelo en su propia columna (Producto | Volumen | Unidades) copiando "volume" tal cual, sin calcularlo vos. Si piden totales POR VOLUMEN (todo lo de 350 ML junto, con y sin gas), agrupá por "volume" (con "quantity" o "subtotal"): la herramienta ya suma por medida; las filas "(sin dato)" son productos sin medida en el nombre. Nunca sumes filas por volumen vos.
 - Totales de una consulta agrupada: el resultado trae "groupsTotal" (suma de TODOS los grupos, calculada por la herramienta) y "groupCount" (cuántos grupos hay). Para el total general ("ventas totales", "unidades vendidas") y para porcentajes de participación ("el 78% de los ingresos") usá "groupsTotal" como total; NUNCA sumes las filas vos ni inventes un total. Si "groupsTruncated" es true, la lista trae solo los primeros 50 grupos por valor y hay más: decilo ("mostrando los 50 principales de más"), y no presentes la lista como completa ni sumes sus filas como total. Si te piden "todas las referencias" y vienen menos filas que las que pide el usuario, avisá cuántas muestra la tabla. Si tampoco viene "groupsTotal", consultá aparte sin groupBy para obtener el total.
 - Si piden el "total del ticket"/"total de la factura" desglosado por producto, volumen o medida, ese total no se puede repartir entre los ítems: usá "subtotal" (valor de las líneas, antes de los impuestos del ticket) y decí explícitamente en la respuesta que usaste subtotal y por qué. El encabezado de la columna de cifras nombra la métrica real que devolvió la herramienta (campo "metric": "Subtotal", "Unidades"…), no la que pidió el usuario.
-- Cada cifra de una tabla se copia tal cual del resultado de la herramienta. Nunca multipliques, dividas ni derives importes (por ejemplo cantidad × precio) ni inventes precios: si te falta una cifra, volvé a consultar. Solo usá "descriptionContains" si el usuario nombra una palabra concreta que sí figura en los productos (una medida, "bala", "con gas"). Si el resultado viene vacío con un filtro de producto ("descriptionContains"), volvé a consultar sin ese filtro antes de decir que no hay datos. Esa regla es SOLO para el filtro de producto: con "paymentMethod" (o "branch") un resultado vacío o en cero es la respuesta.
+- Cada cifra de una tabla se copia tal cual del resultado de la herramienta. Nunca multipliques, dividas ni derives importes (por ejemplo cantidad × precio) ni inventes precios: si te falta una cifra, volvé a consultar. Solo usá "descriptionContains" si el usuario nombra una palabra concreta que sí figura en los productos (una medida, "bala", "con gas"). Si el resultado viene vacío o con match "none" con un filtro de producto ("descriptionContains"), la respuesta es que NO hay coincidencias de ese producto: decilo así; NUNCA vuelvas a consultar sin ese filtro ni sustituyas con el total del negocio o el catálogo completo. Lo mismo con "paymentMethod" o "branch": vacío o en cero ES la respuesta.
+- Si el resultado de "run_widget_query" trae "coverageFrom" / "lookbackYears", la consulta NO cubre todo el historial: decí explícitamente la ventana de cobertura (desde coverageFrom, lookbackYears años) y NUNCA presentes esas cifras como totales absolutos "desde siempre" o "en total histórico".
 Pedí aclaración solo si no hay ninguna interpretación razonable.
 
 Alcance: tickets, ventas, productos vendidos, sucursales/robots, parseo/revisión, avisos Advisor, reportes y KPIs del dashboard. Fuera de eso (nómina, personal, impuestos, costos unitarios, inventario teórico, proveedores, asesoría legal/fiscal): rechazá en una frase ("Con los datos que tengo…" / "No tengo costos ni inventario…") y volvé al dominio.
@@ -466,32 +467,46 @@ async function runWidgetQueryTool(input: unknown, tenantId: string, ctx: ToolCon
   // explícito para que el modelo no lo reemplace por el total de otra consulta.
   const noSalesNote =
     filters?.paymentMethod && data.every((row) => !row.value)
-      ? { note: `No hay ventas pagadas con ${filters.paymentMethod} en este periodo (cero). Respondé eso; no vuelvas a consultar sin el filtro de medio de pago.` }
-      : {};
+      ? `No hay ventas pagadas con ${filters.paymentMethod} en este periodo (cero). Respondé eso; no vuelvas a consultar sin el filtro de medio de pago.`
+      : undefined;
+  // Mismo antipatrón con producto: vacío ≠ "consultar el negocio entero". match "none" obliga
+  // a decir que no hay coincidencias y prohíbe la reconsulta ciega sin descriptionContains.
+  const noProductMatch = filters?.descriptionContains && data.every((row) => !row.value);
+  const noProductNote = noProductMatch
+    ? `No hay coincidencias de producto para "${filters.descriptionContains}". ` +
+      `Decí que no hay ventas de ese producto; NO vuelvas a consultar sin descriptionContains ni sustituyas con el total del negocio.`
+    : undefined;
+  // Sin dateFrom/dateTo Athena acota particiones a ~1 año: hay que decir la ventana, no "desde siempre".
+  const coverage = undatedQueryCoverage(filters);
+  const coverageNote = coverage
+    ? `Cobertura limitada: desde ${coverage.coverageFrom} (lookbackYears=${coverage.lookbackYears}). ` +
+      `Decí esa ventana; NUNCA presentes estas cifras como total histórico absoluto o "desde siempre".`
+    : undefined;
   // "hour"/"day" dan una fila por cada fecha (y hora): cientos de filas que el modelo terminaba
   // sumando y ordenando de cabeza, con errores (en una prueba real su tabla "por hora" sumaba 72%
   // del total real). Se le dice en el propio resultado qué usar en cambio.
   const rowsPerDateNote =
     (groupBy === "hour" && data.length > 24) || (groupBy === "day" && data.length > 31)
-      ? {
-          note:
-            `Son ${data.length} filas, una por cada fecha${groupBy === "hour" ? " y hora" : ""}. NO las sumes, ordenes ni agrupes vos: los totales los calcula la herramienta. ` +
-            `Para horas pico o "a qué hora se vende más" consultá de nuevo con groupBy "hourOfDay" (hora del día, todos los días juntos); ` +
-            `para "qué día de la semana se vende más", con groupBy "weekday". Usá estas filas solo para mostrar la evolución en el tiempo.`,
-        }
-      : {};
+      ? `Son ${data.length} filas, una por cada fecha${groupBy === "hour" ? " y hora" : ""}. NO las sumes, ordenes ni agrupes vos: los totales los calcula la herramienta. ` +
+        `Para horas pico o "a qué hora se vende más" consultá de nuevo con groupBy "hourOfDay" (hora del día, todos los días juntos); ` +
+        `para "qué día de la semana se vende más", con groupBy "weekday". Usá estas filas solo para mostrar la evolución en el tiempo.`
+      : undefined;
   // Total de TODOS los grupos, calculado acá: el modelo sumaba las filas de cabeza y se equivocaba
   // (en una prueba real dijo "1,02 mil millones" cuando el total era 932 M). Solo cuando los grupos
   // se reparten el total sin solaparse; con el tope de grupos alcanzado se pide el total sin agrupar.
   const groupsSummary = await groupsTotalSummary({ widget, data, field, aggregation, groupBy, timeZone: ctx.timeZone, maxWaitMs, filters });
+  // Una sola `note` visible: producto vacío > medio de pago vacío > hour/day > cobertura
+  // (coverageFrom/lookbackYears viajan siempre en el payload cuando aplican).
+  const primaryNote = noProductNote ?? noSalesNote ?? rowsPerDateNote ?? coverageNote;
   const meta = {
     metric: field,
     aggregation,
     ...(groupBy ? { groupBy } : {}),
     ...(Object.keys(metaFilters).length ? { filters: metaFilters } : {}),
     ...groupsSummary,
-    ...noSalesNote,
-    ...rowsPerDateNote,
+    ...(noProductMatch ? { match: "none" as const } : {}),
+    ...(coverage ? { coverageFrom: coverage.coverageFrom, lookbackYears: coverage.lookbackYears } : {}),
+    ...(primaryNote ? { note: primaryNote } : {}),
   };
   if (groupBy === "description") return { ...meta, data: data.map((row) => ({ ...row, volume: extractProductVolume(row.label) })) };
   if (groupBy !== "agent") return { ...meta, data };
@@ -753,7 +768,7 @@ export type WidgetDraft = {
   metric: { field: string; aggregation: string };
   secondaryMetric?: { field: string; aggregation: string };
   groupBy?: string;
-  filters?: { agentId?: string; descriptionContains?: string };
+  filters?: { agentId?: string; descriptionContains?: string; paymentMethod?: string };
 };
 
 const WIDGET_VISUALIZATIONS: WidgetVisualization[] = ["kpi", "bar", "line", "donut"];
@@ -775,7 +790,7 @@ async function createWidgetTool(input: unknown, tenantId: string, ctx: ToolConte
   if (visualization === "line" && !TEMPORAL_FIELDS.includes(groupBy as never)) throw new Error(`un widget line necesita groupBy temporal: ${TEMPORAL_FIELDS.join(", ")}`);
   if (visualization !== "line" && groupBy && TEMPORAL_FIELDS.includes(groupBy as never)) throw new Error("groupBy temporal solo sirve para widgets line");
   if (filters?.dateFrom || filters?.dateTo || filters?.port || filters?.status) {
-    throw new Error("los widgets del dashboard solo admiten los filtros branch y descriptionContains (el rango de fechas lo elige el usuario en el tablero)");
+    throw new Error("los widgets del dashboard solo admiten los filtros branch, descriptionContains y paymentMethod (el rango de fechas lo elige el usuario en el tablero)");
   }
 
   // Consulta de prueba: valida la combinación de campos y deja ver si el filtro
@@ -795,6 +810,7 @@ async function createWidgetTool(input: unknown, tenantId: string, ctx: ToolConte
   const draftFilters: WidgetDraft["filters"] = {
     ...(filters?.agentId ? { agentId: filters.agentId } : {}),
     ...(filters?.descriptionContains ? { descriptionContains: filters.descriptionContains } : {}),
+    ...(filters?.paymentMethod ? { paymentMethod: filters.paymentMethod } : {}),
   };
   ctx.widget = {
     name,
@@ -809,6 +825,7 @@ async function createWidgetTool(input: unknown, tenantId: string, ctx: ToolConte
     name,
     ...(branchLabel ? { branch: branchLabel } : {}),
     ...(filters?.descriptionContains ? { descriptionContains: filters.descriptionContains } : {}),
+    ...(filters?.paymentMethod ? { paymentMethod: filters.paymentMethod } : {}),
     preview: preview.data,
     ...(secondaryPreview ? { secondaryPreview } : {}),
   };
