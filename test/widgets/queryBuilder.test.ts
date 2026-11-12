@@ -1,4 +1,4 @@
-import { buildWidgetQuery, DESCRIPTION_SEARCH_EXPR, DEFAULT_YEAR_LOOKBACK, undatedQueryCoverage } from "../../src/widgets/queryBuilder";
+import { buildWidgetQuery, DESCRIPTION_SEARCH_EXPR } from "../../src/widgets/queryBuilder";
 import type { WidgetRecord } from "../../src/shared/types";
 
 // Sin `dateFrom`/`dateTo` explícitos, el año por default sale de "ahora"
@@ -6,7 +6,7 @@ import type { WidgetRecord } from "../../src/shared/types";
 // que en el código para no hardcodear un año que se rompería con el
 // tiempo.
 const CURRENT_YEAR = new Date().getUTCFullYear();
-const DEFAULT_FROM_YEAR = String(CURRENT_YEAR - DEFAULT_YEAR_LOOKBACK);
+const DEFAULT_FROM_YEAR = String(CURRENT_YEAR - 1);
 const DEFAULT_TO_YEAR = String(CURRENT_YEAR);
 
 function widget(overrides: Partial<WidgetRecord> = {}): WidgetRecord {
@@ -178,20 +178,6 @@ test("sin filtros explícitos, igual acota por año (para no barrer toda la proy
   expect(sql).not.toMatch(/capturedat|port =/);
   expect(sql).toContain("status IN ('parsed', 'needs_review')");
   expect(params).toEqual(["t1", DEFAULT_FROM_YEAR, DEFAULT_TO_YEAR]);
-});
-
-test("undatedQueryCoverage: sin fechas expone coverageFrom y lookbackYears; con fechas no", () => {
-  expect(undatedQueryCoverage(undefined)).toEqual({
-    coverageFrom: `${CURRENT_YEAR - DEFAULT_YEAR_LOOKBACK}-01-01`,
-    lookbackYears: DEFAULT_YEAR_LOOKBACK,
-  });
-  expect(undatedQueryCoverage({})).toEqual({
-    coverageFrom: `${CURRENT_YEAR - DEFAULT_YEAR_LOOKBACK}-01-01`,
-    lookbackYears: DEFAULT_YEAR_LOOKBACK,
-  });
-  expect(undatedQueryCoverage({ dateFrom: "2026-01-01" })).toBeUndefined();
-  expect(undatedQueryCoverage({ dateTo: "2026-12-31" })).toBeUndefined();
-  expect(undatedQueryCoverage({ dateFrom: "2026-01-01", dateTo: "2026-12-31" })).toBeUndefined();
 });
 
 test("los VALORES de los filtros nunca se interpolan directo en el SQL — siempre van como parámetro", () => {

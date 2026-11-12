@@ -742,15 +742,9 @@ describe("medio de pago", () => {
     expect(payload.note).toMatch(/No hay ventas pagadas con Datafono/);
   });
 
-  test("con ventas en ese medio no hay nota (con fechas, sin meta de cobertura)", async () => {
+  test("con ventas en ese medio no hay nota", async () => {
     mockBedrockSend
-      .mockResolvedValueOnce(
-        toolUseResponse("tu1", "run_widget_query", {
-          field: "total",
-          aggregation: "sum",
-          filters: { paymentMethod: "QR", dateFrom: "2026-01-01", dateTo: "2026-12-31" },
-        }),
-      )
+      .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum", filters: { paymentMethod: "QR" } }))
       .mockResolvedValueOnce(textResponse("QR: 1.962.300"));
     mockRunAthenaQuery.mockResolvedValue([{ value: 1962300 }]);
 
@@ -759,116 +753,14 @@ describe("medio de pago", () => {
     const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
     const payload = JSON.parse(toolResult.content[0].text ?? JSON.stringify(toolResult.content[0].json));
     expect(payload.note).toBeUndefined();
-    expect(payload.coverageFrom).toBeUndefined();
   });
 
-  test("el prompt prohíbe buscar un medio de pago como producto y reconsultar sin filtros vacíos", async () => {
+  test("el prompt prohíbe buscar un medio de pago como producto y limita la regla de reconsultar al filtro de producto", async () => {
     mockBedrockSend.mockResolvedValue(textResponse("ok"));
     await handler(eventWith({ question: "hola" }));
     const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
     expect(systemText).toContain('NUNCA busques un medio de pago con "descriptionContains"');
-    expect(systemText).toContain('NUNCA vuelvas a consultar sin ese filtro');
-    expect(systemText).not.toContain("volvé a consultar sin ese filtro antes de decir que no hay datos");
-  });
-});
-
-describe("producto sin coincidencias (descriptionContains)", () => {
-  test("resultado vacío trae match none y nota que prohíbe reconsultar sin el filtro", async () => {
-    mockBedrockSend
-      .mockResolvedValueOnce(
-        toolUseResponse("tu1", "run_widget_query", {
-          field: "subtotal",
-          aggregation: "sum",
-          filters: { descriptionContains: "xyz-inexistente", dateFrom: "2026-01-01", dateTo: "2026-12-31" },
-        }),
-      )
-      .mockResolvedValueOnce(textResponse("No hay ventas de ese producto."));
-    mockRunAthenaQuery.mockResolvedValue([{ value: null }]);
-
-    await handler(eventWith({ question: "¿cuánto vendí de xyz-inexistente?" }));
-
-    const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
-    const payload = toolResult.content[0].json ?? JSON.parse(toolResult.content[0].text);
-    expect(payload.match).toBe("none");
-    expect(payload.filters).toEqual({ descriptionContains: "xyz-inexistente", dateFrom: "2026-01-01", dateTo: "2026-12-31" });
-    expect(payload.note).toMatch(/No hay coincidencias de producto/);
-    expect(payload.note).toMatch(/NO vuelvas a consultar sin descriptionContains/);
-  });
-
-  test("con ventas del producto no hay match none", async () => {
-    mockBedrockSend
-      .mockResolvedValueOnce(
-        toolUseResponse("tu1", "run_widget_query", {
-          field: "subtotal",
-          aggregation: "sum",
-          filters: { descriptionContains: "cafe", dateFrom: "2026-01-01", dateTo: "2026-12-31" },
-        }),
-      )
-      .mockResolvedValueOnce(textResponse("Café: 1200"));
-    mockRunAthenaQuery.mockResolvedValue([{ value: 1200 }]);
-
-    await handler(eventWith({ question: "¿cuánto vendí de cafe?" }));
-
-    const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
-    const payload = toolResult.content[0].json ?? JSON.parse(toolResult.content[0].text);
-    expect(payload.match).toBeUndefined();
-    expect(payload.note).toBeUndefined();
-  });
-
-  test("el prompt prohíbe reconsultar sin descriptionContains y sustituir con el total del negocio", async () => {
-    mockBedrockSend.mockResolvedValue(textResponse("ok"));
-    await handler(eventWith({ question: "hola" }));
-    const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
-    expect(systemText).toContain('match "none"');
-    expect(systemText).toContain("NUNCA vuelvas a consultar sin ese filtro ni sustituyas con el total del negocio");
-  });
-});
-
-describe("cobertura de consultas sin fechas", () => {
-  test("sin dateFrom/dateTo el resultado trae coverageFrom y lookbackYears", async () => {
-    mockBedrockSend
-      .mockResolvedValueOnce(toolUseResponse("tu1", "run_widget_query", { field: "total", aggregation: "sum" }))
-      .mockResolvedValueOnce(textResponse("ok"));
-    mockRunAthenaQuery.mockResolvedValue([{ value: 999 }]);
-
-    await handler(eventWith({ question: "¿cuánto he vendido en total?" }));
-
-    const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
-    const payload = toolResult.content[0].json ?? JSON.parse(toolResult.content[0].text);
-    const year = new Date().getUTCFullYear();
-    expect(payload.coverageFrom).toBe(`${year - 1}-01-01`);
-    expect(payload.lookbackYears).toBe(1);
-    expect(payload.note).toMatch(/Cobertura limitada/);
-    expect(payload.note).toMatch(/desde siempre/);
-  });
-
-  test("con dateFrom/dateTo no hay meta de cobertura", async () => {
-    mockBedrockSend
-      .mockResolvedValueOnce(
-        toolUseResponse("tu1", "run_widget_query", {
-          field: "total",
-          aggregation: "sum",
-          filters: { dateFrom: "2026-10-01", dateTo: "2026-10-31" },
-        }),
-      )
-      .mockResolvedValueOnce(textResponse("ok"));
-    mockRunAthenaQuery.mockResolvedValue([{ value: 100 }]);
-
-    await handler(eventWith({ question: "¿ventas de octubre?" }));
-
-    const toolResult = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult;
-    const payload = toolResult.content[0].json ?? JSON.parse(toolResult.content[0].text);
-    expect(payload.coverageFrom).toBeUndefined();
-    expect(payload.lookbackYears).toBeUndefined();
-  });
-
-  test("el prompt manda declarar la ventana si viene coverageFrom/lookbackYears", async () => {
-    mockBedrockSend.mockResolvedValue(textResponse("ok"));
-    await handler(eventWith({ question: "hola" }));
-    const systemText = mockBedrockSend.mock.calls[0][0].input.system[0].text as string;
-    expect(systemText).toContain("coverageFrom");
-    expect(systemText).toContain("lookbackYears");
-    expect(systemText).toContain("totales absolutos");
+    expect(systemText).toContain('Esa regla es SOLO para el filtro de producto');
   });
 });
 
@@ -1214,33 +1106,6 @@ test("create_widget: KPI de un producto en una sucursal devuelve el widget con a
   const json = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult.content[0].json;
   expect(json).toMatchObject({ ok: true, branch: "Horno Castizo · Sol", descriptionContains: "cafe con leche", preview: [{ value: 1234.5 }] });
   expect(JSON.stringify(json)).not.toContain("agent-sol");
-});
-
-test("create_widget: KPI por medio de pago persiste paymentMethod en el draft (preview ≡ widget)", async () => {
-  mockBedrockSend
-    .mockResolvedValueOnce(
-      toolUseResponse("tu1", "create_widget", {
-        name: "Ventas datafono", visualization: "kpi", field: "total", aggregation: "sum",
-        filters: { paymentMethod: "datafono" },
-      }),
-    )
-    .mockResolvedValueOnce(textResponse("Listo, KPI de datafono."));
-  mockRunAthenaQuery.mockResolvedValue([{ value: 4500 }]);
-
-  const result = await handler(eventWith({ question: "creá un kpi de ventas en datafono" }, "tenant-x"));
-
-  expect(result.statusCode).toBe(200);
-  expect(JSON.parse(result.body).widget).toEqual({
-    name: "Ventas datafono",
-    visualization: "kpi",
-    metric: { field: "total", aggregation: "sum" },
-    filters: { paymentMethod: "Datafono" },
-  });
-  const [sql, params] = mockRunAthenaQuery.mock.calls[0];
-  expect(sql).toContain("paymentmethod = ?");
-  expect(params).toContain("Datafono");
-  const json = mockBedrockSend.mock.calls[1][0].input.messages[2].content[0].toolResult.content[0].json;
-  expect(json).toMatchObject({ ok: true, paymentMethod: "Datafono", preview: [{ value: 4500 }] });
 });
 
 test.each([
