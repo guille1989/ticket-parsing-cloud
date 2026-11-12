@@ -22,7 +22,7 @@ test("devuelve el perfil público y el onboarding", async () => {
   mockGetTenant.mockResolvedValue({ tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", parserId: "p1", onboarding: { version: 1 } });
   const result = await handler(eventWith("t1"));
   expect(JSON.parse(result.body)).toEqual({
-    tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", onboarding: { version: 1 }, profile: null, features: { advisorView: false }, timeZone: null,
+    tenantId: "t1", businessName: "Café Uno", createdAt: "2026-08-12T10:00:00.000Z", onboarding: { version: 1 }, profile: null, features: { advisorView: false },
   });
   expect(result.body).not.toContain("parserId");
 });
@@ -55,23 +55,11 @@ test("la vista beta del asistente solo se enciende con betaView exactamente en t
   expect(await advisorView({ betaView: true })).toBe(true);
 });
 
-test("expone la zona del negocio y oculta el resto de ajustes del asesor", async () => {
+test("el resto de los ajustes del asesor no se filtran al navegador", async () => {
   mockGetTenant.mockResolvedValue({ tenantId: "t1", businessName: "Café Uno", createdAt: "x", advisor: { betaView: true, notifyEmails: ["dueno@correo.com"], timeZone: "America/Bogota" } });
-  const body = JSON.parse((await handler(eventWith("t1"))).body);
-  expect(body.timeZone).toBe("America/Bogota");
-  expect(body.features.advisorView).toBe(true);
-  expect(JSON.stringify(body)).not.toContain("dueno@correo.com");
-  expect(body).not.toHaveProperty("notifyEmails");
-  expect(body).not.toHaveProperty("briefingHour");
-});
-
-test.each([
-  ["sin advisor", undefined],
-  ["advisor sin zona", {}],
-  ["zona inválida", { timeZone: "Marte/Olympus" }],
-])("sin zona utilizable (%s): timeZone null", async (_caso, advisor) => {
-  mockGetTenant.mockResolvedValue({ tenantId: "t1", businessName: "Café Uno", createdAt: "x", ...(advisor ? { advisor } : {}) });
-  expect(JSON.parse((await handler(eventWith("t1"))).body).timeZone).toBeNull();
+  const body = (await handler(eventWith("t1"))).body;
+  expect(body).not.toContain("dueno@correo.com");
+  expect(body).not.toContain("America/Bogota");
 });
 
 test("un tenant anterior devuelve onboarding null", async () => {
