@@ -188,4 +188,58 @@ describe("semana y ventana de productos", () => {
   it("los productos cubren los días cerrados de ambas semanas, desde el mismo lunes hasta ayer", () => {
     expect(window).toEqual({ currentFrom: MON, currentTo: MON, previousFrom: REF_MON, previousTo: REF_MON });
   });
+
+  it("semana pasada (last_closed) = lun–dom ISO cerrados, no el parcial lun→hoy", () => {
+    // NOW = martes 2026-11-10 → last_closed = 2026-11-02 … 2026-11-08; referencia = 2026-10-26 … 2026-11-01.
+    const LAST_SUN = "2026-11-08";
+    const PREV_MON = "2026-10-26";
+    const PREV_SUN = "2026-11-01";
+    expect(closedWeekProductWindow(NOW, TZ, "last_closed")).toEqual({
+      currentFrom: REF_MON,
+      currentTo: LAST_SUN,
+      previousFrom: PREV_MON,
+      previousTo: PREV_SUN,
+    });
+
+    const closedRows: SalesSlotRow[] = [
+      row(REF_MON, 20, "centro", 1000, 100),
+      row("2026-11-03", 20, "centro", 900, 90),
+      row("2026-11-04", 20, "centro", 800, 80),
+      row("2026-11-05", 20, "centro", 700, 70),
+      row("2026-11-06", 20, "centro", 600, 60),
+      row("2026-11-07", 20, "centro", 500, 50),
+      row(LAST_SUN, 20, "centro", 400, 40),
+      row(PREV_MON, 20, "centro", 1100, 110),
+      row("2026-10-27", 20, "centro", 1000, 100),
+      row("2026-10-28", 20, "centro", 900, 90),
+      row("2026-10-29", 20, "centro", 800, 80),
+      row("2026-10-30", 20, "centro", 700, 70),
+      row("2026-10-31", 20, "centro", 600, 60),
+      row(PREV_SUN, 20, "centro", 500, 50),
+      // parcial de la semana en curso: no debe entrar en last_closed
+      row(MON, 20, "centro", 9999, 999),
+      row(TUE, 20, "centro", 9999, 999),
+    ];
+    const result = buildWeeklyDecline({
+      rows: closedRows,
+      now: NOW,
+      timeZone: TZ,
+      currency: null,
+      branchLabels: labels,
+      week: "last_closed",
+    });
+    expect(result.metrics.window).toEqual({
+      currentFrom: REF_MON,
+      currentTo: LAST_SUN,
+      referenceFrom: PREV_MON,
+      referenceTo: PREV_SUN,
+      cutoffLocal: null,
+    });
+    expect(result.context).toMatchObject({ startDay: REF_MON, endDay: LAST_SUN, cutoffLocal: null });
+    expect(result.metrics.current.sales).toBe(4900);
+    expect(result.metrics.reference.sales).toBe(5600);
+    expect(result.summary).toContain("semana pasada");
+    expect(result.summary).not.toContain("hasta el 2026-11-10");
+    expect(result.quality.warnings.join(" ")).toContain("semana ISO cerrada");
+  });
 });
