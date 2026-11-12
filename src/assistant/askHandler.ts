@@ -772,8 +772,8 @@ export type WidgetDraft = {
   filters?: { agentId?: string; descriptionContains?: string; paymentMethod?: string };
 };
 
-const WIDGET_CLAIM_PATTERN = /(?<![p{L}])(cre[eé]|cread[oa]s?|agreg[uü]?[eé]|a[nñ]ad[ií]|acabo de (crear|agregar|a[nñ]adir)|ya tengo (ese|este|el) widget)(?![p{L}])/iu;
-const WIDGET_NOUN_PATTERN = /(?<![p{L}])(widget|gr[aá]fic[ao]|kpi|tarjeta)(?![p{L}])/iu;
+const WIDGET_CLAIM_PATTERN = /(?<![\p{L}])(cre[eé]|cread[oa]s?|agreg[uü]?[eé]|a[nñ]ad[ií]|acabo de (crear|agregar|a[nñ]adir)|ya tengo (ese|este|el) widget)(?![\p{L}])/iu;
+const WIDGET_NOUN_PATTERN = /(?<![\p{L}])(widget|gr[aá]fic[ao]|kpi|tarjeta)(?![\p{L}])/iu;
 
 /** ¿El texto afirma haber creado un widget/gráfica? Sirve para detectar un éxito inventado. */
 export function claimsWidgetCreated(text: string): boolean {
