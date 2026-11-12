@@ -81,9 +81,6 @@ export interface ProductEvidence {
   truncated?: boolean;
 }
 
-/** Semana a analizar: en curso (parcial hasta el corte) o la ISO cerrada anterior (lun–dom). Lo fija el servidor. */
-export type WeekWindow = "current" | "last_closed";
-
 export interface WeeklyDeclineInput {
   rows: SalesSlotRow[];
   now: Date;
@@ -95,8 +92,6 @@ export interface WeeklyDeclineInput {
   products?: ProductEvidence;
   /** Por qué no hay `products`: hoy es lunes (sin días cerrados) o la consulta falló. Se deduce si no se informa. */
   productsStatus?: "no_closed_days" | "failed";
-  /** Por defecto "current". "last_closed" = semana ISO lun–dom ya cerrada (semana pasada), nunca el parcial en curso. */
-  week?: WeekWindow;
 }
 
 /** Lunes de la semana local de un día. */
@@ -105,26 +100,15 @@ export function weekStart(day: string): string {
 }
 
 /**
- * Ventana de productos según la semana pedida.
- * - current: días cerrados de la semana en curso y los mismos de la anterior; null si hoy es lunes.
- * - last_closed: lun–dom de la semana ISO anterior vs la previa (siempre cerrado).
+ * Ventana de productos: días cerrados de la semana en curso y los mismos días de la anterior.
+ * null si hoy es lunes (todavía no hay ningún día cerrado esta semana).
  */
-export function closedWeekProductWindow(now: Date, timeZone: string, week: WeekWindow = "current"): ProductWindow | null {
+export function closedWeekProductWindow(now: Date, timeZone: string): ProductWindow | null {
   const { day: today } = currentCutoff(now, timeZone);
-  const thisMonday = weekStart(today);
-  if (week === "last_closed") {
-    const lastMonday = addDays(thisMonday, -7);
-    const lastSunday = addDays(thisMonday, -1);
-    return {
-      currentFrom: lastMonday,
-      currentTo: lastSunday,
-      previousFrom: addDays(lastMonday, -7),
-      previousTo: addDays(lastSunday, -7),
-    };
-  }
-  if (thisMonday === today) return null;
+  const monday = weekStart(today);
+  if (monday === today) return null;
   const yesterday = addDays(today, -1);
-  return { currentFrom: thisMonday, currentTo: yesterday, previousFrom: addDays(thisMonday, -7), previousTo: addDays(yesterday, -7) };
+  return { currentFrom: monday, currentTo: yesterday, previousFrom: addDays(monday, -7), previousTo: addDays(yesterday, -7) };
 }
 
 type Totals = Map<string, SalesPoint>;
@@ -171,31 +155,23 @@ function sumTotals(totals: Totals): SalesPoint {
 
 export function buildWeeklyDecline(input: WeeklyDeclineInput): AnalysisResponse<WeeklyDeclineMetrics, WeeklyDeclineBreakdowns> {
   const { rows, now, timeZone, currency, branch, branchLabels, products, productsStatus } = input;
-  const weekMode: WeekWindow = input.week ?? "current";
-  const closedWeek = weekMode === "last_closed";
-  const { day: today, cutoffSlot: nowCutoff } = currentCutoff(now, timeZone);
+  const { day: today, cutoffSlot } = currentCutoff(now, timeZone);
   const agentId = branch?.agentId;
-  const thisMonday = weekStart(today);
-  // last_closed: lun–dom de la ISO anterior. current: lun → hoy con corte.
-  const monday = closedWeek ? addDays(thisMonday, -7) : thisMonday;
-  const endDay = closedWeek ? addDays(thisMonday, -1) : today;
-  const cutoffSlot = closedWeek ? Number.POSITIVE_INFINITY : nowCutoff;
-  const cutDay = closedWeek ? "" : today;
+  const monday = weekStart(today);
   const refMonday = addDays(monday, -7);
-  const refEnd = addDays(endDay, -7);
-  const dayCount = closedWeek ? 7 : isoWeekday(today);
-  const currentDays = Array.from({ length: dayCount }, (_, i) => addDays(monday, i));
+  const refToday = addDays(today, -7);
+  const currentDays = Array.from({ length: isoWeekday(today) }, (_, i) => addDays(monday, i));
   const referenceDays = currentDays.map((day) => addDays(day, -7));
-  const cutoffLocal = closedWeek ? null : slotLabel(nowCutoff);
-  const tooEarly = !closedWeek && currentDays.length === 1 && nowCutoff === 0;
+  const cutoffLocal = slotLabel(cutoffSlot);
+  const tooEarly = currentDays.length === 1 && cutoffSlot === 0;
   const warnings: string[] = [];
 
   const labelOfAgent = (id: string) => (id === UNASSIGNED_AGENT ? UNASSIGNED_LABEL : (branchLabels.get(id) ?? id));
   const currentSet = new Set(currentDays);
   const referenceSet = new Set(referenceDays);
 
-  const totalCurrent = sumTotals(collect(rows, currentSet, cutDay, cutoffSlot, () => "all", agentId));
-  const totalReference = sumTotals(collect(rows, referenceSet, closedWeek ? "" : refEnd, cutoffSlot, () => "all", agentId));
+  const totalCurrent = sumTotals(collect(rows, currentSet, today, cutoffSlot, () => "all", agentId));
+  const totalReference = sumTotals(collect(rows, referenceSet, refToday, cutoffSlot, () => "all", agentId));
   const delta = round(totalCurrent.sales - totalReference.sales);
   const salesPct = pctChange(totalCurrent.sales, totalReference.sales);
   const avgCurrent = averageTicket(totalCurrent.sales, totalCurrent.tickets);
@@ -210,30 +186,30 @@ export function buildWeeklyDecline(input: WeeklyDeclineInput): AnalysisResponse<
   else if (salesPct <= DECLINE_FROM_PCT) status = "decline";
   else status = "no_decline";
 
-  // Desgloses. Todos usan la misma ventana (mismo día y hora de corte, o días cerrados), por eso reconcilian con el total.
+  // Desgloses. Todos usan la misma ventana (mismo día y hora de corte), por eso reconcilian con el total.
   const agents = [...new Set(rows.map((row) => row.agentId))];
   const byBranch =
     !branch && agents.length > 1
       ? deltaItems(
-          collect(rows, currentSet, cutDay, cutoffSlot, (r) => r.agentId),
-          collect(rows, referenceSet, closedWeek ? "" : refEnd, cutoffSlot, (r) => r.agentId),
+          collect(rows, currentSet, today, cutoffSlot, (r) => r.agentId),
+          collect(rows, referenceSet, refToday, cutoffSlot, (r) => r.agentId),
           labelOfAgent,
         ).slice(0, TOP_BRANCHES)
       : [];
   const hourKey = (row: SalesSlotRow) => String(Math.floor(row.slot / 2)).padStart(2, "0");
   const byHour = deltaItems(
-    collect(rows, currentSet, cutDay, cutoffSlot, hourKey, agentId),
-    collect(rows, referenceSet, closedWeek ? "" : refEnd, cutoffSlot, hourKey, agentId),
+    collect(rows, currentSet, today, cutoffSlot, hourKey, agentId),
+    collect(rows, referenceSet, refToday, cutoffSlot, hourKey, agentId),
     (key) => `${key}:00`,
   );
 
   const byDay: DayDelta[] = currentDays.map((day, i): DayDelta => {
     const referenceDay = referenceDays[i];
-    const isPartialToday = !closedWeek && day === today;
-    const cur = isPartialToday ? windowTotals(rows, day, nowCutoff, agentId) : dayTotals(rows, day, agentId);
-    const ref = isPartialToday ? windowTotals(rows, referenceDay, nowCutoff, agentId) : dayTotals(rows, referenceDay, agentId);
+    const isToday = day === today;
+    const cur = isToday ? windowTotals(rows, day, cutoffSlot, agentId) : dayTotals(rows, day, agentId);
+    const ref = isToday ? windowTotals(rows, referenceDay, cutoffSlot, agentId) : dayTotals(rows, referenceDay, agentId);
     const notes: string[] = [];
-    if (!isPartialToday && cur.tickets === 0) notes.push("sin ventas registradas este día (cierre o captura caída)");
+    if (!isToday && cur.tickets === 0) notes.push("sin ventas registradas este día (cierre o captura caída)");
     if (dayTotals(rows, referenceDay, agentId).tickets === 0) notes.push("sin ventas registradas el día de referencia (cierre o captura caída)");
     return {
       label: day,
@@ -256,13 +232,11 @@ export function buildWeeklyDecline(input: WeeklyDeclineInput): AnalysisResponse<
     warnings.push(
       productsStatus === "failed"
         ? "No se pudo consultar el detalle por producto: el análisis queda sin esa parte."
-        : closedWeek
-          ? "No hay detalle por producto para la semana cerrada."
-          : "Hoy es el primer día de la semana: todavía no hay días cerrados para analizar productos.",
+        : "Hoy es el primer día de la semana: todavía no hay días cerrados para analizar productos.",
     );
   } else {
-    const closedCurrent = new Set(closedWeek ? currentDays : currentDays.filter((d) => d < today));
-    const closedReference = new Set(closedWeek ? referenceDays : referenceDays.filter((d) => d <= addDays(today, -8)));
+    const closedCurrent = new Set(currentDays.filter((d) => d < today));
+    const closedReference = new Set(referenceDays.filter((d) => d <= addDays(today, -8)));
     const closedCurrentSales = sumTotals(collect(rows, closedCurrent, "", 0, () => "all", agentId)).sales;
     const closedReferenceSales = sumTotals(collect(rows, closedReference, "", 0, () => "all", agentId)).sales;
     const productCurrent = products.rows.filter((r) => r.period === "current").reduce((sum, r) => sum + r.revenue, 0);
@@ -289,11 +263,7 @@ export function buildWeeklyDecline(input: WeeklyDeclineInput): AnalysisResponse<
         }))
         .sort((a, b) => a.revenueDelta - b.revenueDelta || a.name.localeCompare(b.name))
         .slice(0, TOP_PRODUCTS);
-      warnings.push(
-        closedWeek
-          ? "El detalle por producto cubre la semana ISO cerrada (lun–dom) y el ingreso por línea antes de impuestos del ticket."
-          : "El detalle por producto cubre solo los días cerrados (sin hoy) y el ingreso por línea antes de impuestos del ticket.",
-      );
+      warnings.push("El detalle por producto cubre solo los días cerrados (sin hoy) y el ingreso por línea antes de impuestos del ticket.");
       if (products.truncated) warnings.push("Se evaluaron los productos de mayor venta; los de muy baja venta pueden faltar.");
     }
   }
@@ -314,18 +284,8 @@ export function buildWeeklyDecline(input: WeeklyDeclineInput): AnalysisResponse<
   // Calidad.
   if (tooEarly) warnings.push("Todavía no cierra ninguna franja de media hora del lunes: no hay ventana para comparar.");
   if (status === "no_data" && !tooEarly) warnings.push("Sin transacciones observadas en ninguna de las dos semanas. Verificá que la captura esté conectada.");
-  if (status === "no_comparison") {
-    warnings.push(
-      closedWeek
-        ? "La semana de referencia (cerrada) no tiene ventas: no hay base comparable."
-        : "La semana de referencia no tiene ventas en esta misma franja: no hay base comparable.",
-    );
-  }
-  warnings.push(
-    closedWeek
-      ? "Comparación de semana ISO cerrada (lun–dom) contra la semana cerrada anterior; no usa el parcial de la semana en curso."
-      : "Comparación de semana parcial contra la misma franja de la semana anterior (mismo día y hora de corte), no contra la semana completa.",
-  );
+  if (status === "no_comparison") warnings.push("La semana de referencia no tiene ventas en esta misma franja: no hay base comparable.");
+  warnings.push("Comparación de semana parcial contra la misma franja de la semana anterior (mismo día y hora de corte), no contra la semana completa.");
   if (totalCurrent.tickets > 0) warnings.push("No hay datos de promociones, precios, stock, festivos, personal ni clima: las causas comerciales no se pueden confirmar.");
 
   const insights: Insight[] = [];
@@ -333,9 +293,7 @@ export function buildWeeklyDecline(input: WeeklyDeclineInput): AnalysisResponse<
     insights.push({
       id: "variation",
       kind: "observed",
-      headline: closedWeek
-        ? `Ventas de la semana pasada (${monday} a ${endDay}): ${formatAmount(totalCurrent.sales, currency)} contra ${formatAmount(totalReference.sales, currency)} de la semana cerrada anterior (${formatPct(salesPct)}).`
-        : `Ventas de la semana hasta el ${today} a las ${cutoffLocal}: ${formatAmount(totalCurrent.sales, currency)} contra ${formatAmount(totalReference.sales, currency)} en la misma franja de la anterior (${formatPct(salesPct)}).`,
+      headline: `Ventas de la semana hasta el ${today} a las ${cutoffLocal}: ${formatAmount(totalCurrent.sales, currency)} contra ${formatAmount(totalReference.sales, currency)} en la misma franja de la anterior (${formatPct(salesPct)}).`,
       evidenceRefs: ["metric:current.sales", "metric:reference.sales"],
       confidence: "high",
     });
@@ -368,24 +326,7 @@ export function buildWeeklyDecline(input: WeeklyDeclineInput): AnalysisResponse<
     });
   }
 
-  const summary = composeSummary({
-    status,
-    today: endDay,
-    cutoffLocal,
-    totalCurrent,
-    totalReference,
-    salesPct,
-    ticketsPct,
-    avgCurrent,
-    avgReference,
-    avgTicketPct,
-    accounting,
-    topDrivers,
-    currency,
-    tooEarly,
-    closedWeek,
-    monday,
-  });
+  const summary = composeSummary({ status, today, cutoffLocal, totalCurrent, totalReference, salesPct, ticketsPct, avgCurrent, avgReference, avgTicketPct, accounting, topDrivers, currency, tooEarly });
 
   return {
     intent: "weekly_sales_decline",
@@ -393,11 +334,9 @@ export function buildWeeklyDecline(input: WeeklyDeclineInput): AnalysisResponse<
       timezone: timeZone,
       currency,
       startDay: monday,
-      endDay,
-      cutoffLocal: tooEarly || closedWeek ? null : cutoffLocal,
-      comparison: closedWeek
-        ? `semana ISO cerrada (${monday} a ${endDay}) frente a la anterior (${refMonday} a ${refEnd})`
-        : `semana en curso frente a la anterior (${refMonday} a ${refEnd}), hasta el mismo día y hora`,
+      endDay: today,
+      cutoffLocal: tooEarly ? null : cutoffLocal,
+      comparison: `semana en curso frente a la anterior (${refMonday} a ${refToday}), hasta el mismo día y hora`,
       branch: branch?.label ?? null,
     },
     quality: {
@@ -409,13 +348,7 @@ export function buildWeeklyDecline(input: WeeklyDeclineInput): AnalysisResponse<
     },
     metrics: {
       status,
-      window: {
-        currentFrom: monday,
-        currentTo: endDay,
-        referenceFrom: refMonday,
-        referenceTo: refEnd,
-        cutoffLocal: tooEarly || closedWeek ? null : cutoffLocal,
-      },
+      window: { currentFrom: monday, currentTo: today, referenceFrom: refMonday, referenceTo: refToday, cutoffLocal: tooEarly ? null : cutoffLocal },
       current: { ...totalCurrent, avgTicket: avgCurrent },
       reference: { ...totalReference, avgTicket: avgReference },
       delta,
@@ -439,7 +372,7 @@ const DIMENSION_LABEL: Record<DriverDimension, string> = {
 function composeSummary(args: {
   status: WeeklyStatus;
   today: string;
-  cutoffLocal: string | null;
+  cutoffLocal: string;
   totalCurrent: SalesPoint;
   totalReference: SalesPoint;
   salesPct: number | null;
@@ -451,25 +384,13 @@ function composeSummary(args: {
   topDrivers: Driver[];
   currency: string | null;
   tooEarly: boolean;
-  closedWeek: boolean;
-  monday: string;
 }): string {
-  const { status, today, cutoffLocal, totalCurrent, totalReference, salesPct, ticketsPct, avgCurrent, avgReference, avgTicketPct, accounting, topDrivers, currency, tooEarly, closedWeek, monday } = args;
+  const { status, today, cutoffLocal, totalCurrent, totalReference, salesPct, ticketsPct, avgCurrent, avgReference, avgTicketPct, accounting, topDrivers, currency, tooEarly } = args;
   if (tooEarly) return "Todavía es muy temprano del lunes para comparar la semana: no ha cerrado ninguna franja de media hora.";
-  if (status === "no_data") {
-    return closedWeek
-      ? "Sin transacciones observadas en la semana pasada ni en la cerrada anterior. Verificá que la captura esté conectada antes de concluir algo."
-      : "Sin transacciones observadas en esta semana ni en la anterior. Verificá que la captura esté conectada antes de concluir algo.";
-  }
-  if (status === "no_comparison") {
-    return closedWeek
-      ? `La semana pasada (${monday} a ${today}) registró ${formatAmount(totalCurrent.sales, currency)}, pero la semana cerrada anterior no tiene ventas: no hay base comparable.`
-      : `Esta semana llevas ${formatAmount(totalCurrent.sales, currency)} hasta el ${today} a las ${cutoffLocal}, pero la semana anterior no tiene ventas en esa misma franja: no hay base comparable.`;
-  }
+  if (status === "no_data") return "Sin transacciones observadas en esta semana ni en la anterior. Verificá que la captura esté conectada antes de concluir algo.";
+  if (status === "no_comparison") return `Esta semana llevas ${formatAmount(totalCurrent.sales, currency)} hasta el ${today} a las ${cutoffLocal}, pero la semana anterior no tiene ventas en esa misma franja: no hay base comparable.`;
 
-  const head = closedWeek
-    ? `La semana pasada (${monday} a ${today}) registró ${formatAmount(totalCurrent.sales, currency)}, frente a ${formatAmount(totalReference.sales, currency)} de la semana cerrada anterior (${formatPct(salesPct)}).`
-    : `Esta semana acumulas ${formatAmount(totalCurrent.sales, currency)} hasta el ${today} a las ${cutoffLocal}, frente a ${formatAmount(totalReference.sales, currency)} en la misma franja de la semana pasada (${formatPct(salesPct)}).`;
+  const head = `Esta semana acumulas ${formatAmount(totalCurrent.sales, currency)} hasta el ${today} a las ${cutoffLocal}, frente a ${formatAmount(totalReference.sales, currency)} en la misma franja de la semana pasada (${formatPct(salesPct)}).`;
   const detail =
     `Tickets: ${formatInt(totalReference.tickets)} → ${formatInt(totalCurrent.tickets)} (${formatPct(ticketsPct)}); ` +
     `ticket medio: ${avgReference === null ? "sin dato" : formatAmount(avgReference, currency)} → ${avgCurrent === null ? "sin dato" : formatAmount(avgCurrent, currency)} (${formatPct(avgTicketPct)}).`;

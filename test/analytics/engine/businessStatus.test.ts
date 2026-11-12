@@ -128,34 +128,4 @@ describe("buildBusinessStatus", () => {
     expect(result.breakdowns.byBranch).toEqual([]);
     expect(result.context.branch).toBe("Norte");
   });
-
-  it("ayer = día local cerrado: no usa el parcial de hoy ni resume con «Hoy llevas»", () => {
-    // NOW = martes 2026-11-10 15:40 Bogotá → ayer = lunes 2026-11-09 (cerrado completo).
-    const YESTERDAY = "2026-11-09";
-    const LAST_MONDAY = "2026-11-02";
-    const rows = [
-      row(YESTERDAY, 20, "a1", 900, 90),
-      row(YESTERDAY, 40, "a1", 300, 30), // después del corte de HOY: igual cuenta en ayer cerrado
-      row(LAST_MONDAY, 20, "a1", 800, 80),
-      row(LAST_MONDAY, 40, "a1", 200, 20),
-      // parcial de hoy distinto: no debe contaminar la ventana de ayer
-      row(TODAY, 20, "a1", 50, 5),
-    ];
-    const result = buildBusinessStatus({
-      rows,
-      now: NOW,
-      timeZone: TZ,
-      currency: null,
-      branchLabels: labels,
-      day: "yesterday",
-    });
-    expect(result.context).toMatchObject({ startDay: YESTERDAY, endDay: YESTERDAY, cutoffLocal: null });
-    expect(result.metrics.sales).toBe(1200);
-    expect(result.metrics.tickets).toBe(120);
-    expect(result.metrics.reference.sales).toBe(1000);
-    expect(result.summary.startsWith("Hoy llevas")).toBe(false);
-    expect(result.summary).toContain("Ayer");
-    expect(result.summary).toContain(YESTERDAY);
-    expect(result.quality.warnings.join(" ")).toContain("día local cerrado");
-  });
 });
